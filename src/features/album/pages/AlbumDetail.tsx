@@ -236,7 +236,7 @@ const handleShuffleAll = () => {
     }
 
     try {
-      await setRating(albumId, rating);
+      await setRating(albumId, rating, { serverId, kind: 'album' });
       setAlbum(cur =>
         cur && cur.album.id === albumId
           ? { ...cur, album: { ...cur.album, userRating: rating } }

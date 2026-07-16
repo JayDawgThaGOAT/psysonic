@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 19;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 20;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -63,6 +63,9 @@ pub(crate) const MIGRATION_018_ARTIST_SYNCED_INDEX: &str =
 /// New Releases reads over one `(server_id, library_id)` scope.
 pub(crate) const MIGRATION_019_MAINSTAGE_FEED_INDEXES: &str =
     include_str!("../migrations/019_mainstage_feed_indexes.sql");
+/// Version 20: owner-scoped cache for track, album, and artist user ratings.
+pub(crate) const MIGRATION_020_ENTITY_USER_RATING: &str =
+    include_str!("../migrations/020_entity_user_rating.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -76,6 +79,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (17, MIGRATION_017_LIBRARY_TAG_STATE),
     (18, MIGRATION_018_ARTIST_SYNCED_INDEX),
     (19, MIGRATION_019_MAINSTAGE_FEED_INDEXES),
+    (20, MIGRATION_020_ENTITY_USER_RATING),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -89,6 +93,12 @@ pub(crate) fn ensure_genre_tags_schema(conn: &Connection) -> rusqlite::Result<()
 /// healthy databases and all user library data untouched.
 pub(crate) fn ensure_mainstage_feed_indexes(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(MIGRATION_019_MAINSTAGE_FEED_INDEXES)
+}
+
+/// Repairs a rare partial-v20 state where its migration marker was written but
+/// the additive cache table did not survive.
+pub(crate) fn ensure_entity_user_rating_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(MIGRATION_020_ENTITY_USER_RATING)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -671,6 +681,7 @@ fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> 
     maybe_reconcile_orphan_browse_rows(conn)?;
     ensure_genre_tags_schema(conn)?;
     ensure_mainstage_feed_indexes(conn)?;
+    ensure_entity_user_rating_schema(conn)?;
     checkpoint_wal_conn(conn, "open")?;
     Ok(())
 }
@@ -1461,6 +1472,35 @@ mod tests {
             .unwrap();
         assert!(sql.contains("server_id, library_id, server_created_at DESC, album_id, id"));
         assert!(sql.contains("server_created_at IS NOT NULL"));
+    }
+
+    #[test]
+    fn migration_020_creates_entity_user_rating_table_idempotently() {
+        let store = LibraryStore::open_in_memory();
+        let version: i64 = store
+            .with_conn("test.entity_user_rating_version", |conn| {
+                conn.query_row(
+                    "SELECT version FROM schema_migrations WHERE version = 20",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(version, 20);
+
+        store
+            .with_conn("test.entity_user_rating_ensure", ensure_entity_user_rating_schema)
+            .expect("repeated schema repair succeeds");
+        let table_count: i64 = store
+            .with_conn("test.entity_user_rating_table", |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'entity_user_rating'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(table_count, 1);
     }
 
     #[test]

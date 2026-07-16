@@ -235,6 +235,26 @@ pub struct TrackRefDto {
     pub content_hash: Option<String>,
 }
 
+/// Owner-scoped cache key for a user rating on a track, album, or artist.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityUserRatingRefDto {
+    pub server_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+}
+
+/// Cached user rating together with the time it was fetched from its owner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityUserRatingDto {
+    pub server_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub rating: i64,
+    pub fetched_at: i64,
+}
+
 /// Input to `library_put_artifact`. Same shape as `TrackArtifactDto`
 /// minus the server-supplied `server_id` / `track_id` (provided as
 /// command args) and `fetched_at` (stamped server-side from `now`).

@@ -39,6 +39,8 @@ export const commands = {
 	fetchedAt: number,
 	expiresAt: number | null,
 } | null, string>(__TAURI_INVOKE("library_get_artifact", { serverId, trackId, artifactKind, sourceKind, sourceId, format })),
+	/**  Read cached owner-scoped ratings. Invalid keys and cache misses are omitted. */
+	libraryGetEntityUserRatings: (refs: EntityUserRatingRefDto[]) => typedError<EntityUserRatingDto[], string>(__TAURI_INVOKE("library_get_entity_user_ratings", { refs })),
 	libraryGetFacts: (serverId: string, trackId: string, factKinds: string[] | null) => typedError<TrackFactDto[], string>(__TAURI_INVOKE("library_get_facts", { serverId, trackId, factKinds })),
 	libraryGetOfflinePath: (serverId: string, trackId: string) => typedError<OfflinePathDto, string>(__TAURI_INVOKE("library_get_offline_path", { serverId, trackId })),
 	libraryGenreTagsInspect: () => typedError<GenreTagsInspectDto, string>(__TAURI_INVOKE("library_genre_tags_inspect")),
@@ -61,6 +63,8 @@ export const commands = {
 	librarySyncVerifyIntegrity: (serverId: string, libraryScope: string | null) => typedError<SyncJobDto, string>(__TAURI_INVOKE("library_sync_verify_integrity", { serverId, libraryScope })),
 	librarySyncCancel: (jobId: string | null) => typedError<null, string>(__TAURI_INVOKE("library_sync_cancel", { jobId })),
 	libraryPutArtifact: (serverId: string, trackId: string, artifact: ArtifactInputDto) => typedError<null, string>(__TAURI_INVOKE("library_put_artifact", { serverId, trackId, artifact })),
+	/**  Upsert cached owner-scoped ratings. Invalid keys are ignored. */
+	libraryPutEntityUserRatings: (ratings: EntityUserRatingDto[]) => typedError<null, string>(__TAURI_INVOKE("library_put_entity_user_ratings", { ratings })),
 	libraryPutFact: (serverId: string, trackId: string, fact: FactInputDto) => typedError<null, string>(__TAURI_INVOKE("library_put_fact", { serverId, trackId, fact })),
 	libraryRecordPlaySession: (input: PlaySessionInputDto) => typedError<null, string>(__TAURI_INVOKE("library_record_play_session", { input })),
 	libraryGetPlayerStatsYearSummary: (year: number) => typedError<PlaySessionYearSummaryDto, string>(__TAURI_INVOKE("library_get_player_stats_year_summary", { year })),
@@ -943,6 +947,22 @@ export type CustomHeaderEntryWire = {
 export type CustomHeadersApplyTo = "local" | "public" | "both";
 
 export type EndpointKind = "local" | "public";
+
+/**  Cached user rating together with the time it was fetched from its owner. */
+export type EntityUserRatingDto = {
+	serverId: string,
+	entityKind: string,
+	entityId: string,
+	rating: number,
+	fetchedAt: number,
+};
+
+/**  Owner-scoped cache key for a user rating on a track, album, or artist. */
+export type EntityUserRatingRefDto = {
+	serverId: string,
+	entityKind: string,
+	entityId: string,
+};
 
 /**
  *  Input to `library_put_fact`. Shape matches `TrackFactDto` minus the

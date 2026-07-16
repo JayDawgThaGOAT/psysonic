@@ -39,7 +39,7 @@ export function useContextMenuRating({
   const applyAlbumRating = useCallback((album: SubsonicAlbum, rating: number) => {
     setUserRatingOverride(album.id, rating);
     if (entityRatingSupport !== 'full') return;
-    setRating(album.id, rating).catch(err => {
+    setRating(album.id, rating, { serverId: album.serverId ?? activeServerId ?? undefined, kind: 'album' }).catch(err => {
       if (activeServerId) setEntityRatingSupport(activeServerId, 'track_only');
       showToast(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
@@ -52,7 +52,7 @@ export function useContextMenuRating({
   const applyArtistRating = useCallback((artist: SubsonicArtist, rating: number) => {
     setUserRatingOverride(artist.id, rating);
     if (entityRatingSupport !== 'full') return;
-    setRating(artist.id, rating).catch(err => {
+    setRating(artist.id, rating, { serverId: artist.serverId ?? activeServerId ?? undefined, kind: 'artist' }).catch(err => {
       if (activeServerId) setEntityRatingSupport(activeServerId, 'track_only');
       showToast(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),

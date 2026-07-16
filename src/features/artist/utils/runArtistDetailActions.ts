@@ -30,7 +30,7 @@ export async function runArtistEntityRating(deps: RunArtistEntityRatingDeps): Pr
   if (artistEntityRatingSupport !== 'full') return;
 
   try {
-    await setRating(artistId, rating);
+    await setRating(artistId, rating, { serverId: artist.serverId ?? activeServerId, kind: 'artist' });
     setArtist(a => (a && a.id === artistId ? { ...a, userRating: rating } : a));
   } catch (err) {
     setArtistEntityRating(ratingAtStart);

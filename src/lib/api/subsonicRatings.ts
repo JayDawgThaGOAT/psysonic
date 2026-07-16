@@ -1,37 +1,42 @@
-import { getArtist, getArtistForServer } from '@/lib/api/subsonicArtists';
-import { getAlbum, getAlbumForServer } from '@/lib/api/subsonicLibrary';
-import {
-  shouldAttemptSubsonicForActiveServer,
-  shouldAttemptSubsonicForServer,
-} from '@/lib/network/subsonicNetworkGuard';
+import { invoke } from '@tauri-apps/api/core';
+import { getArtistForServer } from '@/lib/api/subsonicArtists';
+import { getAlbumForServer } from '@/lib/api/subsonicLibrary';
+import { mapServerIdFromIndexKey, serverIndexKeyForId } from '@/lib/api/library/internal';
+import { shouldAttemptSubsonicForServer } from '@/lib/network/subsonicNetworkGuard';
+import { useAuthStore } from '@/store/authStore';
 
 const MIX_RATING_PREFETCH_CONCURRENCY = 8;
-const RATING_CACHE_TTL = 7 * 60 * 1000; // 7 minutes
-const ratingCache = new Map<string, { value: number; expiresAt: number }>();
+const ENTITY_RATING_BATCH_LIMIT = 300;
 
-function getCachedRating(key: string): number | null {
-  const entry = ratingCache.get(key);
-  if (!entry) return null; // cache miss
-  if (Date.now() > entry.expiresAt) { ratingCache.delete(key); return null; }
-  return entry.value;
+export type EntityRatingKind = 'track' | 'album' | 'artist';
+
+export interface EntityUserRatingRef {
+  serverId: string;
+  entityKind: EntityRatingKind;
+  entityId: string;
 }
 
-function setCachedRating(key: string, value: number): void {
-  ratingCache.set(key, { value, expiresAt: Date.now() + RATING_CACHE_TTL });
+interface EntityUserRatingDto extends EntityUserRatingRef {
+  rating: number;
+  fetchedAt: number;
 }
 
-/** Drop cached entity ratings after `setRating` so mixes see fresh stars. */
-export function invalidateEntityUserRatingCaches(id: string): void {
-  for (const key of ratingCache.keys()) {
-    if (key.endsWith(`:${id}`)) ratingCache.delete(key);
+export function entityUserRatingKey({ serverId, entityKind, entityId }: EntityUserRatingRef): string {
+  return `${serverId}\u0001${entityKind}\u0001${entityId}`;
+}
+
+function validRefs(refs: EntityUserRatingRef[]): EntityUserRatingRef[] {
+  const unique = new Map<string, EntityUserRatingRef>();
+  for (const ref of refs) {
+    if (ref.serverId && ref.entityId) unique.set(entityUserRatingKey(ref), ref);
   }
+  return [...unique.values()];
 }
 
-function parseEntityUserRating(v: unknown): number | undefined {
-  if (v === null || v === undefined) return undefined;
-  const n = typeof v === 'number' ? v : Number(v);
-  if (!Number.isFinite(n)) return undefined;
-  return n;
+function chunks<T>(values: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let index = 0; index < values.length; index += size) out.push(values.slice(index, index + size));
+  return out;
 }
 
 /** Navidrome and some JSON shapes use `rating` where Subsonic docs say `userRating`. */
@@ -39,138 +44,136 @@ export function parseSubsonicEntityStarRating(entity: {
   userRating?: unknown;
   rating?: unknown;
 }): number | undefined {
-  return parseEntityUserRating(entity.userRating ?? entity.rating);
+  const value = entity.userRating ?? entity.rating;
+  if (value === null || value === undefined) return undefined;
+  const rating = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(rating) ? rating : undefined;
 }
 
-/** Bump when rating parse keys change so stale cache entries are not reused. */
-const ENTITY_RATING_CACHE_KEY_VER = 'v2';
-
-type RatingEntity = 'artist' | 'album';
-
-function ratingCacheKey(entity: RatingEntity, serverId: string, id: string): string {
-  return `${entity}:${ENTITY_RATING_CACHE_KEY_VER}:${serverId}:${id}`;
-}
-
-async function prefetchUserRatings(
-  entity: RatingEntity,
-  serverId: string,
-  ids: string[],
-  fetchEntity: (id: string) => Promise<{ userRating?: unknown; rating?: unknown }>,
-  concurrency: number,
-  networkAllowed: boolean,
-): Promise<Map<string, number>> {
-  const unique = [...new Set(ids.filter(Boolean))];
-  const out = new Map<string, number>();
-  if (!unique.length) return out;
-  const uncached: string[] = [];
-  for (const id of unique) {
-    const cached = getCachedRating(ratingCacheKey(entity, serverId, id));
-    if (cached !== null) out.set(id, cached);
-    else uncached.push(id);
+/** Read cached owner-scoped ratings. The index uses server keys; callers use saved-server ids. */
+export async function getLocalEntityUserRatings(refs: EntityUserRatingRef[]): Promise<Map<string, number>> {
+  const unique = validRefs(refs);
+  if (!unique.length) return new Map();
+  const requestedByIndexKey = new Map<string, EntityUserRatingRef>();
+  for (const ref of unique) {
+    requestedByIndexKey.set(entityUserRatingKey({ ...ref, serverId: serverIndexKeyForId(ref.serverId) }), ref);
   }
-  if (!uncached.length) return out;
-  if (!networkAllowed) return out;
-  let next = 0;
-  async function worker() {
-    for (;;) {
-      const i = next++;
-      if (i >= uncached.length) return;
-      const id = uncached[i];
-      try {
-        const r = parseSubsonicEntityStarRating(await fetchEntity(id));
-        if (r !== undefined && r > 0) {
-          setCachedRating(ratingCacheKey(entity, serverId, id), r);
-          out.set(id, r);
-        }
-      } catch {
-        /* ignore */
-      }
+  try {
+    const responses = await Promise.all(chunks(unique, ENTITY_RATING_BATCH_LIMIT).map(batch =>
+      invoke<EntityUserRatingDto[]>('library_get_entity_user_ratings', {
+        refs: batch.map(ref => ({ ...ref, serverId: serverIndexKeyForId(ref.serverId) })),
+      }),
+    ));
+    const out = new Map<string, number>();
+    for (const response of responses.flat()) {
+      const requested = requestedByIndexKey.get(entityUserRatingKey(response));
+      const serverId = requested?.serverId ?? mapServerIdFromIndexKey(response.serverId);
+      out.set(entityUserRatingKey({ ...response, serverId }), response.rating);
     }
+    return out;
+  } catch {
+    return new Map();
   }
-  const nWorkers = Math.min(concurrency, uncached.length);
-  await Promise.all(Array.from({ length: nWorkers }, () => worker()));
-  return out;
 }
 
-async function prefetchActiveServerUserRatings(
-  ids: string[],
-  fetchEntity: (id: string) => Promise<{ userRating?: unknown; rating?: unknown }>,
-  concurrency: number,
-): Promise<Map<string, number>> {
-  const unique = [...new Set(ids.filter(Boolean))];
-  const out = new Map<string, number>();
-  if (!unique.length || !shouldAttemptSubsonicForActiveServer()) return out;
-  let next = 0;
-  async function worker() {
-    for (;;) {
-      const i = next++;
-      if (i >= unique.length) return;
-      const id = unique[i];
+/** Write a known owner-scoped rating without waiting for a full library sync. */
+export function putLocalEntityUserRatings(ratings: Array<EntityUserRatingRef & { rating: number }>): void {
+  const valid = ratings.filter(rating =>
+    rating.serverId && rating.entityId && Number.isFinite(rating.rating),
+  );
+  for (const batch of chunks(valid, ENTITY_RATING_BATCH_LIMIT)) {
+    void invoke<void>('library_put_entity_user_ratings', {
+      ratings: batch.map(rating => ({ ...rating, serverId: serverIndexKeyForId(rating.serverId), fetchedAt: 0 })),
+    }).catch(() => {});
+  }
+}
+
+const hydrationQueued = new Set<string>();
+const hydrationQueue: EntityUserRatingRef[] = [];
+let activeHydrations = 0;
+
+function scheduleEntityRatingHydration(refs: EntityUserRatingRef[]): void {
+  for (const ref of validRefs(refs)) {
+    const key = entityUserRatingKey(ref);
+    if (ref.entityKind === 'track' || hydrationQueued.has(key) || !shouldAttemptSubsonicForServer(ref.serverId)) continue;
+    hydrationQueued.add(key);
+    hydrationQueue.push(ref);
+  }
+  while (activeHydrations < MIX_RATING_PREFETCH_CONCURRENCY && hydrationQueue.length) {
+    const ref = hydrationQueue.shift()!;
+    activeHydrations++;
+    void (async () => {
       try {
-        const r = parseSubsonicEntityStarRating(await fetchEntity(id));
-        if (r !== undefined && r > 0) out.set(id, r);
+        const entity = ref.entityKind === 'artist'
+          ? (await getArtistForServer(ref.serverId, ref.entityId)).artist
+          : (await getAlbumForServer(ref.serverId, ref.entityId)).album;
+        const rating = parseSubsonicEntityStarRating(entity);
+        if (rating !== undefined) putLocalEntityUserRatings([{ ...ref, rating }]);
       } catch {
-        /* ignore */
+        // A later list pass may retry transient server failures.
+      } finally {
+        hydrationQueued.delete(entityUserRatingKey(ref));
+        activeHydrations--;
+        scheduleEntityRatingHydration([]);
       }
-    }
+    })();
   }
-  const nWorkers = Math.min(concurrency, unique.length);
-  await Promise.all(Array.from({ length: nWorkers }, () => worker()));
-  return out;
 }
 
-/** Parallel `getArtist` calls to fill mix/album filters when list endpoints omit ratings. */
-export async function prefetchArtistUserRatings(
-  ids: string[],
-  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
+/** Resolve local ratings, then schedule non-blocking hydration for missing albums and artists. */
+export async function resolveEntityUserRatings(
+  refs: EntityUserRatingRef[],
+  knownRefs: EntityUserRatingRef[] = [],
 ): Promise<Map<string, number>> {
-  return prefetchActiveServerUserRatings(
-    ids,
-    async id => (await getArtist(id)).artist,
-    concurrency,
-  );
+  const local = await getLocalEntityUserRatings(refs);
+  const knownKeys = new Set(validRefs(knownRefs).map(entityUserRatingKey));
+  scheduleEntityRatingHydration(validRefs(refs).filter(ref => (
+    !local.has(entityUserRatingKey(ref)) && !knownKeys.has(entityUserRatingKey(ref))
+  )));
+  return local;
 }
 
-/** Explicit-server variant for merged multi-server browse results. */
-export async function prefetchArtistUserRatingsForServer(
-  serverId: string,
-  ids: string[],
-  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
-): Promise<Map<string, number>> {
-  return prefetchUserRatings(
-    'artist',
-    serverId,
-    ids,
-    async id => (await getArtistForServer(serverId, id)).artist,
-    concurrency,
-    shouldAttemptSubsonicForServer(serverId),
-  );
+/** Persist ratings already supplied by a list/detail payload for the next local-first pass. */
+export function rememberEntityUserRating(
+  ref: EntityUserRatingRef,
+  payloadRating: unknown,
+): void {
+  const rating = parseSubsonicEntityStarRating({ userRating: payloadRating });
+  if (rating !== undefined) putLocalEntityUserRatings([{ ...ref, rating }]);
 }
 
-/** Parallel `getAlbum` calls when `albumList2` entries lack `userRating`. */
-export async function prefetchAlbumUserRatings(
+/** Legacy prefetch APIs now return local hits and schedule, rather than await, hydration. */
+async function prefetchForServer(
+  entityKind: 'artist' | 'album',
+  serverId: string | null | undefined,
   ids: string[],
-  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
 ): Promise<Map<string, number>> {
-  return prefetchActiveServerUserRatings(
-    ids,
-    async id => (await getAlbum(id)).album,
-    concurrency,
-  );
+  if (!serverId) return new Map();
+  const refs = ids.map(entityId => ({ serverId, entityKind, entityId }));
+  const ratings = await resolveEntityUserRatings(refs);
+  const byId = new Map<string, number>();
+  for (const ref of refs) {
+    const rating = ratings.get(entityUserRatingKey(ref));
+    if (rating !== undefined) byId.set(ref.entityId, rating);
+  }
+  return byId;
 }
 
-/** Explicit-server variant for merged multi-server browse results. */
-export async function prefetchAlbumUserRatingsForServer(
-  serverId: string,
-  ids: string[],
-  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
-): Promise<Map<string, number>> {
-  return prefetchUserRatings(
-    'album',
-    serverId,
-    ids,
-    async id => (await getAlbumForServer(serverId, id)).album,
-    concurrency,
-    shouldAttemptSubsonicForServer(serverId),
-  );
+export function prefetchArtistUserRatings(ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
+  return prefetchForServer('artist', useAuthStore.getState().activeServerId, ids);
 }
+
+export function prefetchArtistUserRatingsForServer(serverId: string, ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
+  return prefetchForServer('artist', serverId, ids);
+}
+
+export function prefetchAlbumUserRatings(ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
+  return prefetchForServer('album', useAuthStore.getState().activeServerId, ids);
+}
+
+export function prefetchAlbumUserRatingsForServer(serverId: string, ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
+  return prefetchForServer('album', serverId, ids);
+}
+
+/** Kept for compatibility with prior callers that invalidated the frontend TTL cache. */
+export function invalidateEntityUserRatingCaches(_id: string): void {}

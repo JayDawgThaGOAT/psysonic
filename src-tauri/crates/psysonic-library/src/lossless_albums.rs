@@ -39,7 +39,6 @@ pub fn list_lossless_albums(
     store: &LibraryStore,
     req: &LibraryLosslessAlbumsRequest,
 ) -> Result<LibraryLosslessAlbumsResponse, String> {
-    let total_started_at = Instant::now();
     if !crate::dto::track_index_nonempty(store, &req.server_id)? {
         return Ok(empty_response());
     }

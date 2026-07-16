@@ -1,5 +1,5 @@
 import { api, apiForServer, libraryFilterParams, libraryFilterParamsForServer } from '@/lib/api/subsonicClient';
-import { invalidateEntityUserRatingCaches } from '@/lib/api/subsonicRatings';
+import { putLocalEntityUserRatings, type EntityRatingKind } from '@/lib/api/subsonicRatings';
 import { useAuthStore } from '@/store/authStore';
 import { patchLibraryAlbumOnUse, patchLibraryTrackOnUse, type StarPatchMeta } from '@/lib/library/patchOnUse';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
@@ -115,17 +115,24 @@ export async function unstar(
     .catch(() => {});
 }
 
-export async function setRating(id: string, rating: number): Promise<void> {
-  await api('setRating.view', { id, rating });
-  const serverId = useAuthStore.getState().activeServerId;
-  patchLibraryTrackOnUse(serverId, id, { userRating: rating });
-  // Cached song lists keyed by rating (e.g. Tracks → Highly Rated rail) become
-  // stale immediately. `invalidateEntityUserRatingCaches` is static-imported:
-  // mix paths already pull `subsonicRatings` (e.g. mixRatingFilter), so a
-  // dynamic import would not split chunks and only triggered INEFFECTIVE_DYNAMIC_IMPORT.
-  // Navidrome browse stays lazy to keep this module free of that dependency when unused.
+export async function setRating(
+  id: string,
+  rating: number,
+  options?: { serverId?: string; kind?: EntityRatingKind },
+): Promise<void> {
+  const serverId = options?.serverId ?? useAuthStore.getState().activeServerId;
+  if (serverId && serverId !== useAuthStore.getState().activeServerId) {
+    await apiForServer(serverId, 'setRating.view', { id, rating });
+  } else {
+    await api('setRating.view', { id, rating });
+  }
+  if (options?.kind === 'album' || options?.kind === 'artist') {
+    if (serverId) putLocalEntityUserRatings([{ serverId, entityKind: options.kind, entityId: id, rating }]);
+  } else {
+    patchLibraryTrackOnUse(serverId, id, { userRating: rating });
+  }
+  // Cached song lists keyed by rating (e.g. Tracks → Highly Rated rail) become stale immediately.
   void import('@/lib/api/navidromeBrowse').then(m => m.ndInvalidateSongsCache()).catch(() => {});
-  invalidateEntityUserRatingCaches(id);
 }
 
 /**

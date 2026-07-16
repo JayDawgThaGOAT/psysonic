@@ -1,9 +1,9 @@
 import {
+  entityUserRatingKey,
+  rememberEntityUserRating,
   parseSubsonicEntityStarRating,
-  prefetchAlbumUserRatings,
-  prefetchAlbumUserRatingsForServer,
-  prefetchArtistUserRatings,
-  prefetchArtistUserRatingsForServer,
+  resolveEntityUserRatings,
+  type EntityUserRatingRef,
 } from '@/lib/api/subsonicRatings';
 import { getRandomSongs } from '@/lib/api/subsonicLibrary';
 import type { SubsonicAlbum, SubsonicSong } from '@/lib/api/subsonicTypes';
@@ -198,9 +198,7 @@ export function passesMixMinRatingsForAlbum(
   return true;
 }
 
-/**
- * Fetches missing entity ratings (bounded concurrency) then filters. Used for random album grids / hero.
- */
+/** Resolves cached entity ratings and schedules missing entries for background hydration. */
 export async function filterAlbumsByMixRatings(
   albums: SubsonicAlbum[],
   c: MixMinRatingsConfig,
@@ -208,35 +206,36 @@ export async function filterAlbumsByMixRatings(
   return filterAlbumsByMixRatingsWithPrefetch(
     albums,
     c,
-    prefetchArtistUserRatings,
-    prefetchAlbumUserRatings,
+    useAuthStore.getState().activeServerId,
   );
 }
 
 async function filterAlbumsByMixRatingsWithPrefetch<T extends SubsonicAlbum>(
   albums: T[],
   c: MixMinRatingsConfig,
-  prefetchArtists: (ids: string[]) => Promise<Map<string, number>>,
-  prefetchAlbums: (ids: string[]) => Promise<Map<string, number>>,
+  serverId: string | null | undefined,
 ): Promise<T[]> {
-  if (!c.enabled) return albums;
-  if (c.minAlbum <= 0 && c.minArtist <= 0) return albums;
+  if (!c.enabled || (c.minAlbum <= 0 && c.minArtist <= 0) || !serverId) return albums;
   const needArtist = c.minArtist > 0;
   const needAlbum = c.minAlbum > 0;
-  let byArtist = new Map<string, number>();
-  let byAlbum = new Map<string, number>();
-  if (needArtist) {
-    const ids = [...new Set(albums.map(a => a.artistId).filter(Boolean))] as string[];
-    byArtist = await prefetchArtists(ids);
+  const refs: EntityUserRatingRef[] = [
+    ...(needArtist ? albums.map(a => ({ serverId, entityKind: 'artist' as const, entityId: a.artistId })) : []),
+    ...(needAlbum ? albums.map(a => ({ serverId, entityKind: 'album' as const, entityId: a.id })) : []),
+  ];
+  const payloadRatingRefs: EntityUserRatingRef[] = [];
+  for (const album of albums) {
+    if (needAlbum) {
+      const ref = { serverId, entityKind: 'album' as const, entityId: album.id };
+      const rating = parseSubsonicEntityStarRating(album);
+      rememberEntityUserRating(ref, rating);
+      if (rating !== undefined) payloadRatingRefs.push(ref);
+    }
   }
-  if (needAlbum) {
-    const ids = [...new Set(albums.filter(a => a.userRating === undefined).map(a => a.id))];
-    if (ids.length) byAlbum = await prefetchAlbums(ids);
-  }
+  const ratings = await resolveEntityUserRatings(refs, payloadRatingRefs);
   return albums.filter(a =>
     passesMixMinRatingsForAlbum(a, c, {
-      artistUserRating: a.artistId ? byArtist.get(a.artistId) : undefined,
-      albumUserRating: byAlbum.get(a.id),
+      artistUserRating: ratings.get(entityUserRatingKey({ serverId, entityKind: 'artist', entityId: a.artistId })),
+      albumUserRating: ratings.get(entityUserRatingKey({ serverId, entityKind: 'album', entityId: a.id })),
     }),
   );
 }
@@ -247,23 +246,25 @@ export async function filterAlbumsByMixRatingsAcrossServers<T extends SubsonicAl
   c: MixMinRatingsConfig,
 ): Promise<T[]> {
   if (!c.enabled || (c.minAlbum <= 0 && c.minArtist <= 0)) return albums;
-  const byServer = new Map<string, T[]>();
+  const refs: EntityUserRatingRef[] = [];
   for (const album of albums) {
-    const group = byServer.get(album.serverId);
-    if (group) group.push(album);
-    else byServer.set(album.serverId, [album]);
+    if (c.minArtist > 0) refs.push({ serverId: album.serverId, entityKind: 'artist', entityId: album.artistId });
+    if (c.minAlbum > 0) refs.push({ serverId: album.serverId, entityKind: 'album', entityId: album.id });
   }
-  const accepted = new Set<T>();
-  await Promise.all([...byServer].map(async ([serverId, group]) => {
-    const filtered = await filterAlbumsByMixRatingsWithPrefetch(
-      group,
-      c,
-      ids => prefetchArtistUserRatingsForServer(serverId, ids),
-      ids => prefetchAlbumUserRatingsForServer(serverId, ids),
-    );
-    for (const album of filtered) accepted.add(album);
+  const payloadRatingRefs: EntityUserRatingRef[] = [];
+  for (const album of albums) {
+    if (c.minAlbum > 0) {
+      const ref = { serverId: album.serverId, entityKind: 'album' as const, entityId: album.id };
+      const rating = parseSubsonicEntityStarRating(album);
+      rememberEntityUserRating(ref, rating);
+      if (rating !== undefined) payloadRatingRefs.push(ref);
+    }
+  }
+  const ratings = await resolveEntityUserRatings(refs, payloadRatingRefs);
+  return albums.filter(album => passesMixMinRatingsForAlbum(album, c, {
+    artistUserRating: ratings.get(entityUserRatingKey({ serverId: album.serverId, entityKind: 'artist', entityId: album.artistId })),
+    albumUserRating: ratings.get(entityUserRatingKey({ serverId: album.serverId, entityKind: 'album', entityId: album.id })),
   }));
-  return albums.filter(album => accepted.has(album));
 }
 
 /** Enrich when needed, then drop songs excluded by Settings → Ratings → filter-by-rating. */
@@ -276,19 +277,18 @@ export async function filterSongsForLuckyMixRatings(
   return enriched.filter(s => passesMixMinRatings(s, c));
 }
 
-/**
- * Merge `getArtist` / `getAlbum` ratings into songs when list payloads omit them,
- * so `passesMixMinRatings` / Lucky Mix filtering see album and artist stars.
- */
+/** Merge local ratings only where song payloads and optimistic overrides provide no rating. */
 /** Drop low-rated seed artists before Lucky Mix picks from listening history. */
 export async function filterTopArtistsForMixRatings<T extends { id: string }>(
   artists: T[],
   c: MixMinRatingsConfig,
 ): Promise<T[]> {
   if (!c.enabled || c.minArtist <= 0 || !artists.length) return artists;
-  const byArtist = await prefetchArtistUserRatings(artists.map(a => a.id));
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) return artists;
+  const ratings = await resolveEntityUserRatings(artists.map(a => ({ serverId, entityKind: 'artist' as const, entityId: a.id })));
   return artists.filter(a => {
-    const r = mixRatingOverrideForEntity(a.id) ?? byArtist.get(a.id);
+    const r = mixRatingOverrideForEntity(a.id) ?? ratings.get(entityUserRatingKey({ serverId, entityKind: 'artist', entityId: a.id }));
     if (r === undefined || r <= 0) return true;
     return r > c.minArtist;
   });
@@ -299,6 +299,8 @@ export async function enrichSongsForMixRatingFilter(
   c: MixMinRatingsConfig,
 ): Promise<SubsonicSong[]> {
   if (!c.enabled || (c.minArtist <= 0 && c.minAlbum <= 0)) return songs;
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) return songs;
   const artistIds =
     c.minArtist > 0
       ? [...new Set(songs.map(s => artistEntityIdForMixRating(s)).filter((id): id is string => !!id))]
@@ -307,17 +309,25 @@ export async function enrichSongsForMixRatingFilter(
     c.minAlbum > 0
       ? [...new Set(songs.filter(s => s.albumId).map(s => s.albumId!))]
       : [];
-  const [byArtist, byAlbum] = await Promise.all([
-    artistIds.length ? prefetchArtistUserRatings(artistIds) : Promise.resolve(new Map<string, number>()),
-    albumIds.length ? prefetchAlbumUserRatings(albumIds) : Promise.resolve(new Map<string, number>()),
+  const ratings = await resolveEntityUserRatings([
+    ...artistIds.map(entityId => ({ serverId, entityKind: 'artist' as const, entityId })),
+    ...albumIds.map(entityId => ({ serverId, entityKind: 'album' as const, entityId })),
   ]);
-  if (!byArtist.size && !byAlbum.size) return songs;
+  if (!ratings.size) return songs;
   return songs.map(s => {
     const aid = artistEntityIdForMixRating(s);
+    const payloadArtistRating = effectiveArtistRatingForFilter(s);
+    const payloadAlbumRating = effectiveAlbumRatingOnSong(s);
+    const artistRating = aid
+      ? ratings.get(entityUserRatingKey({ serverId, entityKind: 'artist', entityId: aid }))
+      : undefined;
+    const albumRating = s.albumId
+      ? ratings.get(entityUserRatingKey({ serverId, entityKind: 'album', entityId: s.albumId }))
+      : undefined;
     const artistPatch =
-      aid && byArtist.has(aid) ? { artistUserRating: byArtist.get(aid)! } : {};
+      payloadArtistRating === undefined && artistRating !== undefined ? { artistUserRating: artistRating } : {};
     const albumPatch =
-      s.albumId && byAlbum.has(s.albumId) ? { albumUserRating: byAlbum.get(s.albumId)! } : {};
+      payloadAlbumRating === undefined && albumRating !== undefined ? { albumUserRating: albumRating } : {};
     return { ...s, ...artistPatch, ...albumPatch };
   });
 }
