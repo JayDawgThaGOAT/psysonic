@@ -51,6 +51,8 @@ pub fn list_lossless_albums(
         "t.deleted = 0".to_string(),
         "t.server_id = ?1".to_string(),
         "t.album_id IS NOT NULL AND t.album_id != ''".to_string(),
+        // Kept explicit so SQLite can prove the partial browse index applies.
+        "t.suffix IS NOT NULL".to_string(),
         lossless_sql,
     ];
     let mut params: Vec<SqlValue> = vec![SqlValue::Text(req.server_id.clone())];
@@ -62,50 +64,42 @@ pub fn list_lossless_albums(
     let where_sql = where_clauses.join(" AND ");
     let la_artist = crate::album_compilation_filter::sql_track_group_display_artist("la");
     let sql = format!(
-        "WITH lossless_album AS ( \
-           SELECT \
-             t.server_id, \
-             t.album_id, \
-             MAX(t.album) AS album_name, \
-             MAX(t.artist) AS artist, \
-             MAX(t.album_artist) AS album_artist, \
-             MAX(t.artist_id) AS artist_id, \
-             MAX(t.year) AS year, \
-             MAX(t.genre) AS genre, \
-             MAX(t.cover_art_id) AS cover_art_id, \
-             MAX(t.starred_at) AS starred_at, \
-             MAX(t.synced_at) AS synced_at, \
-             MAX(COALESCE(CAST(json_extract(t.raw_json, '$.bitDepth') AS INTEGER), 0)) AS max_bit_depth \
-           FROM track t \
-           WHERE {where_sql} \
-           GROUP BY t.server_id, t.album_id \
-         ), \
-         album_totals AS ( \
-           SELECT c.server_id, c.album_id, COUNT(*) AS track_count, \
-                  COALESCE(SUM(c.duration_sec), 0) AS duration_sec \
-           FROM track c \
-           INNER JOIN lossless_album la \
-             ON la.server_id = c.server_id AND la.album_id = c.album_id \
-           WHERE c.deleted = 0 \
-           GROUP BY c.server_id, c.album_id \
-         ) \
-         SELECT \
-            la.server_id, \
+        "SELECT \
+           la.server_id, \
            la.album_id, \
            COALESCE(a.name, la.album_name), \
            COALESCE(a.artist, {la_artist}), \
            COALESCE(a.artist_id, la.artist_id), \
-           COALESCE(a.song_count, totals.track_count), \
-           COALESCE(a.duration_sec, totals.duration_sec), \
+           COALESCE(a.song_count, la.track_count), \
+           COALESCE(a.duration_sec, la.duration_sec), \
            COALESCE(a.year, la.year), \
            COALESCE(a.genre, la.genre), \
            COALESCE(a.cover_art_id, la.cover_art_id), \
            COALESCE(a.starred_at, la.starred_at), \
            COALESCE(a.synced_at, la.synced_at), \
            a.raw_json \
-          FROM lossless_album la \
-          INNER JOIN album_totals totals \
-            ON totals.server_id = la.server_id AND totals.album_id = la.album_id \
+          FROM ( \
+            SELECT \
+              t.server_id, \
+              t.album_id, \
+              MAX(t.album) AS album_name, \
+              MAX(t.artist) AS artist, \
+              MAX(t.album_artist) AS album_artist, \
+              MAX(t.artist_id) AS artist_id, \
+              MAX(t.year) AS year, \
+              MAX(t.genre) AS genre, \
+              MAX(t.cover_art_id) AS cover_art_id, \
+              MAX(t.starred_at) AS starred_at, \
+              MAX(t.synced_at) AS synced_at, \
+              (SELECT COUNT(*) FROM track c \
+               WHERE c.server_id = t.server_id AND c.album_id = t.album_id AND c.deleted = 0) AS track_count, \
+              (SELECT COALESCE(SUM(c.duration_sec), 0) FROM track c \
+               WHERE c.server_id = t.server_id AND c.album_id = t.album_id AND c.deleted = 0) AS duration_sec, \
+              MAX(COALESCE(CAST(json_extract(t.raw_json, '$.bitDepth') AS INTEGER), 0)) AS max_bit_depth \
+            FROM track t INDEXED BY idx_track_lossless_album_browse \
+            WHERE {where_sql} \
+            GROUP BY t.server_id, t.album_id \
+          ) la \
           LEFT JOIN album a ON a.server_id = la.server_id AND a.id = la.album_id \
          ORDER BY la.max_bit_depth DESC, \
            COALESCE(a.name, la.album_name) COLLATE NOCASE ASC, \
