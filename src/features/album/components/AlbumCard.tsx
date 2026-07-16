@@ -125,7 +125,16 @@ function AlbumCard({
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
             const coverUrl = dragCoverKey ? acquireUrl(dragCoverKey) ?? undefined : undefined;
-            psyDrag.startDrag({ data: JSON.stringify({ type: 'album', id: album.id, name: album.name }), label: album.name, coverUrl }, me.clientX, me.clientY);
+            psyDrag.startDrag({
+              data: JSON.stringify({
+                type: 'album',
+                id: album.id,
+                name: album.name,
+                serverId: album.serverId,
+              }),
+              label: album.name,
+              coverUrl,
+            }, me.clientX, me.clientY);
           }
         };
         const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };

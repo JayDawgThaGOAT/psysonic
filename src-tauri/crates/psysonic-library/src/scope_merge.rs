@@ -22,7 +22,7 @@ use crate::search::{
 use crate::store::LibraryStore;
 
 /// NULL `album_key` rows never merge — fall back to a per-server album id.
-const ALBUM_DEDUP_KEY: &str = "CASE WHEN ck.album_key IS NOT NULL THEN ck.album_key \
+pub(crate) const ALBUM_DEDUP_KEY: &str = "CASE WHEN ck.album_key IS NOT NULL THEN ck.album_key \
     ELSE ('null:' || t.server_id || ':' || COALESCE(NULLIF(t.album_id, ''), t.id)) END";
 
 /// NULL `artist_key` rows never merge.
@@ -35,21 +35,21 @@ const ARTIST_DEDUP_KEY: &str = "CASE WHEN ck.artist_key IS NOT NULL THEN ck.arti
 /// two up to ~4 s apart inside a bucket merge. Kept as a single GROUP BY key for
 /// speed; a true tolerance window would need a self-join. Encoder-padding drift at
 /// boundaries is the known trade-off.
-const TRACK_DEDUP_KEY: &str = "CASE WHEN ck.cluster_key IS NOT NULL \
+pub(crate) const TRACK_DEDUP_KEY: &str = "CASE WHEN ck.cluster_key IS NOT NULL \
     THEN ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT) \
     ELSE ('null:' || t.server_id || ':' || t.id) END";
 
 /// Sortable representative key so a single `MIN()` (SQLite bare-column rule) picks the
 /// priority winner per album group without a second window pass: (pr ASC, album_id ASC, id ASC).
 /// `pr` is zero-padded so lexical order matches numeric order.
-const ALBUM_PICK_KEY: &str = "printf('%08d|%s|%s', pr, album_id, id)";
+pub(crate) const ALBUM_PICK_KEY: &str = "printf('%08d|%s|%s', pr, album_id, id)";
 
 /// Same representative trick for artist groups: (pr ASC, artist_id ASC).
 const ARTIST_PICK_KEY: &str = "printf('%08d|%s', pr, artist_id)";
 
 const TRACK_FTS_BM25_RANK: &str = "bm25(track_fts, 10.0, 3.0, 5.0, 3.0, 0.0)";
 
-fn non_empty_scopes(scopes: &[LibraryScopePair]) -> Result<&[LibraryScopePair], String> {
+pub(crate) fn non_empty_scopes(scopes: &[LibraryScopePair]) -> Result<&[LibraryScopePair], String> {
     if scopes.is_empty() {
         return Err("scopes must not be empty".into());
     }
@@ -136,7 +136,7 @@ fn artist_order_sql(sort: Option<&str>) -> String {
     }
 }
 
-type AlbumListRow = (
+pub(crate) type AlbumListRow = (
     String,
     String,
     String,
@@ -170,7 +170,7 @@ fn map_album_list_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AlbumListRow> {
     ))
 }
 
-fn album_row_to_dto(row: AlbumListRow) -> LibraryAlbumDto {
+pub(crate) fn album_row_to_dto(row: AlbumListRow) -> LibraryAlbumDto {
     let (
         server_id,
         id,
@@ -239,7 +239,7 @@ fn finish_scope_album_list(
     Ok((albums, total))
 }
 
-fn ensure_cluster_keys_for_scopes(
+pub(crate) fn ensure_cluster_keys_for_scopes(
     store: &LibraryStore,
     scopes: &[LibraryScopePair],
 ) -> Result<(), String> {

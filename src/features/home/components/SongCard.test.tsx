@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import SongCard from '@/features/home/components/SongCard';
@@ -8,6 +8,7 @@ import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 const navigateToArtist = vi.fn();
 const navigateToAlbum = vi.fn();
 const useTrackCoverRef = vi.fn();
+const startDrag = vi.fn();
 
 // Mock navigation submodules directly so their barrels re-export the stubs
 // while unrelated helpers used by SongCard stay real.
@@ -25,6 +26,10 @@ vi.mock('@/cover/useLibraryCoverRef', () => ({
 
 vi.mock('@/cover/serverScope', () => ({
   coverServerScopeForServerId: (serverId: string | undefined) => ({ kind: 'test', serverId }),
+}));
+
+vi.mock('@/lib/dnd/DragDropContext', () => ({
+  useDragDrop: () => ({ startDrag, payload: null, isDragging: false }),
 }));
 
 function song(overrides: Partial<SubsonicSong>): SubsonicSong {
@@ -73,5 +78,30 @@ describe('SongCard', () => {
 
     await user.click(screen.getByRole('button', { name: /to album/i }));
     expect(navigateToAlbum).toHaveBeenCalledWith('al1', { search: 'server=srv-2' });
+  });
+
+  it('starts a canonical song drag with the owner-preserving track payload', () => {
+    startDrag.mockClear();
+    const ownedSong = song({ serverId: 'srv-2', coverArt: 'cover-1' });
+    renderWithProviders(<SongCard disableArtwork song={ownedSong} />);
+
+    fireEvent.mouseDown(screen.getByRole('button', { name: /Track/ }), {
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+    });
+    fireEvent.mouseMove(document, { clientX: 20, clientY: 10 });
+
+    expect(startDrag).toHaveBeenCalledOnce();
+    const payload = JSON.parse(startDrag.mock.calls[0]![0].data);
+    expect(payload).toEqual({
+      type: 'song',
+      track: expect.objectContaining({
+        id: 's1',
+        albumId: 'al1',
+        coverArt: 'cover-1',
+        serverId: 'srv-2',
+      }),
+    });
   });
 });

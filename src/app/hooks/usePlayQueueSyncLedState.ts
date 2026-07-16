@@ -5,6 +5,7 @@ import { pullPlayQueueFromActiveServer } from '@/features/playback/store/applySe
 import { useAuthStore } from '@/store/authStore';
 import { useOrbitStore } from '@/features/orbit';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { isMultiServerQueue } from '@/lib/media/trackServerScope';
 import { getPlaybackServerId, queueIsMultiServer } from '@/features/playback/utils/playback/playbackServer';
 import {
   getIdleQueuePullSuspendedSnapshot,
@@ -28,6 +29,7 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
   const queueItems = usePlayerStore(s => s.queueItems);
   const queueIndex = usePlayerStore(s => s.queueIndex);
   const currentTrackId = usePlayerStore(s => s.currentTrack?.id);
+  const mixedQueue = useMemo(() => isMultiServerQueue(queueItems), [queueItems]);
 
   const playbackServerId = useMemo(
     () => getPlaybackServerId(),
@@ -38,16 +40,17 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
   );
 
   useEffect(() => {
-    if (activeServerId && playbackServerId && activeServerId === playbackServerId) {
+    if (mixedQueue || (activeServerId && playbackServerId && activeServerId === playbackServerId)) {
       clearQueueHandoffPending();
     }
-  }, [activeServerId, playbackServerId]);
+  }, [activeServerId, mixedQueue, playbackServerId]);
 
   const autoSyncContext = canAutoIdlePlayQueuePull(status, orbitRole);
   const localQueueSyncPaused = autoSyncContext && idlePullSuspended && !isPlaying;
 
   const needsQueuePull = status === 'connected'
     && Boolean(activeServerId)
+    && !mixedQueue
     && (
       (Boolean(playbackServerId) && activeServerId !== playbackServerId)
       || isQueueHandoffPending()
@@ -57,6 +60,7 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
   const queueHandoffReason = status === 'connected'
     && Boolean(activeServerId)
     && Boolean(playbackServerId)
+    && !mixedQueue
     && activeServerId !== playbackServerId;
 
   const ledVariant = status === 'checking'
@@ -71,6 +75,7 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
     if (status !== 'connected' || pullInFlight) return;
     if (orbitRole === 'host' || orbitRole === 'guest') return;
     if (currentRadio) return;
+    if (queueIsMultiServer()) return;
 
     setPullInFlight(true);
     try {

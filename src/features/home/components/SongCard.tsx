@@ -91,7 +91,11 @@ function SongCard({
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
             psyDrag.startDrag(
-              { data: JSON.stringify({ type: 'song', id: song.id, name: song.title }), label: song.title, coverUrl: coverUrl || undefined },
+              {
+                data: JSON.stringify({ type: 'song', track: songToTrack(song) }),
+                label: song.title,
+                coverUrl: coverUrl || undefined,
+              },
               me.clientX, me.clientY,
             );
           }

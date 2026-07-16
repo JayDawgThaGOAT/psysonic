@@ -76,7 +76,11 @@ pub fn subsonic_song_to_track_row(
             .and_then(|v| v.as_f64()),
         content_hash: None,
         server_updated_at: None,
-        server_created_at: None,
+        server_created_at: raw_value
+            .get("created")
+            .or_else(|| raw_value.get("createdAt"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_iso_ms_str),
         deleted: false,
         synced_at,
         raw_json: raw_value.to_string(),
@@ -303,6 +307,7 @@ mod tests {
             "duration": 240,
             "track": 3,
             "year": 2024,
+            "created": "2024-01-01T00:00:00Z",
             "musicBrainzId": "mb-1",
             "replayGain": { "trackGain": -1.2, "albumGain": -0.8, "trackPeak": 0.91 }
         });
@@ -315,6 +320,7 @@ mod tests {
         assert_eq!(row.replay_gain_track_db, Some(-1.2));
         assert_eq!(row.replay_gain_album_db, Some(-0.8));
         assert_eq!(row.replay_gain_peak, Some(0.91));
+        assert!(row.server_created_at.unwrap_or(0) > 0);
         // Fallback library_id kicks in when the song didn't ship one.
         assert_eq!(row.library_id.as_deref(), Some("lib-fb"));
         assert!(row.raw_json.contains("replayGain"));
@@ -355,6 +361,7 @@ mod tests {
         assert_eq!(row.mbid_recording.as_deref(), Some("mb-1"));
         assert_eq!(row.replay_gain_track_db, Some(-1.2));
         assert_eq!(row.library_id.as_deref(), Some("1"));
+        assert!(row.server_created_at.unwrap_or(0) > 0);
         assert!(row.server_updated_at.unwrap_or(0) > 0);
     }
 

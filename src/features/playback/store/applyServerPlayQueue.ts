@@ -1,10 +1,11 @@
 import { getPlayQueueForServer, type PlayQueueResult } from '@/lib/api/subsonicPlayQueue';
 import { songToTrack } from '@/lib/media/songToTrack';
-import { bindQueueServerId } from '@/features/playback/utils/playback/playbackServer';
+import { bindQueueServerId, queueIsMultiServer } from '@/features/playback/utils/playback/playbackServer';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import { toQueueItemRefs } from '@/features/playback/store/queueItemRef';
 import { seedQueueResolver } from '@/features/playback/store/queueTrackResolver';
-import type { Track } from '@/lib/media/trackTypes';
+import { profileIdFromQueueRef } from '@/lib/media/trackServerScope';
+import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { preparePausedRestoreOnStartup } from '@/features/playback/store/pausedRestorePrepare';
@@ -123,6 +124,87 @@ export function applyMappedQueue(
   preparePausedRestoreOnStartup(currentTrack, queueItems, queueIndex, atSeconds);
 }
 
+export function mergeQueueServerProjection(
+  existing: QueueItemRef[],
+  serverProfileId: string,
+  remote: QueueItemRef[],
+): QueueItemRef[] {
+  const merged: QueueItemRef[] = [];
+  let remoteIndex = 0;
+  let insertionIndex = existing.length;
+  let hadPriorSlot = false;
+
+  for (const ref of existing) {
+    if (profileIdFromQueueRef(ref) !== serverProfileId) {
+      merged.push(ref);
+      continue;
+    }
+
+    hadPriorSlot = true;
+    if (remoteIndex < remote.length) {
+      merged.push(remote[remoteIndex]);
+      remoteIndex++;
+    }
+    insertionIndex = merged.length;
+  }
+
+  if (!hadPriorSlot) insertionIndex = merged.length;
+  if (remoteIndex < remote.length) {
+    merged.splice(insertionIndex, 0, ...remote.slice(remoteIndex));
+  }
+  return merged;
+}
+
+export function applyMappedQueueProjection(
+  mappedTracks: Track[],
+  q: PlayQueueResult,
+  serverProfileId: string,
+): void {
+  seedQueueResolver(serverProfileId, mappedTracks);
+  const remoteRefs = toQueueItemRefs(serverProfileId, mappedTracks);
+  const player = usePlayerStore.getState();
+  const previousCurrentRef = player.queueItems[player.queueIndex];
+  const queueItems = mergeQueueServerProjection(player.queueItems, serverProfileId, remoteRefs);
+
+  const exactPreservedIndex = previousCurrentRef ? queueItems.indexOf(previousCurrentRef) : -1;
+  const preservedIndex = exactPreservedIndex >= 0
+    ? exactPreservedIndex
+    : previousCurrentRef
+      ? queueItems.findIndex(ref => (
+        profileIdFromQueueRef(ref) === profileIdFromQueueRef(previousCurrentRef)
+        && ref.trackId === previousCurrentRef.trackId
+      ))
+      : -1;
+
+  if (preservedIndex >= 0) {
+    usePlayerStore.setState({ queueItems, queueIndex: preservedIndex });
+    return;
+  }
+
+  const currentId = q.current ?? mappedTracks[0]?.id;
+  const remoteIndex = mappedTracks.findIndex(track => track.id === currentId);
+  const currentTrack = mappedTracks[remoteIndex >= 0 ? remoteIndex : 0];
+  if (!currentTrack) {
+    usePlayerStore.setState({ queueItems, queueIndex: Math.min(player.queueIndex, Math.max(0, queueItems.length - 1)) });
+    return;
+  }
+
+  const queueIndex = queueItems.findIndex(ref => (
+    profileIdFromQueueRef(ref) === serverProfileId && ref.trackId === currentTrack.id
+  ));
+  const atSeconds = q.position ? q.position / 1000 : 0;
+  usePlayerStore.setState({
+    queueItems,
+    queueIndex: queueIndex >= 0 ? queueIndex : 0,
+    currentTrack,
+    currentTime: atSeconds,
+  });
+  void refreshWaveformForTrack(currentTrack.id);
+  if (!player.isPlaying) {
+    preparePausedRestoreOnStartup(currentTrack, queueItems, queueIndex >= 0 ? queueIndex : 0, atSeconds);
+  }
+}
+
 export async function applyServerPlayQueue(
   serverId: string,
   options: {
@@ -135,6 +217,7 @@ export async function applyServerPlayQueue(
   if (!profileId) return 'error';
 
   const local = usePlayerStore.getState();
+  if (options.mode === 'manual' && queueIsMultiServer()) return 'noop';
   if (options.mode !== 'startup' && isActivePublicShareQueue(local.queueServerId, local.queueItems)) {
     return 'noop';
   }
@@ -149,6 +232,7 @@ export async function applyServerPlayQueue(
     if (q.songs.length === 0) return 'empty';
 
     const localAfterFetch = usePlayerStore.getState();
+    if (options.mode === 'manual' && queueIsMultiServer()) return 'noop';
     if (
       options.mode !== 'startup'
       && isActivePublicShareQueue(localAfterFetch.queueServerId, localAfterFetch.queueItems)
@@ -195,11 +279,13 @@ export async function fetchActiveServerPlayQueueFingerprint(): Promise<PlayQueue
 export async function pullPlayQueueFromActiveServer(): Promise<ApplyPlayQueueResult> {
   const activeId = useAuthStore.getState().activeServerId;
   if (!activeId) return 'error';
+  if (queueIsMultiServer()) return 'noop';
 
   clearQueueNaturallyEnded();
 
   try {
     const q = await getPlayQueueForServer(activeId);
+    if (queueIsMultiServer()) return 'noop';
     if (q.songs.length === 0) {
       resumeIdleQueuePull();
       clearQueuePushFailed(activeId);

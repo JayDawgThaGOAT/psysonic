@@ -18,10 +18,15 @@ export type HomeFeedSnapshot = {
 
 export type HomeFeedOffsets = {
   starred: Record<string, number>;
-  recent: Record<string, number>;
+  recent: HomeFeedGlobalOffset;
   random: Record<string, number>;
   mostPlayed: Record<string, number>;
-  recentlyPlayed: Record<string, number>;
+  recentlyPlayed: HomeFeedGlobalOffset;
+};
+
+export type HomeFeedGlobalOffset = {
+  offset: number;
+  hasMore: boolean;
 };
 
 const TTL_MS = 15 * 60 * 1000;

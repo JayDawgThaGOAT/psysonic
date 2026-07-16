@@ -1,6 +1,11 @@
 import { getArtistsForServer } from '@/lib/api/subsonicArtists';
 import { getAlbumListForServer, getRandomSongsForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
+import {
+  libraryScopeListMainstageAlbums,
+  type LibraryScopePair,
+} from '@/lib/api/library/scopeReads';
+import { albumToAlbum } from '@/lib/library/advancedSearchLocal';
 import { runLocalRandomSongs } from '@/lib/library/browseTextSearch';
 import { shuffleArray } from '@/lib/util/shuffleArray';
 import type { HomeFeedOffsets, HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
@@ -13,6 +18,7 @@ export const HOME_DISCOVER_SONGS_SIZE = 18;
 export const HOME_DISCOVER_ARTISTS_SIZE = 16;
 
 export type HomeAlbumSection = keyof HomeFeedOffsets;
+export type PerServerHomeAlbumSection = Exclude<HomeAlbumSection, 'recent' | 'recentlyPlayed'>;
 
 type OwnedAlbum = SubsonicAlbum & { serverId: string };
 type OwnedArtist = SubsonicArtist & { serverId: string };
@@ -41,6 +47,7 @@ interface HomeFeedLoaderDeps {
   getAlbumListForServer: typeof getAlbumListForServer;
   getArtistsForServer: typeof getArtistsForServer;
   getRandomSongsForServer: typeof getRandomSongsForServer;
+  libraryScopeListMainstageAlbums: typeof libraryScopeListMainstageAlbums;
   runLocalRandomSongs: typeof runLocalRandomSongs;
   filterAlbumsByMixRatingsAcrossServers: <T extends OwnedAlbum>(
     albums: T[],
@@ -53,6 +60,7 @@ const defaultDeps: Omit<HomeFeedLoaderDeps, 'filterAlbumsByMixRatingsAcrossServe
   getAlbumListForServer,
   getArtistsForServer,
   getRandomSongsForServer,
+  libraryScopeListMainstageAlbums,
   runLocalRandomSongs,
   shuffle: shuffleArray,
 };
@@ -60,6 +68,8 @@ const defaultDeps: Omit<HomeFeedLoaderDeps, 'filterAlbumsByMixRatingsAcrossServe
 interface LoadHomeFeedOptions {
   serverIds: string[];
   scopeKey: string;
+  anchorServerId: string;
+  scopes: LibraryScopePair[];
   scopeVersion: number;
   randomSize: number;
   showArtists: boolean;
@@ -71,6 +81,8 @@ interface LoadHomeFeedOptions {
 interface LoadMoreHomeAlbumsOptions {
   snapshot: HomeFeedSnapshot;
   section: HomeAlbumSection;
+  anchorServerId: string;
+  scopes: LibraryScopePair[];
   mixConfig: MixMinRatingsConfig;
   deps: Pick<HomeFeedLoaderDeps, 'filterAlbumsByMixRatingsAcrossServers'> & Partial<HomeFeedLoaderDeps>;
 }
@@ -78,21 +90,22 @@ interface LoadMoreHomeAlbumsOptions {
 interface ServerBundle {
   serverId: string;
   starred: OwnedAlbum[];
-  newest: OwnedAlbum[];
   random: OwnedAlbum[];
   frequent: OwnedAlbum[];
-  recent: OwnedAlbum[];
   artists: OwnedArtist[];
   songs: OwnedSong[];
 }
 
-const albumTypes: Record<HomeAlbumSection, Parameters<typeof getAlbumListForServer>[1]> = {
+const albumTypes: Record<PerServerHomeAlbumSection, Parameters<typeof getAlbumListForServer>[1]> = {
   starred: 'starred',
-  recent: 'newest',
   random: 'random',
   mostPlayed: 'frequent',
-  recentlyPlayed: 'recent',
 };
+
+const mainstageFeeds = {
+  recent: 'newReleases',
+  recentlyPlayed: 'recentlyPlayed',
+} as const;
 
 export function deriveHomeFeedScope(source: HomeScopeSource): HomeFeedScope {
   const selected = new Set(source.libraryBrowseServerIds);
@@ -128,7 +141,7 @@ export function stableRoundRobin<T>(groups: readonly T[][], target = Number.POSI
 
 export function advanceHomeOffsets(
   offsets: HomeFeedOffsets,
-  section: HomeAlbumSection,
+  section: PerServerHomeAlbumSection,
   rawCounts: Record<string, number>,
 ): HomeFeedOffsets {
   return {
@@ -144,10 +157,10 @@ function createOffsets(serverIds: string[]): HomeFeedOffsets {
   const section = () => Object.fromEntries(serverIds.map(serverId => [serverId, 0]));
   return {
     starred: section(),
-    recent: section(),
+    recent: { offset: 0, hasMore: false },
     random: section(),
     mostPlayed: section(),
-    recentlyPlayed: section(),
+    recentlyPlayed: { offset: 0, hasMore: false },
   };
 }
 
@@ -216,12 +229,10 @@ async function loadServerBundle(
       )
     : Promise.resolve<SubsonicSong[]>([]);
 
-  const [starred, newest, random, frequent, recent, artists, randomSongs] = await Promise.all([
+  const [starred, random, frequent, artists, randomSongs] = await Promise.all([
     albums('starred', albumQuota),
-    albums('newest', albumQuota),
     albums('random', randomQuota),
     albums('frequent', albumQuota),
-    albums('recent', albumQuota),
     showArtists && artistQuota > 0
       ? withinHomeDeadline(
           isolated(() => deps.getArtistsForServer(serverId, HOME_REQUEST_TIMEOUT_MS), []),
@@ -234,10 +245,8 @@ async function loadServerBundle(
   return {
     serverId,
     starred: stamp(starred),
-    newest: stamp(newest),
     random: stamp(random),
     frequent: stamp(frequent),
-    recent: stamp(recent),
     artists: stamp(artists),
     songs: stamp(randomSongs),
   };
@@ -249,33 +258,50 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
   const randomQuotas = allocateHomeQuotas(options.randomSize, options.serverIds.length);
   const artistQuotas = allocateHomeQuotas(HOME_DISCOVER_ARTISTS_SIZE, options.serverIds.length);
   const songQuotas = allocateHomeQuotas(HOME_DISCOVER_SONGS_SIZE, options.serverIds.length);
-  const bundles = await Promise.all(options.serverIds.map((serverId, index) => loadServerBundle(
-    serverId,
-    albumQuotas[index] ?? 0,
-    randomQuotas[index] ?? 0,
-    artistQuotas[index] ?? 0,
-    songQuotas[index] ?? 0,
-    options.showArtists,
-    options.showSongs,
-    deps,
-  )));
+  const localAlbums = (feed: 'newReleases' | 'recentlyPlayed') => withinHomeDeadline(
+    isolated(
+      () => deps.libraryScopeListMainstageAlbums(options.anchorServerId, {
+        scopes: options.scopes,
+        feed,
+        limit: HOME_PAGE_SIZE,
+        offset: 0,
+      }),
+      { albums: [], hasMore: false },
+    ),
+    { albums: [], hasMore: false },
+  );
+  const [bundles, newReleases, recentlyPlayed] = await Promise.all([
+    Promise.all(options.serverIds.map((serverId, index) => loadServerBundle(
+      serverId,
+      albumQuotas[index] ?? 0,
+      randomQuotas[index] ?? 0,
+      artistQuotas[index] ?? 0,
+      songQuotas[index] ?? 0,
+      options.showArtists,
+      options.showSongs,
+      deps,
+    ))),
+    localAlbums('newReleases'),
+    localAlbums('recentlyPlayed'),
+  ]);
 
   let offsets = createOffsets(options.serverIds);
-  const advanceInitial = (section: HomeAlbumSection, groups: OwnedAlbum[][]) => {
+  const advanceInitial = (section: PerServerHomeAlbumSection, groups: OwnedAlbum[][]) => {
     offsets = advanceHomeOffsets(offsets, section, Object.fromEntries(
       options.serverIds.map((serverId, index) => [serverId, groups[index]?.length ?? 0]),
     ));
   };
   const starredGroups = bundles.map(bundle => bundle.starred);
-  const recentGroups = bundles.map(bundle => bundle.newest);
   const randomGroups = bundles.map(bundle => bundle.random);
   const mostPlayedGroups = bundles.map(bundle => bundle.frequent);
-  const recentlyPlayedGroups = bundles.map(bundle => bundle.recent);
   advanceInitial('starred', starredGroups);
-  advanceInitial('recent', recentGroups);
   advanceInitial('random', randomGroups);
   advanceInitial('mostPlayed', mostPlayedGroups);
-  advanceInitial('recentlyPlayed', recentlyPlayedGroups);
+  offsets.recent = { offset: newReleases.albums.length, hasMore: newReleases.hasMore };
+  offsets.recentlyPlayed = {
+    offset: recentlyPlayed.albums.length,
+    hasMore: recentlyPlayed.hasMore,
+  };
 
   const randomRaw = dedupeOwned(stableRoundRobin(randomGroups, options.randomSize));
   const filteredRandom = dedupeOwned(await deps.filterAlbumsByMixRatingsAcrossServers(
@@ -293,11 +319,11 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
     savedAt: Date.now(),
     offsets,
     starred: dedupeOwned(stableRoundRobin(starredGroups, HOME_PAGE_SIZE)),
-    recent: dedupeOwned(stableRoundRobin(recentGroups, HOME_PAGE_SIZE)),
+    recent: newReleases.albums.map(albumToAlbum),
     heroAlbums: filteredRandom.slice(0, HOME_HERO_COUNT),
     random: filteredRandom.slice(HOME_HERO_COUNT, HOME_DISCOVER_SLICE),
     mostPlayed: dedupeOwned(stableRoundRobin(mostPlayedGroups, HOME_PAGE_SIZE)),
-    recentlyPlayed: dedupeOwned(stableRoundRobin(recentlyPlayedGroups, HOME_PAGE_SIZE)),
+    recentlyPlayed: recentlyPlayed.albums.map(albumToAlbum),
     randomArtists: artists,
     discoverSongs: dedupeOwned(stableRoundRobin(bundles.map(bundle => bundle.songs), HOME_DISCOVER_SONGS_SIZE)),
   };
@@ -305,7 +331,40 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
 
 export async function loadMoreHomeAlbums(options: LoadMoreHomeAlbumsOptions): Promise<HomeFeedSnapshot> {
   const deps = { ...defaultDeps, ...options.deps };
-  const serverIds = Object.keys(options.snapshot.offsets[options.section]);
+  if (options.section === 'recent' || options.section === 'recentlyPlayed') {
+    const section = options.section;
+    const cursor = options.snapshot.offsets[section];
+    if (!cursor.hasMore) return options.snapshot;
+    const response = await withinHomeDeadline(
+      isolated(
+        () => deps.libraryScopeListMainstageAlbums(options.anchorServerId, {
+          scopes: options.scopes,
+          feed: mainstageFeeds[section],
+          limit: HOME_PAGE_SIZE,
+          offset: cursor.offset,
+        }),
+        { albums: [], hasMore: false },
+      ),
+      { albums: [], hasMore: false },
+    );
+    return {
+      ...options.snapshot,
+      savedAt: Date.now(),
+      offsets: {
+        ...options.snapshot.offsets,
+        [section]: {
+          offset: cursor.offset + response.albums.length,
+          hasMore: response.hasMore,
+        },
+      },
+      [section]: [
+        ...options.snapshot[section],
+        ...response.albums.map(albumToAlbum),
+      ],
+    };
+  }
+  const section = options.section as PerServerHomeAlbumSection;
+  const serverIds = Object.keys(options.snapshot.offsets[section]);
   const quotas = allocateHomeQuotas(HOME_PAGE_SIZE, serverIds.length);
   const groups = await Promise.all(serverIds.map((serverId, index) => {
     const quota = quotas[index] ?? 0;
@@ -314,9 +373,9 @@ export async function loadMoreHomeAlbums(options: LoadMoreHomeAlbumsOptions): Pr
       isolated(
         () => deps.getAlbumListForServer(
           serverId,
-          albumTypes[options.section],
+          albumTypes[section],
           quota,
-          options.snapshot.offsets[options.section][serverId] ?? 0,
+          options.snapshot.offsets[section][serverId] ?? 0,
           {},
           HOME_REQUEST_TIMEOUT_MS,
         ).then(items => items.map(item => ({ ...item, serverId }))),
@@ -327,15 +386,15 @@ export async function loadMoreHomeAlbums(options: LoadMoreHomeAlbumsOptions): Pr
   }));
   const rawCounts = Object.fromEntries(serverIds.map((serverId, index) => [serverId, groups[index]?.length ?? 0]));
   let batch = stableRoundRobin(groups, HOME_PAGE_SIZE);
-  if (options.section === 'random') {
+  if (section === 'random') {
     batch = await deps.filterAlbumsByMixRatingsAcrossServers(batch, options.mixConfig);
   }
-  const current = options.snapshot[options.section];
+  const current = options.snapshot[section];
   const merged = dedupeOwned([...current, ...batch]);
   return {
     ...options.snapshot,
     savedAt: Date.now(),
-    offsets: advanceHomeOffsets(options.snapshot.offsets, options.section, rawCounts),
-    [options.section]: merged,
+    offsets: advanceHomeOffsets(options.snapshot.offsets, section, rawCounts),
+    [section]: merged,
   };
 }

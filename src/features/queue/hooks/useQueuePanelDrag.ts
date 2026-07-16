@@ -91,7 +91,10 @@ export function useQueuePanelDrag({
         if (!serverId) return;
         const albumData = await resolveAlbum(serverId, parsedData.id as string);
         if (!albumData) return;
-        enqueueAt(albumData.songs.map(songToTrack), insertIdx);
+        enqueueAt(
+          albumData.songs.map(song => ({ ...songToTrack(song), serverId })),
+          insertIdx,
+        );
       }
     };
 

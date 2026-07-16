@@ -31,12 +31,17 @@ import { useOfflineBrowseContext } from '@/features/offline';
 import { useOfflineBrowseReloadToken } from '@/features/offline';
 import { useDevOfflineBrowseStore } from '@/features/offline';
 import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import {
   deriveHomeFeedScope,
   loadHomeFeed,
   loadMoreHomeAlbums,
   type HomeAlbumSection,
 } from '@/features/home/pages/homeFeedLoader';
+import {
+  groupHomeCoverPrefetchBuckets,
+  shouldOfferHomeLoadMore,
+} from '@/features/home/pages/homeCoverPrefetch';
 
 /** Match Random Albums overshoot when mix filter uses album/artist axes so hero + discover row can still fill. */
 const HOME_RANDOM_FETCH = 100;
@@ -68,6 +73,7 @@ export default function Home() {
   const activeServerId = useAuthStore(s => s.activeServerId);
   const servers = useAuthStore(s => s.servers);
   const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const musicFoldersByServer = useAuthStore(s => s.musicFoldersByServer);
   const libraryBrowseSelectionByServer = useAuthStore(s => s.libraryBrowseSelectionByServer);
   const scopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const { serverIds, scopeKey } = useMemo(() => deriveHomeFeedScope({
@@ -76,6 +82,12 @@ export default function Home() {
     libraryBrowseServerIds,
     libraryBrowseSelectionByServer,
   }), [activeServerId, libraryBrowseSelectionByServer, libraryBrowseServerIds, servers]);
+  const { anchorServerId, pairs: scopes } = useMemo(
+    () => getLibraryBrowseScope(),
+    // The injected browse-scope source reads these store values outside React.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeServerId, libraryBrowseSelectionByServer, libraryBrowseServerIds, musicFoldersByServer, servers],
+  );
   const connStatus = useConnectionStatus().status;
   const devForceOffline = useDevOfflineBrowseStore(s => s.forceOffline);
   const offlineBrowseActive = useOfflineBrowseContext().active;
@@ -91,6 +103,10 @@ export default function Home() {
   const [recentlyPlayed, setRecentlyPlayed] = useState<SubsonicAlbum[]>(initialFeed?.recentlyPlayed ?? []);
   const [randomArtists, setRandomArtists] = useState<SubsonicArtist[]>(initialFeed?.randomArtists ?? []);
   const [discoverSongs, setDiscoverSongs] = useState<SubsonicSong[]>(initialFeed?.discoverSongs ?? []);
+  const [recentHasMore, setRecentHasMore] = useState(initialFeed?.offsets.recent.hasMore ?? false);
+  const [recentlyPlayedHasMore, setRecentlyPlayedHasMore] = useState(
+    initialFeed?.offsets.recentlyPlayed.hasMore ?? false,
+  );
   const [loading, setLoading] = useState(initialFeed == null);
   const displayedSnapshotRef = useRef<HomeFeedSnapshot | null>(initialFeed);
 
@@ -104,6 +120,8 @@ export default function Home() {
     setRecentlyPlayed(snap.recentlyPlayed);
     setRandomArtists(snap.randomArtists);
     setDiscoverSongs(snap.discoverSongs);
+    setRecentHasMore(snap.offsets.recent.hasMore);
+    setRecentlyPlayedHasMore(snap.offsets.recentlyPlayed.hasMore);
   };
 
   useEffect(() => {
@@ -111,7 +129,7 @@ export default function Home() {
   });
 
   useLibraryCoverPrefetch(
-    [
+    groupHomeCoverPrefetchBuckets([
       { albums: heroAlbums, priority: 'high' },
       { albums: recent, priority: 'high' },
       {
@@ -121,12 +139,12 @@ export default function Home() {
         priority: 'low',
       },
       { songs: discoverSongs, limit: 16, priority: 'middle' },
-    ],
-    [heroAlbums, recent, random, mostPlayed, recentlyPlayed, starred, randomArtists, discoverSongs],
+    ]),
+    [heroAlbums, recent, random, mostPlayed, recentlyPlayed, starred, randomArtists, discoverSongs, servers],
   );
 
   useEffect(() => {
-    if (serverIds.length === 0 || !scopeKey) return;
+    if (serverIds.length === 0 || !scopeKey || !anchorServerId) return;
     let cancelled = false;
     const fetchFreshHomeFeed = async (): Promise<HomeFeedSnapshot | null> => {
       const mixCfg = getMixMinRatingsConfigFromAuth();
@@ -136,6 +154,8 @@ export default function Home() {
       return loadHomeFeed({
         serverIds,
         scopeKey,
+        anchorServerId,
+        scopes,
         scopeVersion,
         randomSize,
         showArtists: isVisible('discoverArtists'),
@@ -210,6 +230,8 @@ export default function Home() {
   }, [
     scopeKey,
     scopeVersion,
+    anchorServerId,
+    scopes,
     homeSections,
     offlineBrowseActive,
     offlineBrowseReloadTs,
@@ -229,11 +251,13 @@ export default function Home() {
 
   const loadMore = async (section: HomeAlbumSection) => {
     const current = displayedSnapshotRef.current;
-    if (!current) return;
+    if (!current || !anchorServerId) return;
     try {
       const next = await loadMoreHomeAlbums({
         snapshot: current,
         section,
+        anchorServerId,
+        scopes,
         mixConfig: getMixMinRatingsConfigFromAuth(),
         deps: { filterAlbumsByMixRatingsAcrossServers },
       });
@@ -359,7 +383,7 @@ export default function Home() {
                 title={t('sidebar.newReleases')}
                 titleLink="/new-releases"
                 albums={recent}
-                onLoadMore={() => loadMore('recent')}
+                onLoadMore={shouldOfferHomeLoadMore(recentHasMore) ? () => loadMore('recent') : undefined}
                 moreText={t('home.loadMore')}
                 disableArtwork={!recentArtworkEnabled}
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
@@ -431,7 +455,9 @@ export default function Home() {
               <AlbumRow
                 title={t('home.recentlyPlayed')}
                 albums={recentlyPlayed}
-                onLoadMore={() => loadMore('recentlyPlayed')}
+                onLoadMore={shouldOfferHomeLoadMore(recentlyPlayedHasMore)
+                  ? () => loadMore('recentlyPlayed')
+                  : undefined}
                 moreText={t('home.loadMore')}
                 disableArtwork={!recentlyPlayedArtworkEnabled}
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}

@@ -5,6 +5,7 @@ import {
   libraryScopeArtistDetail,
   libraryScopeListAlbums,
   libraryScopeListArtists,
+  libraryScopeListMainstageAlbums,
   libraryScopeSearchTracks,
   type LibraryScopePair,
 } from './scopeReads';
@@ -66,6 +67,46 @@ describe('libraryScopeListArtists', () => {
         ],
       },
     });
+  });
+});
+
+describe('libraryScopeListMainstageAlbums', () => {
+  it('maps scope and response server ids without changing album order', async () => {
+    let captured: unknown;
+    onInvoke('library_scope_list_mainstage_albums', (args) => {
+      captured = args;
+      return {
+        albums: [
+          { serverId: 's1.example', id: 'new-2', name: 'Second', syncedAt: 0, rawJson: {} },
+          { serverId: 's1.example', id: 'new-1', name: 'First', syncedAt: 0, rawJson: {} },
+        ],
+        hasMore: true,
+      };
+    });
+
+    const response = await libraryScopeListMainstageAlbums('profile-s1', {
+      scopes,
+      feed: 'newReleases',
+      limit: 12,
+      offset: 24,
+    });
+
+    expect(captured).toEqual({
+      request: {
+        scopes: [
+          { serverId: 's1.example', libraryId: 'lib-a' },
+          { serverId: 's1.example', libraryId: 'lib-b' },
+        ],
+        feed: 'newReleases',
+        limit: 12,
+        offset: 24,
+      },
+    });
+    expect(response.hasMore).toBe(true);
+    expect(response.albums.map(album => [album.serverId, album.id])).toEqual([
+      ['profile-s1', 'new-2'],
+      ['profile-s1', 'new-1'],
+    ]);
   });
 });
 

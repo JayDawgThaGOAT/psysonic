@@ -25,6 +25,7 @@ function coverRefsEqual(a: CoverArtRef, b: CoverArtRef): boolean {
     a.cacheKind === b.cacheKind
     && a.cacheEntityId === b.cacheEntityId
     && a.fetchCoverArtId === b.fetchCoverArtId
+    && coverScopeKey(a.serverScope) === coverScopeKey(b.serverScope)
   );
 }
 
@@ -232,8 +233,11 @@ export function useTrackCoverRef(
     return albumCoverRefForSong(
       { id: songId, albumId, coverArt, discNumber },
       distinctDiscCovers,
+      serverScope,
     );
-  }, [songId, albumId, coverArt, discNumber, distinctDiscCovers]);
+    // `serverScope` is keyed via stable `scopeKey`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [songId, albumId, coverArt, discNumber, distinctDiscCovers, scopeKey]);
 
   const [ref, setRef] = useState<CoverArtRef | undefined>(syncRef);
 

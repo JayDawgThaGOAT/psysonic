@@ -754,6 +754,32 @@ pub struct LibraryScopeListRequest {
     pub offset: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LibraryMainstageAlbumFeed {
+    NewReleases,
+    RecentlyPlayed,
+}
+
+/// Chronological album feed over one ordered multi-server library scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMainstageAlbumsRequest {
+    pub scopes: Vec<LibraryScopePair>,
+    pub feed: LibraryMainstageAlbumFeed,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMainstageAlbumsResponse {
+    pub albums: Vec<LibraryAlbumDto>,
+    pub has_more: bool,
+}
+
 /// FTS track search over an ordered multi-library scope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

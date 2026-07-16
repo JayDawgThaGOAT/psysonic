@@ -11,7 +11,11 @@ function write(scopeKey: string, scopeVersion: number) {
     scopeKey,
     scopeVersion,
     offsets: {
-      starred: {}, recent: {}, random: {}, mostPlayed: {}, recentlyPlayed: {},
+      starred: {},
+      recent: { offset: 0, hasMore: false },
+      random: {},
+      mostPlayed: {},
+      recentlyPlayed: { offset: 0, hasMore: false },
     },
     starred: [], recent: [], random: [], heroAlbums: [], mostPlayed: [],
     recentlyPlayed: [], randomArtists: [], discoverSongs: [],

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
+import type { LibraryAlbumDto } from '@/lib/api/library/dto';
 import type { HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
 import {
   HOME_REQUEST_TIMEOUT_MS,
@@ -18,13 +19,17 @@ function album(serverId: string, id: string): SubsonicAlbum {
   return { id, name: id, artist: 'Artist', artistId: 'artist', songCount: 1, duration: 1, serverId };
 }
 
+function albumDto(serverId: string, id: string): LibraryAlbumDto {
+  return { serverId, id, name: id, syncedAt: 1, rawJson: {} };
+}
+
 function snapshot(): HomeFeedSnapshot {
   const offsets = {
     starred: { a: 2, b: 3 },
-    recent: { a: 2, b: 3 },
+    recent: { offset: 5, hasMore: true },
     random: { a: 2, b: 3 },
     mostPlayed: { a: 2, b: 3 },
-    recentlyPlayed: { a: 2, b: 3 },
+    recentlyPlayed: { offset: 5, hasMore: true },
   };
   return {
     scopeKey: 'scope', scopeVersion: 1, savedAt: 1, offsets,
@@ -61,9 +66,9 @@ describe('homeFeedLoader pure helpers', () => {
 
   it('advances only the requested cursor by raw row counts', () => {
     const before = snapshot().offsets;
-    const after = advanceHomeOffsets(before, 'recent', { a: 4, b: 1 });
-    expect(after.recent).toEqual({ a: 6, b: 4 });
-    expect(after.starred).toBe(before.starred);
+    const after = advanceHomeOffsets(before, 'starred', { a: 4, b: 1 });
+    expect(after.starred).toEqual({ a: 6, b: 4 });
+    expect(after.recent).toBe(before.recent);
   });
 
   it('returns the fallback when work exceeds the Home deadline', async () => {
@@ -77,7 +82,7 @@ describe('homeFeedLoader pure helpers', () => {
 });
 
 describe('homeFeedLoader failure isolation', () => {
-  it('keeps successful servers and passes the 4000ms endpoint timeout', async () => {
+  it('never requests newest/recent from servers and preserves local chronological order', async () => {
     const getAlbumListForServer = vi.fn(async (
       serverId: string,
       type: string,
@@ -86,14 +91,22 @@ describe('homeFeedLoader failure isolation', () => {
       _extra: Record<string, unknown>,
       _timeout: number,
     ) => {
-      if (serverId === 'a' && type === 'newest') throw new Error('endpoint failed');
       return Array.from({ length: size }, (_, index) => album(serverId, `${type}-${index}`));
     });
+    const libraryScopeListMainstageAlbums = vi.fn(async (_serverId, request) => ({
+      albums: request.feed === 'newReleases'
+        ? [albumDto('b', 'new-3'), albumDto('a', 'new-2'), albumDto('b', 'new-1')]
+        : [albumDto('a', 'played-3'), albumDto('b', 'played-2')],
+      hasMore: true,
+    }));
     const result = await loadHomeFeed({
       serverIds: ['a', 'b'], scopeKey: 'scope', scopeVersion: 7, randomSize: 20,
+      anchorServerId: 'a',
+      scopes: [{ serverId: 'a', libraryId: 'lib-a' }, { serverId: 'b', libraryId: 'lib-b' }],
       showArtists: false, showSongs: false, mixConfig,
       deps: {
         getAlbumListForServer: getAlbumListForServer as never,
+        libraryScopeListMainstageAlbums,
         getArtistsForServer: vi.fn(async () => []),
         getRandomSongsForServer: vi.fn(async () => []),
         runLocalRandomSongs: vi.fn(async () => null),
@@ -101,9 +114,40 @@ describe('homeFeedLoader failure isolation', () => {
         shuffle: items => items,
       },
     });
-    expect(result.recent.every(item => item.serverId === 'b')).toBe(true);
+    expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('newest');
+    expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('recent');
+    expect(result.recent.map(item => `${item.serverId}:${item.id}`))
+      .toEqual(['b:new-3', 'a:new-2', 'b:new-1']);
+    expect(result.recentlyPlayed.map(item => `${item.serverId}:${item.id}`))
+      .toEqual(['a:played-3', 'b:played-2']);
+    expect(result.offsets.recent).toEqual({ offset: 3, hasMore: true });
+    expect(result.offsets.recentlyPlayed).toEqual({ offset: 2, hasMore: true });
     expect(result.starred.some(item => item.serverId === 'a')).toBe(true);
     expect(getAlbumListForServer.mock.calls.every(call => call[5] === HOME_REQUEST_TIMEOUT_MS)).toBe(true);
+  });
+
+  it('treats local errors as authoritative empty without network fallback', async () => {
+    const getAlbumListForServer = vi.fn(async (_serverId: string, _type: string) => []);
+    const result = await loadHomeFeed({
+      serverIds: ['a'], scopeKey: 'scope', scopeVersion: 1, randomSize: 0,
+      anchorServerId: 'a', scopes: [{ serverId: 'a', libraryId: 'lib-a' }],
+      showArtists: false, showSongs: false, mixConfig,
+      deps: {
+        getAlbumListForServer: getAlbumListForServer as never,
+        libraryScopeListMainstageAlbums: vi.fn(async () => { throw new Error('local failed'); }),
+        getArtistsForServer: vi.fn(async () => []),
+        getRandomSongsForServer: vi.fn(async () => []),
+        runLocalRandomSongs: vi.fn(async () => null),
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+        shuffle: items => items,
+      },
+    });
+    expect(result.recent).toEqual([]);
+    expect(result.recentlyPlayed).toEqual([]);
+    expect(result.offsets.recent).toEqual({ offset: 0, hasMore: false });
+    expect(result.offsets.recentlyPlayed).toEqual({ offset: 0, hasMore: false });
+    expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('newest');
+    expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('recent');
   });
 
   it('uses per-server offsets, dedupes owner-qualified ids, and advances raw cursors', async () => {
@@ -121,6 +165,7 @@ describe('homeFeedLoader failure isolation', () => {
     ));
     const result = await loadMoreHomeAlbums({
       snapshot: snapshot(), section: 'starred', mixConfig,
+      anchorServerId: 'a', scopes: [],
       deps: {
         getAlbumListForServer: getAlbumListForServer as never,
         filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
@@ -131,5 +176,32 @@ describe('homeFeedLoader failure isolation', () => {
     expect(result.starred.map(item => `${item.serverId}:${item.id}`))
       .toEqual(['a:existing', 'b:existing', 'a:new-a']);
     expect(result.offsets.starred).toEqual({ a: 4, b: 4 });
+  });
+
+  it('uses one global local offset for chronological pagination and never falls back', async () => {
+    const getAlbumListForServer = vi.fn(async () => []);
+    const libraryScopeListMainstageAlbums = vi.fn(async () => ({
+      albums: [albumDto('b', 'next-2'), albumDto('a', 'next-1')],
+      hasMore: false,
+    }));
+    const result = await loadMoreHomeAlbums({
+      snapshot: snapshot(), section: 'recent', mixConfig,
+      anchorServerId: 'a', scopes: [{ serverId: 'a', libraryId: 'lib-a' }],
+      deps: {
+        getAlbumListForServer: getAlbumListForServer as never,
+        libraryScopeListMainstageAlbums,
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+      },
+    });
+    expect(libraryScopeListMainstageAlbums).toHaveBeenCalledWith('a', {
+      scopes: [{ serverId: 'a', libraryId: 'lib-a' }],
+      feed: 'newReleases',
+      limit: 12,
+      offset: 5,
+    });
+    expect(getAlbumListForServer).not.toHaveBeenCalled();
+    expect(result.recent.map(item => `${item.serverId}:${item.id}`))
+      .toEqual(['b:next-2', 'a:next-1']);
+    expect(result.offsets.recent).toEqual({ offset: 7, hasMore: false });
   });
 });

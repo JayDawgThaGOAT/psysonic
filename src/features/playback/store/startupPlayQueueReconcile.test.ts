@@ -13,7 +13,8 @@ vi.mock('@/lib/api/subsonicPlayQueue', () => ({
   fetchPlayQueueForServer: fetchPlayQueueForServerMock,
 }));
 
-vi.mock('@/features/playback/store/applyServerPlayQueue', () => ({
+vi.mock('@/features/playback/store/applyServerPlayQueue', async importOriginal => ({
+  ...await importOriginal<typeof import('@/features/playback/store/applyServerPlayQueue')>(),
   applyMappedQueue: applyMappedQueueMock,
 }));
 
@@ -67,6 +68,26 @@ describe('reconcileStartupPlayQueues', () => {
     fetchPlayQueueForServerMock.mockImplementation(async (serverId: string) => (
       serverId === 'a' ? remote(['a1', 'a3'], 'a1') : remote(['b1'], 'b1')
     ));
+    await expect(reconcileStartupPlayQueues()).resolves.toBe('applied');
+    expect(applyMappedQueueMock).not.toHaveBeenCalled();
+    expect(usePlayerStore.getState().queueItems).toEqual([
+      { serverId: 'a.test', trackId: 'a1' },
+      { serverId: 'b', trackId: 'b1' },
+      { serverId: 'a.test', trackId: 'a3' },
+    ]);
+    expect(usePlayerStore.getState().queueIndex).toBe(1);
+    expect(usePlayerStore.getState().currentTrack?.id).toBe('b1');
+  });
+
+  it('keeps the existing whole-queue apply behavior for a single-server queue', async () => {
+    useAuthStore.setState({ libraryBrowseServerIds: ['a'] });
+    usePlayerStore.setState({
+      queueItems: [{ serverId: 'a', trackId: 'a1' }, { serverId: 'a', trackId: 'a2' }],
+      queueIndex: 0,
+      currentTrack: { id: 'a1', title: 'a1', artist: 'Artist', album: 'Album', albumId: 'album', duration: 100, serverId: 'a' },
+    });
+    fetchPlayQueueForServerMock.mockResolvedValue(remote(['a1', 'a3'], 'a1'));
+
     await expect(reconcileStartupPlayQueues()).resolves.toBe('applied');
     expect(applyMappedQueueMock).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ id: 'a3' })]),

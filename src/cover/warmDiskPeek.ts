@@ -25,8 +25,13 @@ export function coverWarmItem(
   fetchCoverArtId: string,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
+  serverId?: string,
 ): CoverWarmItem {
-  const ref = albumCoverRef(albumId, fetchCoverArtId);
+  const ref = albumCoverRef(
+    albumId,
+    fetchCoverArtId,
+    coverServerScopeForServerId(serverId),
+  );
   const tier = resolveCoverDisplayTier(displayCssPx, { surface });
   return {
     ref,
@@ -40,8 +45,13 @@ export async function coverWarmItemFromLibrary(
   fetchCoverArtId: string,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
+  serverId?: string,
 ): Promise<CoverWarmItem> {
-  const ref = await resolveAlbumCoverRefFromLibrary(albumId, fetchCoverArtId);
+  const ref = await resolveAlbumCoverRefFromLibrary(
+    albumId,
+    fetchCoverArtId,
+    coverServerScopeForServerId(serverId),
+  );
   const tier = resolveCoverDisplayTier(displayCssPx, { surface });
   return {
     ref,
@@ -51,7 +61,7 @@ export async function coverWarmItemFromLibrary(
 }
 
 export function collectAlbumCoverWarmItems(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
   limit = 96,
@@ -62,13 +72,13 @@ export function collectAlbumCoverWarmItems(
     const entityId = a.id ?? a.coverArt;
     if (!entityId) continue;
     // Grid warm/peek uses API coverArt ids — avoids N sequential library_resolve IPC.
-    out.push(coverWarmItem(entityId, a.coverArt ?? entityId, displayCssPx, surface));
+    out.push(coverWarmItem(entityId, a.coverArt ?? entityId, displayCssPx, surface, a.serverId));
   }
   return out;
 }
 
 export async function collectSongCoverWarmItems(
-  songs: ReadonlyArray<{ albumId?: string; coverArt?: string | null }>,
+  songs: ReadonlyArray<{ albumId?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
   limit = 96,
@@ -77,7 +87,13 @@ export async function collectSongCoverWarmItems(
   for (const s of songs) {
     if (!s.albumId || out.length >= limit) break;
     out.push(
-      await coverWarmItemFromLibrary(s.albumId, s.albumId, displayCssPx, surface),
+      await coverWarmItemFromLibrary(
+        s.albumId,
+        s.coverArt ?? s.albumId,
+        displayCssPx,
+        surface,
+        s.serverId,
+      ),
     );
   }
   return out;
@@ -158,7 +174,7 @@ export async function warmCoverDiskSrcBatch(items: CoverWarmItem[]): Promise<num
 
 /** High-priority ensure for albums still missing disk `src` after peek. */
 export async function ensureAlbumCoverMisses(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   opts?: { surface?: CoverSurfaceKind; limit?: number },
 ): Promise<void> {
@@ -172,7 +188,11 @@ export async function ensureAlbumCoverMisses(
     const entityId = album.id ?? album.coverArt;
     if (!entityId) continue;
     const coverArt = album.coverArt ?? entityId;
-    const ref = albumCoverRef(entityId, coverArt);
+    const ref = albumCoverRef(
+      entityId,
+      coverArt,
+      coverServerScopeForServerId(album.serverId),
+    );
     if (!getDiskSrcForGrid(ref, tier)) {
       needEnsure.push({ ref });
     }
@@ -198,7 +218,7 @@ export async function ensureAlbumCoverMisses(
  * Peek + high-priority ensure so cards paint with `src` on first frame.
  */
 export async function primeAlbumCoversForDisplay(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   opts?: { surface?: CoverSurfaceKind; limit?: number; disabled?: boolean },
 ): Promise<void> {
@@ -230,7 +250,7 @@ export async function warmHomeMainstageCovers(snapshot: {
   mostPlayed: SubsonicAlbum[];
   recentlyPlayed: SubsonicAlbum[];
   starred: SubsonicAlbum[];
-  discoverSongs?: Array<{ albumId?: string; coverArt?: string | null }>;
+  discoverSongs?: Array<{ albumId?: string; coverArt?: string | null; serverId?: string }>;
 }): Promise<void> {
   const items = dedupeWarmItems([
     ...collectAlbumCoverWarmItems(snapshot.heroAlbums, 220, 'dense', 12),
@@ -249,7 +269,11 @@ export async function warmHomeMainstageCovers(snapshot: {
     ensureAlbumCoverMisses(snapshot.recent, 300, { surface: 'dense', limit: 14 }),
     ensureAlbumCoverMisses(snapshot.random, 300, { surface: 'dense', limit: 10 }),
     ensureAlbumCoverMisses(
-      discoverSongsForEnsure.filter(s => s.albumId).map(s => ({ id: s.albumId!, coverArt: s.coverArt })),
+      discoverSongsForEnsure.filter(s => s.albumId).map(s => ({
+        id: s.albumId!,
+        coverArt: s.coverArt,
+        serverId: s.serverId,
+      })),
       200,
       { surface: 'dense', limit: 12 },
     ),
@@ -259,7 +283,11 @@ export async function warmHomeMainstageCovers(snapshot: {
   void predecodeWarmAlbums(snapshot.recent, 300, 10);
   void predecodeWarmAlbums(snapshot.random, 300, 8);
   void predecodeWarmAlbums(
-    discoverSongsForEnsure.filter(s => s.albumId).map(s => ({ id: s.albumId!, coverArt: s.coverArt })),
+    discoverSongsForEnsure.filter(s => s.albumId).map(s => ({
+      id: s.albumId!,
+      coverArt: s.coverArt,
+      serverId: s.serverId,
+    })),
     200,
     8,
   );
@@ -333,7 +361,8 @@ async function predecodeHeroBackdrops(heroAlbums: ReadonlyArray<SubsonicAlbum>):
   if (typeof window === 'undefined') return;
   const urls: string[] = [];
   for (const album of heroAlbums) {
-    const mem = getHeroBackdropUpgrade(album.id);
+    const albumKey = album.serverId ? `${album.serverId}:${album.id}` : album.id;
+    const mem = getHeroBackdropUpgrade(albumKey);
     const url = mem?.banner ?? mem?.fanart;
     if (url) urls.push(url);
   }
@@ -360,7 +389,7 @@ function decodeImage(src: string): Promise<void> {
 }
 
 async function predecodeWarmAlbums(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   limit: number,
 ): Promise<void> {
@@ -371,7 +400,11 @@ async function predecodeWarmAlbums(
     if (!album.coverArt || urls.length >= limit) continue;
     const entityId = album.id ?? album.coverArt;
     if (!entityId) continue;
-    const ref = albumCoverRef(entityId, album.coverArt);
+    const ref = albumCoverRef(
+      entityId,
+      album.coverArt,
+      coverServerScopeForServerId(album.serverId),
+    );
     const src = getDiskSrcForGrid(ref, tier);
     if (!src) continue;
     urls.push(src);

@@ -23,6 +23,7 @@ use crate::dto::{
     count_local_tracks, local_tracks_max_updated_ms, track_index_nonempty, ArtifactInputDto,
     FactInputDto, LibraryAdvancedSearchRequest, LibraryAdvancedSearchResponse,
     LibraryCrossServerSearchResponse, LibraryLiveSearchRequest, LibraryLiveSearchResponse,
+    LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse,
     LibraryScopeAlbumDetailRequest, LibraryScopeAlbumDetailResponse, LibraryScopeArtistDetailRequest,
     LibraryScopeArtistDetailResponse, LibraryScopeListRequest, LibraryScopeSearchRequest,
     LibraryTrackDto,
@@ -694,6 +695,17 @@ pub async fn library_scope_list_albums(
 ) -> Result<Vec<crate::dto::LibraryAlbumDto>, String> {
     let store = Arc::clone(&runtime.store);
     library_spawn_blocking(move || scope_merge::list_albums(&store, &request)).await
+}
+
+// NOT specta-collected: returns LibraryAlbumDto carrying raw_json: Value.
+#[tauri::command]
+pub async fn library_scope_list_mainstage_albums(
+    runtime: State<'_, LibraryRuntime>,
+    request: LibraryMainstageAlbumsRequest,
+) -> Result<LibraryMainstageAlbumsResponse, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::mainstage_browse::list_mainstage_albums(&store, &request))
+        .await
 }
 
 // NOT specta-collected: returns a DTO carrying `raw_json: Value` (LibraryTrack/Album/ArtistDto) — specta rc.25 can't export serde_json::Value. Stays hand-written on generate_handler!.

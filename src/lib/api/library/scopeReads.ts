@@ -31,6 +31,18 @@ export interface LibraryScopeSearchRequest {
   limit?: number;
 }
 
+export interface LibraryScopeMainstageAlbumsRequest {
+  scopes: LibraryScopePair[];
+  feed: 'newReleases' | 'recentlyPlayed';
+  limit: number;
+  offset: number;
+}
+
+export interface LibraryScopeMainstageAlbumsResponse {
+  albums: LibraryAlbumDto[];
+  hasMore: boolean;
+}
+
 export interface LibraryScopeAlbumDetailRequest {
   scopes: LibraryScopePair[];
   albumId: string;
@@ -117,6 +129,21 @@ export function libraryScopeListArtists(
       scopes: mapScopePairs(request.scopes, serverId),
     },
   }).then(artists => mapArtistsServerId(artists, serverId));
+}
+
+export function libraryScopeListMainstageAlbums(
+  serverId: string,
+  request: LibraryScopeMainstageAlbumsRequest,
+): Promise<LibraryScopeMainstageAlbumsResponse> {
+  return invoke<LibraryScopeMainstageAlbumsResponse>('library_scope_list_mainstage_albums', {
+    request: {
+      ...request,
+      scopes: mapScopePairs(request.scopes, serverId),
+    },
+  }).then(response => ({
+    albums: mapAlbumsServerId(response.albums, serverId),
+    hasMore: response.hasMore,
+  }));
 }
 
 export function libraryScopeSearchTracks(

@@ -3,7 +3,10 @@ import { songToTrack } from '@/lib/media/songToTrack';
 import { profileIdFromQueueRef } from '@/lib/media/trackServerScope';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 import { useAuthStore } from '@/store/authStore';
-import { applyMappedQueue } from '@/features/playback/store/applyServerPlayQueue';
+import {
+  applyMappedQueue,
+  applyMappedQueueProjection,
+} from '@/features/playback/store/applyServerPlayQueue';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { filterQueueRefsForServerProfile } from '@/features/playback/utils/playback/trackServerScope';
 
@@ -108,6 +111,11 @@ export async function reconcileStartupPlayQueues(): Promise<StartupQueueReconcil
 
   if (changed.length !== 1 || changed[0].queue.songs.length === 0) return 'kept-local';
   const [{ serverId, queue }] = changed;
-  applyMappedQueue(queue.songs.map(songToTrack), queue, serverId, true, 0);
+  const mappedTracks = queue.songs.map(songToTrack);
+  if (representedServerIds.size > 1) {
+    applyMappedQueueProjection(mappedTracks, queue, serverId);
+  } else {
+    applyMappedQueue(mappedTracks, queue, serverId, true, 0);
+  }
   return 'applied';
 }
