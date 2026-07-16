@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
-import { isActiveServerReachable } from '@/lib/network/activeServerReachability';
+import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
+import { loadLocalNewReleases } from '@/lib/library/newReleasesLocal';
 import {
   NEW_RELEASES_RESET_DELAY_MS,
   NEW_RELEASES_SEEN_MAX_IDS,
@@ -11,15 +11,17 @@ import {
 } from '@/features/sidebar/utils/sidebarHelpers';
 
 interface Args {
-  serverId: string;
-  libraryScopeKey: string;
+  anchorServerId: string | null;
+  scopes: LibraryScopePair[];
+  scopeFingerprint: string;
   isLoggedIn: boolean;
   pathname: string;
 }
 
 export function useSidebarNewReleasesUnread({
-  serverId,
-  libraryScopeKey,
+  anchorServerId,
+  scopes,
+  scopeFingerprint,
   isLoggedIn,
   pathname,
 }: Args): number {
@@ -29,17 +31,13 @@ export function useSidebarNewReleasesUnread({
   const newReleasesResetTimerRef = useRef<number | null>(null);
 
   const scopedSeenStorageKey = useMemo(
-    () => buildNewReleasesSeenStorageKey(serverId, libraryScopeKey),
-    [serverId, libraryScopeKey],
-  );
-  const newReleasesSeenAllScopeStorageKey = useMemo(
-    () => buildNewReleasesSeenStorageKey(serverId, 'all'),
-    [serverId],
+    () => buildNewReleasesSeenStorageKey(scopeFingerprint),
+    [scopeFingerprint],
   );
 
-  const readSeenNewReleaseIdsByKey = useCallback((key: string): string[] => {
+  const readSeenNewReleaseIds = useCallback((): string[] => {
     try {
-      const raw = localStorage.getItem(key);
+      const raw = localStorage.getItem(scopedSeenStorageKey);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
@@ -47,46 +45,30 @@ export function useSidebarNewReleasesUnread({
     } catch {
       return [];
     }
-  }, []);
+  }, [scopedSeenStorageKey]);
 
-  const readSeenNewReleaseIds = useCallback(
-    () => readSeenNewReleaseIdsByKey(scopedSeenStorageKey),
-    [scopedSeenStorageKey, readSeenNewReleaseIdsByKey],
-  );
-
-  const writeSeenNewReleaseIdsByKey = useCallback((key: string, ids: string[]) => {
+  const writeSeenNewReleaseIds = useCallback((ids: string[]) => {
     const normalized = Array.from(new Set(ids.filter(Boolean))).slice(0, NEW_RELEASES_SEEN_MAX_IDS);
-    localStorage.setItem(key, JSON.stringify(normalized));
-  }, []);
-
-  const writeSeenNewReleaseIds = useCallback(
-    (ids: string[]) => writeSeenNewReleaseIdsByKey(scopedSeenStorageKey, ids),
-    [scopedSeenStorageKey, writeSeenNewReleaseIdsByKey],
-  );
+    localStorage.setItem(scopedSeenStorageKey, JSON.stringify(normalized));
+  }, [scopedSeenStorageKey]);
 
   const refreshNewReleasesUnread = useCallback(async (markAsSeen = false) => {
     const seq = ++newReleasesRefreshSeqRef.current;
     const isCurrent = () => seq === newReleasesRefreshSeqRef.current;
 
-    if (!isLoggedIn || !serverId || !isActiveServerReachable()) {
+    if (!isLoggedIn || !anchorServerId || scopes.length === 0) {
       if (isCurrent()) setNewReleasesUnreadCount(0);
       return;
     }
 
     try {
-      const newest = await getAlbumList('newest', NEW_RELEASES_UNREAD_SAMPLE_SIZE, 0);
-      const newestIds = newest.map(a => a.id).filter(Boolean);
-      let seenIds = readSeenNewReleaseIds();
-
-      // For a concrete library scope, bootstrap from the server-wide "all libraries"
-      // baseline when available, so switching scope doesn't hide existing unread.
-      if (seenIds.length === 0 && libraryScopeKey !== 'all') {
-        const allScopeSeen = readSeenNewReleaseIdsByKey(newReleasesSeenAllScopeStorageKey);
-        if (allScopeSeen.length > 0) {
-          seenIds = allScopeSeen;
-          writeSeenNewReleaseIdsByKey(scopedSeenStorageKey, allScopeSeen);
-        }
-      }
+      const newest = await loadLocalNewReleases(
+        anchorServerId,
+        scopes,
+        NEW_RELEASES_UNREAD_SAMPLE_SIZE,
+      );
+      const newestIds = newest.albums.map(a => a.id).filter(Boolean);
+      const seenIds = readSeenNewReleaseIds();
 
       if (seenIds.length === 0) {
         // First bootstrap for this server/scope: baseline is "already seen".
@@ -99,13 +81,6 @@ export function useSidebarNewReleasesUnread({
         // Prepend the live newest sample so a full `seenIds` list + slice(500)
         // cannot silently discard freshly "read" albums (fixes badge coming back).
         writeSeenNewReleaseIds(mergeSeenNewReleaseIdsCap(seenIds, newestIds, NEW_RELEASES_SEEN_MAX_IDS));
-        // Keep server-wide baseline in sync so scope fallback never resurrects
-        // already-viewed items after opening the New Releases page.
-        const allScopeSeen = readSeenNewReleaseIdsByKey(newReleasesSeenAllScopeStorageKey);
-        writeSeenNewReleaseIdsByKey(
-          newReleasesSeenAllScopeStorageKey,
-          mergeSeenNewReleaseIdsCap(allScopeSeen, newestIds, NEW_RELEASES_SEEN_MAX_IDS),
-        );
         if (isCurrent()) setNewReleasesUnreadCount(0);
         return;
       }
@@ -118,15 +93,11 @@ export function useSidebarNewReleasesUnread({
       // Keep previous value on transient network/API errors.
     }
   }, [
-    libraryScopeKey,
+    anchorServerId,
     isLoggedIn,
-    newReleasesSeenAllScopeStorageKey,
-    scopedSeenStorageKey,
     readSeenNewReleaseIds,
-    readSeenNewReleaseIdsByKey,
-    serverId,
+    scopes,
     writeSeenNewReleaseIds,
-    writeSeenNewReleaseIdsByKey,
   ]);
 
   useEffect(() => {

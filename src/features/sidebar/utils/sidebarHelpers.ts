@@ -1,18 +1,18 @@
 export const SIDEBAR_NAV_LONG_PRESS_MS = 1000;
 export const SIDEBAR_NAV_LONG_PRESS_MOVE_CANCEL_PX = 10;
 export const SMART_PREFIX = 'psy-smart-';
-export const NEW_RELEASES_UNREAD_STORAGE_PREFIX = 'psy_new_releases_unread_seen_v1';
+export const NEW_RELEASES_UNREAD_STORAGE_PREFIX = 'psy_new_releases_unread_seen_v2';
 export const NEW_RELEASES_UNREAD_SAMPLE_SIZE = 80;
 export const NEW_RELEASES_UNREAD_POLL_MS = 2 * 60 * 1000;
 export const NEW_RELEASES_RESET_DELAY_MS = 5_000;
-/** Max album ids persisted per server/scope; cap must not drop the latest "newest" batch when marking read. */
+/** Max album ids persisted per selected-library scope; cap keeps the newest batch. */
 export const NEW_RELEASES_SEEN_MAX_IDS = 500;
 
-export function newReleasesSeenStorageKey(serverId: string, libraryScopeKey: string): string {
-  return `${NEW_RELEASES_UNREAD_STORAGE_PREFIX}:${serverId || 'no-server'}:${libraryScopeKey || 'all'}`;
+export function newReleasesSeenStorageKey(scopeFingerprint: string): string {
+  return `${NEW_RELEASES_UNREAD_STORAGE_PREFIX}:${scopeFingerprint || 'empty'}`;
 }
 
-/** Merge previous seen IDs with the current `getAlbumList(newest)` sample: newest batch is kept in full first, then older seen until `maxIds` (localStorage budget). */
+/** Merge previous seen IDs with the current local chronological sample. */
 export function mergeSeenNewReleaseIdsCap(prevSeen: string[], newestBatch: string[], maxIds: number): string[] {
   const out: string[] = [];
   const seen = new Set<string>();

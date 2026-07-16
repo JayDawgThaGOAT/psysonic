@@ -1,6 +1,5 @@
-import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { getAlbumsByGenre } from '@/lib/api/subsonicGenres';
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
 import { resolveAlbum } from '@/features/offline';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { dedupeById } from '@/lib/util/dedupeById';
@@ -39,6 +38,8 @@ import { albumArtistDisplayName } from '@/features/album/utils/deriveAlbumHeader
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
 import { filterAlbumsByGenres } from '@/lib/library/albumBrowseFilters';
 import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
+import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { loadLocalNewReleases } from '@/lib/library/newReleasesLocal';
 
 const PAGE_SIZE = 30;
 
@@ -59,6 +60,21 @@ export default function NewReleases() {
   const auth = useAuthStore();
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
+  const { anchorServerId, pairs: releaseScopes, fingerprint: releaseScopeFingerprint } = useMemo(() => (
+    deriveLibraryBrowseScope({
+      servers: auth.servers,
+      activeServerId: auth.activeServerId,
+      libraryBrowseServerIds: auth.libraryBrowseServerIds,
+      musicFoldersByServer: auth.musicFoldersByServer,
+      libraryBrowseSelectionByServer: auth.libraryBrowseSelectionByServer,
+    })
+  ), [
+    auth.activeServerId,
+    auth.libraryBrowseSelectionByServer,
+    auth.libraryBrowseServerIds,
+    auth.musicFoldersByServer,
+    auth.servers,
+  ]);
   const downloadAlbum = useOfflineStore(s => s.downloadAlbum);
   const requestDownloadFolder = useDownloadModalStore(s => s.requestFolder);
   const navigate = useNavigate();
@@ -145,7 +161,7 @@ export default function NewReleases() {
       const downloadId = crypto.randomUUID();
       const filename = `${sanitizeFilename(album.name)}.zip`;
       const destPath = await join(folder, filename);
-      const url = buildDownloadUrl(album.id);
+      const url = buildDownloadUrlForServer(album.serverId ?? serverId, album.id);
       start(downloadId, filename);
       try {
         await downloadZip({ id: downloadId, url, destPath });
@@ -163,9 +179,10 @@ export default function NewReleases() {
     let queued = 0;
     for (const album of selectedAlbums) {
       try {
-        const detail = await resolveAlbum(serverId, album.id);
+        const ownerServerId = album.serverId ?? serverId;
+        const detail = await resolveAlbum(ownerServerId, album.id);
         if (!detail) throw new Error('album unavailable');
-        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, serverId);
+        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, ownerServerId);
         queued++;
       } catch {
         showToast(t('albums.offlineFailed', { name: album.name }), 3000, 'error');
@@ -177,12 +194,12 @@ export default function NewReleases() {
 
   const load = useCallback(async (offset: number, append = false) => {
     await runLoad(async () => {
-      const data = await getAlbumList('newest', PAGE_SIZE, offset);
-      if (append) setAlbums(prev => [...prev, ...data]);
-      else setAlbums(data);
-      setHasMore(data.length === PAGE_SIZE);
+      const data = await loadLocalNewReleases(anchorServerId ?? '', releaseScopes, PAGE_SIZE, offset);
+      if (append) setAlbums(prev => [...prev, ...data.albums]);
+      else setAlbums(data.albums);
+      setHasMore(data.hasMore);
     });
-  }, [runLoad]);
+  }, [anchorServerId, releaseScopes, runLoad]);
 
   const loadFiltered = useCallback(async (genres: string[]) => {
     setLoading(true);
@@ -205,7 +222,7 @@ export default function NewReleases() {
       resetPage();
       void load(0);
     }
-  }, [genreFiltered, selectedGenres, load, loadFiltered, resetPage, scopedSearchQuery]);
+  }, [genreFiltered, selectedGenres, load, loadFiltered, resetPage, scopedSearchQuery, releaseScopeFingerprint]);
 
   const loadMore = useCallback(() => {
     if (!gridHasMore || genreFiltered || textSearchActive || isBlocked()) return;
@@ -234,7 +251,7 @@ export default function NewReleases() {
     scrollSnapshotRef,
     getScrollRoot,
     isScrollRestorePending,
-    resetKey: [newReleasesSearchQuery, selectedGenres.join('\u0001'), serverId].join('|'),
+    resetKey: [newReleasesSearchQuery, selectedGenres.join('\u0001'), releaseScopeFingerprint].join('|'),
   });
 
   useLayoutEffect(() => {

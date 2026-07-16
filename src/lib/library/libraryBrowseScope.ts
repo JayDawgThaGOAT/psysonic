@@ -3,7 +3,7 @@ export interface LibraryBrowseScopePair {
   libraryId: string;
 }
 
-interface LibraryBrowseScopeSource {
+export interface LibraryBrowseScopeSource {
   servers: Array<{ id: string }>;
   activeServerId: string | null;
   libraryBrowseServerIds: string[];
@@ -32,8 +32,7 @@ export interface LibraryBrowseScope {
 }
 
 /** Ordered concrete source pairs used only by Library pages and search. */
-export function getLibraryBrowseScope(): LibraryBrowseScope {
-  const state = readLibraryBrowseScopeSource();
+export function deriveLibraryBrowseScope(state: LibraryBrowseScopeSource): LibraryBrowseScope {
   const selectedServers = new Set(state.libraryBrowseServerIds);
   const orderedServers = state.servers.filter(server => selectedServers.has(server.id));
   const pairs: LibraryBrowseScopePair[] = [];
@@ -56,4 +55,8 @@ export function getLibraryBrowseScope(): LibraryBrowseScope {
     fingerprint: pairs.map(pair => `${pair.serverId}:${pair.libraryId}`).join('|'),
     multiServer: orderedServers.length > 1,
   };
+}
+
+export function getLibraryBrowseScope(): LibraryBrowseScope {
+  return deriveLibraryBrowseScope(readLibraryBrowseScopeSource());
 }

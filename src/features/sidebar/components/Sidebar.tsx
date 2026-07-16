@@ -31,6 +31,7 @@ import SidebarPerfProbeModal from '@/features/sidebar/components/SidebarPerfProb
 import SidebarNavBody from '@/features/sidebar/components/SidebarNavBody';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import { libraryScopeCacheKeyForServer } from '@/lib/api/subsonicClient';
+import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 
 const EMPTY_LIBRARY_IDS: string[] = [];
@@ -201,9 +202,23 @@ export default function Sidebar({
     sidebarItemsRef,
     setSidebarItems,
   });
-  const newReleasesUnreadCount = useSidebarNewReleasesUnread({
+  const newReleasesScope = useMemo(() => deriveLibraryBrowseScope({
+    servers,
+    activeServerId: serverId || null,
+    libraryBrowseServerIds,
+    musicFoldersByServer,
+    libraryBrowseSelectionByServer,
+  }), [
+    libraryBrowseSelectionByServer,
+    libraryBrowseServerIds,
+    musicFoldersByServer,
     serverId,
-    libraryScopeKey,
+    servers,
+  ]);
+  const newReleasesUnreadCount = useSidebarNewReleasesUnread({
+    anchorServerId: newReleasesScope.anchorServerId,
+    scopes: newReleasesScope.pairs,
+    scopeFingerprint: newReleasesScope.fingerprint,
     isLoggedIn,
     pathname: location.pathname,
   });
