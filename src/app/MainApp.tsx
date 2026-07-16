@@ -1,6 +1,6 @@
 import { initAudioListeners } from '@/features/playback/store/initAudioListeners';
 import '@/features/playback/store/playbackEngineBridgeRegister'; // installs the playback-engine bridge at boot
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { preloadMiniPlayer as preloadMiniPlayerWindow } from '@/lib/api/miniPlayer';
 import { showToast } from '@/lib/dom/toast';
@@ -28,6 +28,7 @@ import { initMiniPlayerBridgeOnMain } from '@/features/miniPlayer';
 import { runAdvancedModeMigration } from '@/app/migrations/advancedModeMigration';
 import { bootstrapAllIndexedServers } from '@/lib/library/librarySession';
 import { hydrateQueueFromIndex } from '@/features/playback/store/queueRestore';
+import { reconcileStartupPlayQueues } from '@/features/playback/store/startupPlayQueueReconcile';
 import { useLibraryAnalysisBackfill } from '@/lib/library/hooks/useLibraryAnalysisBackfill';
 import { useCoverArtPrefetch } from '../cover/useCoverArtPrefetch';
 import { useLibraryCoverBackfill } from '@/cover/useLibraryCoverBackfill';
@@ -67,12 +68,18 @@ export default function MainApp() {
   const masterEnabled = useLibraryIndexStore(s => s.masterEnabled);
   const migrationPhase = useMigrationStore(s => s.phase);
   const migrationReady = migrationPhase === 'completed';
+  const startupQueueReconcileStartedRef = useRef(false);
   useMigrationOrchestrator();
   useEffect(() => {
     if (!migrationReady) return;
+    const shouldReconcileStartupQueue = !startupQueueReconcileStartedRef.current;
+    if (shouldReconcileStartupQueue) startupQueueReconcileStartedRef.current = true;
     void (async () => {
       await bootstrapAllIndexedServers();
-      void hydrateQueueFromIndex();
+      await hydrateQueueFromIndex();
+      if (shouldReconcileStartupQueue) {
+        await reconcileStartupPlayQueues();
+      }
     })();
   }, [activeServerId, serverIdsKey, masterEnabled, migrationReady]);
 

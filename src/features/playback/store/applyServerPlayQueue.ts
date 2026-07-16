@@ -69,7 +69,7 @@ function resolveServerProfileId(serverId: string): string {
   return resolveServerIdForIndexKey(serverId) || serverId;
 }
 
-function applyMappedQueue(
+export function applyMappedQueue(
   mappedTracks: Track[],
   q: PlayQueueResult,
   serverProfileId: string,

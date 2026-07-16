@@ -103,7 +103,6 @@ export function AppShell() {
   const isQueueVisible = usePlayerStore(s => s.isQueueVisible);
   const toggleQueue = usePlayerStore(s => s.toggleQueue);
   const uiScale = useFontStore(s => s.uiScale);
-  const initializeFromServerQueue = usePlayerStore(s => s.initializeFromServerQueue);
   const currentTrack = usePlayerStore(s => s.currentTrack);
   const isPlaying = usePlayerStore(s => s.isPlaying);
   const { status: connStatus, isRetrying: connRetrying, retry: connRetry, isLan, serverName } = useConnectionStatus();
@@ -157,10 +156,6 @@ export function AppShell() {
 
   useOfflineAutoNav(connStatus, offlineNav, location, navigate);
   useOfflineLibraryFilterSuspend();
-
-  useEffect(() => {
-    initializeFromServerQueue();
-  }, [initializeFromServerQueue]);
 
   useEffect(() => {
     useEqStore.getState().syncToRust();

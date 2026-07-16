@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AxiosError } from 'axios';
 
 const { apiForServerMock, apiPostFormForServerMock, authState } = vi.hoisted(() => ({
-  apiForServerMock: vi.fn(async () => ({ status: 'ok' })),
+  apiForServerMock: vi.fn(async (): Promise<unknown> => ({ status: 'ok' })),
   apiPostFormForServerMock: vi.fn(async () => ({ status: 'ok' })),
   authState: {
     openSubsonicExtensionsByServer: {} as Record<string, string[]>,
@@ -25,7 +25,11 @@ vi.mock('@/store/authStore', () => ({
   },
 }));
 
-import { savePlayQueue } from '@/lib/api/subsonicPlayQueue';
+import {
+  fetchPlayQueueForServer,
+  getPlayQueueForServer,
+  savePlayQueue,
+} from '@/lib/api/subsonicPlayQueue';
 
 beforeEach(() => {
   apiForServerMock.mockReset();
@@ -77,5 +81,25 @@ describe('savePlayQueue transport', () => {
     apiForServerMock.mockRejectedValueOnce(new Error('offline'));
     await expect(savePlayQueue(['a'], 'a', 0, 'srv-a')).rejects.toThrow('offline');
     expect(apiPostFormForServerMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('play queue reads', () => {
+  it('strict fetch returns a parsed server queue', async () => {
+    apiForServerMock.mockResolvedValueOnce({
+      playQueue: { current: 'b', position: 1200, entry: [{ id: 'a' }, { id: 'b' }] },
+    });
+    await expect(fetchPlayQueueForServer('srv-a')).resolves.toEqual({
+      current: 'b',
+      position: 1200,
+      songs: [{ id: 'a' }, { id: 'b' }],
+    });
+  });
+
+  it('strict fetch propagates failure while the compatibility wrapper returns empty', async () => {
+    apiForServerMock.mockRejectedValueOnce(new Error('offline'));
+    await expect(fetchPlayQueueForServer('srv-a')).rejects.toThrow('offline');
+    apiForServerMock.mockRejectedValueOnce(new Error('offline'));
+    await expect(getPlayQueueForServer('srv-a')).resolves.toEqual({ songs: [] });
   });
 });
