@@ -222,7 +222,6 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
               {t('connection.switchServerTitle')}
             </div>
             {servers.map(srv => {
-              const active = srv.id === activeServerId;
               const included = libraryBrowseServerIds.includes(srv.id);
               const finalIncluded = included && libraryBrowseServerIds.length === 1;
               const busy = switchingId === srv.id;
@@ -232,7 +231,7 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
                 <div
                   key={srv.id}
                   data-reorder-id={srv.id}
-                  className={`nav-library-dropdown-item connection-indicator-server-row${active ? ' nav-library-dropdown-item--selected' : ''}${edge ? ` connection-indicator-server-row--drop-${edge}` : ''}`}
+                  className={`nav-library-dropdown-item connection-indicator-server-row${edge ? ` connection-indicator-server-row--drop-${edge}` : ''}`}
                 >
                   <ReorderGripHandle id={srv.id} type="server_reorder" label={labelText} />
                   <button

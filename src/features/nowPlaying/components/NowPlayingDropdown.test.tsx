@@ -100,21 +100,36 @@ describe('NowPlayingDropdown multi-server scope', () => {
     await waitFor(() => expect(getNowPlayingForServersMock).toHaveBeenCalledWith(['b']));
   });
 
-  it('keeps own-account sessions from another selected server', async () => {
+  it('drops stale own-account sessions from the previous playback server', async () => {
     getNowPlayingForServersMock.mockResolvedValue([
       entry('a', 'stale-local', 'owner-a'),
       entry('b', 'remote-client', 'owner-b'),
     ]);
     usePlayerStore.setState({
-      isPlaying: false,
-      queueItems: [{ serverId: 'a', trackId: 'stale-local' }],
+      isPlaying: true,
+      queueItems: [
+        { serverId: 'a', trackId: 'stale-local' },
+        { serverId: 'b', trackId: 'remote-client' },
+      ],
       queueServerId: 'a',
-      queueIndex: 0,
+      queueIndex: 1,
     });
     renderWithProviders(<NowPlayingDropdown />);
 
     fireEvent.click(screen.getByRole('button', { name: /Live/i }));
     expect(await screen.findByText('Track remote-client')).toBeInTheDocument();
     expect(screen.queryByText('Track stale-local')).not.toBeInTheDocument();
+  });
+
+  it('drops stopped rows returned by a server', async () => {
+    getNowPlayingForServersMock.mockResolvedValue([
+      { ...entry('a', 'stopped', 'alice'), state: 'stopped' },
+      entry('b', 'playing', 'bob'),
+    ]);
+    renderWithProviders(<NowPlayingDropdown />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Live/i }));
+    expect(await screen.findByText('Track playing')).toBeInTheDocument();
+    expect(screen.queryByText('Track stopped')).not.toBeInTheDocument();
   });
 });

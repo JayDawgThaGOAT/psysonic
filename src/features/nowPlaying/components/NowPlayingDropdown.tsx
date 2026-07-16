@@ -156,10 +156,11 @@ export default function NowPlayingDropdown() {
   const serverLabelById = new Map(servers.map(server => [server.id, serverListDisplayLabel(server, servers)]));
   const multiServerScope = libraryBrowseServerIds.length > 1;
   const visible = nowPlaying.filter(entry => {
+    if (entry.state === 'stopped') return false;
     const entryServerId = entry.serverId ?? '';
     const ownUsername = ownUsernameByServer.get(entryServerId);
     if (!ownUsername || entry.username !== ownUsername) return true;
-    return entryServerId !== playbackServerId || isPlaying;
+    return entryServerId === playbackServerId && isPlaying;
   });
 
   return (

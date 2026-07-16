@@ -1,7 +1,5 @@
-import { audioStop } from '@/lib/api/audio';
 import { orbitBulkGuard } from '@/store/orbitRuntime';
 import { useAuthStore } from '@/store/authStore';
-import { setIsAudioPaused } from '@/features/playback/store/engineState';
 import { prefetchLoudnessForEnqueuedTracks } from '@/features/playback/store/loudnessPrefetch';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
@@ -277,9 +275,10 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
 
     clearQueue: () => {
       const previousItems = itemsOf(get());
+      get().stop();
+      // `stop()` owns the actual lifecycle close; this remains a harmless no-op
+      // after it and preserves the established playback-store dependency shape.
       void playListenSessionFinalize('stop');
-      audioStop().catch(console.error);
-      setIsAudioPaused(false);
       clearSeekFallbackRetry();
       clearSeekDebounce(); clearSeekTarget();
       clearRadioSessionSeenIds();

@@ -63,6 +63,9 @@ describe('ConnectionIndicator Library server selection', () => {
     expect(screen.getByText('2 servers')).toBeInTheDocument();
     expect(switchActiveServerMock).not.toHaveBeenCalled();
     expect(screen.getByRole('menuitem', { name: 'Home' }).querySelector('.nav-library-dropdown-check')).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Home' }).closest('.nav-library-dropdown-item')).not.toHaveClass(
+      'nav-library-dropdown-item--selected',
+    );
   });
 
   it('clicking the server row switches active server and makes Library exclusive', async () => {

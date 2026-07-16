@@ -28,6 +28,7 @@ import { usePlaybackRateStore } from '@/features/playback/store/playbackRateStor
 type ReportSession = { serverId: string; trackId: string };
 
 let session: ReportSession | null = null;
+let sessionGeneration = 0;
 
 function nowPlayingEnabled(): boolean {
   return useAuthStore.getState().nowPlayingEnabled;
@@ -74,10 +75,17 @@ function openExtensionSession(
   serverId: string,
   trackId: string,
   isNewSession: boolean,
+  generation: number,
 ): void {
-  session = { serverId, trackId };
   if (isNewSession) {
-    void send(serverId, trackId, 'starting').then(() => send(serverId, trackId, 'playing'));
+    void send(serverId, trackId, 'starting').then(() => {
+      if (
+        generation !== sessionGeneration
+        || session?.serverId !== serverId
+        || session.trackId !== trackId
+      ) return;
+      return send(serverId, trackId, 'playing');
+    });
   } else {
     void send(serverId, trackId, 'playing');
   }
@@ -92,20 +100,25 @@ export function playbackReportStart(trackId: string, serverId: string): void {
   if (!serverId || !nowPlayingEnabled()) return;
 
   const prev = session;
+  const generation = ++sessionGeneration;
   const isNewSession = !prev || prev.trackId !== trackId || prev.serverId !== serverId;
   const serverChanged = prev != null && prev.serverId !== serverId;
+  session = { serverId, trackId };
 
   const openNext = () => {
+    if (
+      generation !== sessionGeneration
+      || session?.serverId !== serverId
+      || session.trackId !== trackId
+    ) return;
     if (!extensionActive(serverId)) {
-      session = { serverId, trackId };
       void reportNowPlaying(trackId, serverId);
       return;
     }
-    openExtensionSession(serverId, trackId, isNewSession);
+    openExtensionSession(serverId, trackId, isNewSession, generation);
   };
 
   if (serverChanged) {
-    session = null;
     void stopExtensionSession(prev).then(openNext);
     return;
   }
@@ -139,6 +152,7 @@ export function playbackReportSeek(explicitSec: number, isPlaying: boolean): voi
 export function playbackReportStopped(explicitSec?: number): Promise<void> {
   if (!session) return Promise.resolve();
   const { serverId, trackId } = session;
+  sessionGeneration += 1;
   session = null;
   if (!extensionActive(serverId)) return Promise.resolve();
   return send(serverId, trackId, 'stopped', explicitSec);
@@ -147,4 +161,5 @@ export function playbackReportStopped(explicitSec?: number): Promise<void> {
 /** Test-only reset. */
 export function _resetPlaybackReportSessionForTest(): void {
   session = null;
+  sessionGeneration = 0;
 }

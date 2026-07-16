@@ -112,6 +112,47 @@ describe('playbackReportStart', () => {
     });
     expect(reportPlaybackMock.mock.calls[2][1].state).toBe('playing');
   });
+
+  it('does not open the next server after playback stops during handoff', async () => {
+    playbackReportStart('t1', SID);
+    await flush();
+    reportPlaybackMock.mockClear();
+
+    let resolveStop: (() => void) | undefined;
+    reportPlaybackMock.mockImplementationOnce(() => new Promise<void>(resolve => {
+      resolveStop = resolve;
+    }));
+    playbackReportStart('t2', 'srv-2');
+    await playbackReportStopped(20);
+    resolveStop?.();
+    await flush();
+
+    expect(reportPlaybackMock).toHaveBeenCalledTimes(2);
+    expect(reportPlaybackMock.mock.calls[0][1]).toMatchObject({
+      mediaId: 't1',
+      state: 'stopped',
+    });
+    expect(reportPlaybackMock.mock.calls[1][1]).toMatchObject({
+      mediaId: 't2',
+      state: 'stopped',
+    });
+    expect(reportPlaybackMock.mock.calls.some(call => (
+      call[1].mediaId === 't2' && (call[1].state === 'starting' || call[1].state === 'playing')
+    ))).toBe(false);
+  });
+
+  it('does not send playing after a new session is stopped while starting', async () => {
+    let resolveStarting: (() => void) | undefined;
+    reportPlaybackMock.mockImplementationOnce(() => new Promise<void>(resolve => {
+      resolveStarting = resolve;
+    }));
+    playbackReportStart('t1', SID);
+    await playbackReportStopped(0);
+    resolveStarting?.();
+    await flush();
+
+    expect(reportPlaybackMock.mock.calls.map(call => call[1].state)).toEqual(['starting', 'stopped']);
+  });
 });
 
 describe('FSM transitions on an open session', () => {

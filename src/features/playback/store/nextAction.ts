@@ -58,9 +58,7 @@ function stopAtNaturalQueueEnd(set: SetState, get: GetState): void {
   if (currentTrack && queueItems.length > 0) {
     void finalizePlayQueueAtTrackEnd(queueItems, currentTrack);
   }
-  audioStop().catch(console.error);
-  setIsAudioPaused(false);
-  set({ isPlaying: false, progress: 0, buffered: 0, currentTime: 0 });
+  get().stop();
 }
 
 /**
