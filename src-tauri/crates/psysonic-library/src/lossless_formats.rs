@@ -7,14 +7,14 @@ pub const LOSSLESS_SUFFIXES: &[&str] = &[
     "flac", "wav", "wave", "aiff", "aif", "dsf", "dff", "ape", "wv", "shn", "tta",
 ];
 
-/// `LOWER(alias.suffix) IN ('flac', …)` for SQL WHERE clauses.
+/// Case-insensitive suffix predicate that can use the lossless browse index.
 pub fn track_is_lossless_sql(table_alias: &str) -> String {
     let list = LOSSLESS_SUFFIXES
         .iter()
         .map(|s| format!("'{s}'"))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("LOWER({table_alias}.suffix) IN ({list})")
+    format!("{table_alias}.suffix COLLATE NOCASE IN ({list})")
 }
 
 /// Album has at least one indexed lossless track (same allowlist as browse).
@@ -50,6 +50,6 @@ mod tests {
         let sql = track_is_lossless_sql("t");
         assert!(sql.contains("'flac'"));
         assert!(sql.contains("'tta'"));
-        assert!(sql.starts_with("LOWER(t.suffix) IN ("));
+        assert!(sql.starts_with("t.suffix COLLATE NOCASE IN ("));
     }
 }
