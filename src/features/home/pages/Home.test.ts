@@ -4,7 +4,11 @@ vi.mock('@/cover/serverScope', () => ({
   coverServerScopeForServerId: (serverId?: string) => ({ kind: 'test', serverId }),
 }));
 
-import { groupHomeCoverPrefetchBuckets, shouldOfferHomeLoadMore } from './homeCoverPrefetch';
+import {
+  groupHomeCoverPrefetchBuckets,
+  homeDiscoverCoverPrefetchBucket,
+  shouldOfferHomeLoadMore,
+} from './homeCoverPrefetch';
 
 describe('groupHomeCoverPrefetchBuckets', () => {
   it('splits mixed albums, artists, and songs into owner-scoped buckets', () => {
@@ -35,6 +39,28 @@ describe('groupHomeCoverPrefetchBuckets', () => {
         serverScope: { kind: 'test', serverId: 'srv-b' },
       }),
     ]));
+  });
+
+  it('keeps mixed-owner Discover refs in one globally limited bucket', () => {
+    const bucket = homeDiscoverCoverPrefetchBucket(Array.from({ length: 18 }, (_, index) => ({
+      albumId: `album-${index}`,
+      coverArt: `cover-${index}`,
+      serverId: index % 2 === 0 ? 'srv-a' : 'srv-b',
+    })));
+
+    const buckets = groupHomeCoverPrefetchBuckets([bucket]);
+
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]?.limit).toBe(16);
+    expect(buckets[0]?.refs).toHaveLength(18);
+    expect(buckets[0]?.refs?.[0]).toEqual(expect.objectContaining({
+      cacheEntityId: 'album-0',
+      fetchCoverArtId: 'cover-0',
+      serverScope: { kind: 'test', serverId: 'srv-a' },
+    }));
+    expect(buckets[0]?.refs?.[1]).toEqual(expect.objectContaining({
+      serverScope: { kind: 'test', serverId: 'srv-b' },
+    }));
   });
 });
 

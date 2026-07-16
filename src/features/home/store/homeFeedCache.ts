@@ -91,6 +91,20 @@ export function writeHomeFeedCache(data: Omit<HomeFeedSnapshot, 'savedAt'>): voi
   }
 }
 
+export function patchHomeFeedCache(
+  scopeKey: string,
+  scopeVersion: number,
+  patch: (snapshot: HomeFeedSnapshot) => HomeFeedSnapshot,
+): HomeFeedSnapshot | null {
+  const key = cacheKey(scopeKey, scopeVersion);
+  const current = snapshots.get(key);
+  if (!current || Date.now() - current.savedAt > TTL_MS) return null;
+  const next = { ...patch(current), savedAt: Date.now() };
+  snapshots.delete(key);
+  snapshots.set(key, next);
+  return next;
+}
+
 export function clearHomeFeedCache(): void {
   snapshots.clear();
 }

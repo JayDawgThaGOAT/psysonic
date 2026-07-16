@@ -7,8 +7,11 @@ import {
   advanceHomeOffsets,
   allocateHomeQuotas,
   deriveHomeFeedScope,
+  loadHomeChronologicalFeed,
   loadHomeFeed,
   loadMoreHomeAlbums,
+  patchHomeChronologicalFeed,
+  preserveHomeChronologicalFeeds,
   stableRoundRobin,
   withinHomeDeadline,
 } from '@/features/home/pages/homeFeedLoader';
@@ -82,7 +85,8 @@ describe('homeFeedLoader pure helpers', () => {
 });
 
 describe('homeFeedLoader failure isolation', () => {
-  it('never requests newest/recent from servers and preserves local chronological order', async () => {
+  it('resolves the network snapshot while local chronological work is pending', async () => {
+    vi.useFakeTimers();
     const getAlbumListForServer = vi.fn(async (
       serverId: string,
       type: string,
@@ -93,12 +97,14 @@ describe('homeFeedLoader failure isolation', () => {
     ) => {
       return Array.from({ length: size }, (_, index) => album(serverId, `${type}-${index}`));
     });
-    const libraryScopeListMainstageAlbums = vi.fn(async (_serverId, request) => ({
-      albums: request.feed === 'newReleases'
-        ? [albumDto('b', 'new-3'), albumDto('a', 'new-2'), albumDto('b', 'new-1')]
-        : [albumDto('a', 'played-3'), albumDto('b', 'played-2')],
-      hasMore: true,
-    }));
+    const localPending = new Promise<never>(() => {});
+    const libraryScopeListMainstageAlbums = vi.fn(() => localPending);
+    const chronological = loadHomeChronologicalFeed({
+      anchorServerId: 'a',
+      scopes: [{ serverId: 'a', libraryId: 'lib-a' }, { serverId: 'b', libraryId: 'lib-b' }],
+      feed: 'newReleases',
+      deps: { libraryScopeListMainstageAlbums },
+    });
     const result = await loadHomeFeed({
       serverIds: ['a', 'b'], scopeKey: 'scope', scopeVersion: 7, randomSize: 20,
       anchorServerId: 'a',
@@ -116,38 +122,59 @@ describe('homeFeedLoader failure isolation', () => {
     });
     expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('newest');
     expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('recent');
-    expect(result.recent.map(item => `${item.serverId}:${item.id}`))
-      .toEqual(['b:new-3', 'a:new-2', 'b:new-1']);
-    expect(result.recentlyPlayed.map(item => `${item.serverId}:${item.id}`))
-      .toEqual(['a:played-3', 'b:played-2']);
-    expect(result.offsets.recent).toEqual({ offset: 3, hasMore: true });
-    expect(result.offsets.recentlyPlayed).toEqual({ offset: 2, hasMore: true });
-    expect(result.starred.some(item => item.serverId === 'a')).toBe(true);
-    expect(getAlbumListForServer.mock.calls.every(call => call[5] === HOME_REQUEST_TIMEOUT_MS)).toBe(true);
-  });
-
-  it('treats local errors as authoritative empty without network fallback', async () => {
-    const getAlbumListForServer = vi.fn(async (_serverId: string, _type: string) => []);
-    const result = await loadHomeFeed({
-      serverIds: ['a'], scopeKey: 'scope', scopeVersion: 1, randomSize: 0,
-      anchorServerId: 'a', scopes: [{ serverId: 'a', libraryId: 'lib-a' }],
-      showArtists: false, showSongs: false, mixConfig,
-      deps: {
-        getAlbumListForServer: getAlbumListForServer as never,
-        libraryScopeListMainstageAlbums: vi.fn(async () => { throw new Error('local failed'); }),
-        getArtistsForServer: vi.fn(async () => []),
-        getRandomSongsForServer: vi.fn(async () => []),
-        runLocalRandomSongs: vi.fn(async () => null),
-        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
-        shuffle: items => items,
-      },
-    });
     expect(result.recent).toEqual([]);
     expect(result.recentlyPlayed).toEqual([]);
-    expect(result.offsets.recent).toEqual({ offset: 0, hasMore: false });
-    expect(result.offsets.recentlyPlayed).toEqual({ offset: 0, hasMore: false });
-    expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('newest');
-    expect(getAlbumListForServer.mock.calls.map(call => call[1])).not.toContain('recent');
+    expect(result.starred.some(item => item.serverId === 'a')).toBe(true);
+    expect(getAlbumListForServer.mock.calls.every(call => call[5] === HOME_REQUEST_TIMEOUT_MS)).toBe(true);
+    let chronologicalSettled = false;
+    void chronological.then(() => { chronologicalSettled = true; });
+    await Promise.resolve();
+    expect(chronologicalSettled).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it('preserves an existing chronological rail and hasMore after a local timeout', async () => {
+    vi.useFakeTimers();
+    const current = snapshot();
+    current.recent = [album('a', 'prior')];
+    const resultPromise = loadHomeChronologicalFeed({
+      anchorServerId: 'a', scopes: [{ serverId: 'a', libraryId: 'lib-a' }],
+      feed: 'newReleases',
+      deps: {
+        libraryScopeListMainstageAlbums: vi.fn(() => new Promise<{
+          albums: LibraryAlbumDto[];
+          hasMore: boolean;
+        }>(() => {})),
+      },
+    });
+    await vi.advanceTimersByTimeAsync(HOME_REQUEST_TIMEOUT_MS);
+    const result = await resultPromise;
+    expect(result).toEqual({ status: 'timeout' });
+    const patched = patchHomeChronologicalFeed(current, 'recent', result);
+    expect(patched).toBe(current);
+    expect(patched.recent.map(item => item.id)).toEqual(['prior']);
+    expect(patched.offsets.recent).toEqual({ offset: 5, hasMore: true });
+    const networkSnapshot = { ...current, recent: [], offsets: {
+      ...current.offsets,
+      recent: { offset: 0, hasMore: false },
+    } };
+    const preserved = preserveHomeChronologicalFeeds(networkSnapshot, current);
+    expect(preserved.recent.map(item => item.id)).toEqual(['prior']);
+    expect(preserved.offsets.recent).toEqual({ offset: 5, hasMore: true });
+    vi.useRealTimers();
+  });
+
+  it('distinguishes a successful empty chronological query from an error', async () => {
+    const success = await loadHomeChronologicalFeed({
+      anchorServerId: 'a', scopes: [], feed: 'recentlyPlayed',
+      deps: { libraryScopeListMainstageAlbums: vi.fn(async () => ({ albums: [], hasMore: false })) },
+    });
+    const error = await loadHomeChronologicalFeed({
+      anchorServerId: 'a', scopes: [], feed: 'recentlyPlayed',
+      deps: { libraryScopeListMainstageAlbums: vi.fn(async () => { throw new Error('failed'); }) },
+    });
+    expect(success).toEqual({ status: 'success', albums: [], hasMore: false });
+    expect(error).toEqual({ status: 'error' });
   });
 
   it('uses per-server offsets, dedupes owner-qualified ids, and advances raw cursors', async () => {

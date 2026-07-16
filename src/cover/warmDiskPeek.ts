@@ -77,17 +77,17 @@ export function collectAlbumCoverWarmItems(
   return out;
 }
 
-export async function collectSongCoverWarmItems(
+export function collectSongCoverWarmItems(
   songs: ReadonlyArray<{ albumId?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
   limit = 96,
-): Promise<CoverWarmItem[]> {
+): CoverWarmItem[] {
   const out: CoverWarmItem[] = [];
   for (const s of songs) {
     if (!s.albumId || out.length >= limit) break;
     out.push(
-      await coverWarmItemFromLibrary(
+      coverWarmItem(
         s.albumId,
         s.coverArt ?? s.albumId,
         displayCssPx,
@@ -259,7 +259,7 @@ export async function warmHomeMainstageCovers(snapshot: {
     ...collectAlbumCoverWarmItems(snapshot.mostPlayed, 300, 'dense', 20),
     ...collectAlbumCoverWarmItems(snapshot.recentlyPlayed, 300, 'dense', 20),
     ...collectAlbumCoverWarmItems(snapshot.starred, 300, 'dense', 20),
-    ...(await collectSongCoverWarmItems(snapshot.discoverSongs ?? [], 200, 'dense', 20)),
+    ...collectSongCoverWarmItems(snapshot.discoverSongs ?? [], 200, 'dense', 20),
   ]);
   await warmCoverDiskSrcBatch(items);
 

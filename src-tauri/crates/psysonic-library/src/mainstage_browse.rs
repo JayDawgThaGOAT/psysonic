@@ -2,113 +2,243 @@
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::params_from_iter;
+use serde_json::Value;
 
+use crate::album_compilation_filter::pick_album_group_artist;
 use crate::browse_support::overlay_album_starred_at_rows;
 use crate::dto::{
-    LibraryMainstageAlbumFeed, LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse,
+    LibraryAlbumDto, LibraryMainstageAlbumFeed, LibraryMainstageAlbumsRequest,
+    LibraryMainstageAlbumsResponse, LibraryScopePair,
 };
 use crate::scope_merge::{
-    album_row_to_dto, ensure_cluster_keys_for_scopes, non_empty_scopes, scope_cte_sql,
-    ALBUM_DEDUP_KEY, ALBUM_PICK_KEY, TRACK_DEDUP_KEY,
+    non_empty_scopes, scope_cte_sql, ALBUM_DEDUP_KEY, ALBUM_PICK_KEY,
 };
 use crate::search::PAGE_LIMIT_MAX;
 use crate::store::LibraryStore;
+
+const CANDIDATE_MULTIPLIER: u32 = 8;
+const CANDIDATE_MARGIN: u32 = 128;
+const MAX_CANDIDATE_LIMIT: u32 = 65_536;
+
+fn candidate_limit(offset: u32, fetch_limit: u32) -> u32 {
+    offset
+        .saturating_add(fetch_limit)
+        .saturating_mul(CANDIDATE_MULTIPLIER)
+        .saturating_add(CANDIDATE_MARGIN)
+}
+
+fn candidate_columns(feed_at: &str, priority: usize) -> String {
+    format!(
+        "t.server_id, t.album_id, t.album, t.artist, t.artist_id, t.album_artist, \
+         t.year, t.genre, t.cover_art_id, t.starred_at, t.synced_at, t.id, \
+         {priority} AS pr, ck.album_key, {ALBUM_DEDUP_KEY} AS album_dedup, \
+         {feed_at} AS feed_at"
+    )
+}
+
+fn new_release_candidates_sql(scopes: &[LibraryScopePair]) -> String {
+    scopes
+        .iter()
+        .enumerate()
+        .map(|(priority, _)| {
+            let columns = candidate_columns("t.server_created_at", priority);
+            format!(
+                "SELECT * FROM ( \
+                   SELECT {columns} \
+                   FROM track t INDEXED BY idx_track_library_created_album \
+                   LEFT JOIN cluster.track_cluster_key ck \
+                     ON ck.server_id = t.server_id AND ck.track_id = t.id \
+                   WHERE t.server_id = ? AND t.library_id = ? \
+                     AND t.deleted = 0 AND t.server_created_at IS NOT NULL \
+                     AND t.album_id IS NOT NULL AND t.album_id != '' \
+                   ORDER BY t.server_created_at DESC, t.album_id ASC, t.id ASC \
+                   LIMIT ? \
+                 )"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ")
+}
+
+fn recently_played_candidates_sql() -> String {
+    let columns = candidate_columns("ps.started_at_ms", 0);
+    format!(
+        "SELECT {columns} \
+         FROM play_session ps INDEXED BY idx_play_session_started \
+         INNER JOIN track t INDEXED BY sqlite_autoindex_track_1 \
+           ON t.server_id = ps.server_id AND t.id = ps.track_id \
+         INNER JOIN scope matched_scope \
+           ON matched_scope.server_id = t.server_id \
+          AND matched_scope.library_id = t.library_id \
+         LEFT JOIN cluster.track_cluster_key ck \
+           ON ck.server_id = t.server_id AND ck.track_id = t.id \
+         WHERE t.deleted = 0 AND t.album_id IS NOT NULL AND t.album_id != '' \
+         ORDER BY ps.started_at_ms DESC \
+         LIMIT ?"
+    )
+    .replace("0 AS pr", "matched_scope.pr AS pr")
+}
+
+fn build_mainstage_query(
+    scopes: &[LibraryScopePair],
+    feed: LibraryMainstageAlbumFeed,
+    bounded_candidates: u32,
+    result_offset: u32,
+    result_limit: u32,
+) -> (String, Vec<SqlValue>) {
+    let (cte, mut binds) = scope_cte_sql(scopes);
+    let candidates_sql = match feed {
+        LibraryMainstageAlbumFeed::NewReleases => {
+            for pair in scopes {
+                binds.push(SqlValue::Text(pair.server_id.clone()));
+                binds.push(SqlValue::Text(pair.library_id.clone()));
+                binds.push(SqlValue::Integer(i64::from(bounded_candidates)));
+            }
+            new_release_candidates_sql(scopes)
+        }
+        LibraryMainstageAlbumFeed::RecentlyPlayed => {
+            binds.push(SqlValue::Integer(i64::from(bounded_candidates)));
+            recently_played_candidates_sql()
+        }
+    };
+
+    let sql = format!(
+        "{cte}, \
+         candidates AS MATERIALIZED ({candidates_sql}), \
+         candidate_groups AS ( \
+           SELECT album_dedup, MAX(feed_at) AS feed_at, MAX(album_key) AS album_key \
+           FROM candidates GROUP BY album_dedup \
+         ), \
+         representative_pool AS ( \
+           SELECT t.server_id, t.album_id, t.album, t.artist, t.artist_id, t.album_artist, \
+                  t.year, t.genre, t.cover_art_id, t.starred_at, t.synced_at, t.id, \
+                  s.pr, grouped.album_dedup \
+           FROM candidate_groups grouped \
+           CROSS JOIN scope s \
+           CROSS JOIN cluster.track_cluster_key ck INDEXED BY idx_ck_scope_album \
+             ON ck.server_id = s.server_id AND ck.library_id = s.library_id \
+            AND ck.album_key = grouped.album_key \
+           INNER JOIN track t INDEXED BY sqlite_autoindex_track_1 \
+             ON t.server_id = ck.server_id AND t.id = ck.track_id \
+           WHERE grouped.album_key IS NOT NULL AND t.deleted = 0 \
+             AND t.library_id = s.library_id \
+             AND t.album_id IS NOT NULL AND t.album_id != '' \
+           UNION ALL \
+           SELECT server_id, album_id, album, artist, artist_id, album_artist, \
+                  year, genre, cover_art_id, starred_at, synced_at, id, pr, album_dedup \
+           FROM candidates WHERE album_key IS NULL \
+         ), \
+         representatives AS ( \
+           SELECT server_id, album_id, album, artist, artist_id, album_artist, \
+                  year, genre, cover_art_id, starred_at, synced_at, album_dedup, \
+                  MIN({ALBUM_PICK_KEY}) AS _pick \
+           FROM representative_pool GROUP BY album_dedup \
+         ) \
+          SELECT representative.server_id, representative.album_id, representative.album, \
+                 representative.artist, representative.artist_id, representative.album_artist, \
+                 representative.year, representative.genre, representative.cover_art_id, \
+                 representative.starred_at, representative.synced_at, \
+                 (SELECT COUNT(*) FROM candidates) AS candidate_count \
+         FROM representatives representative \
+         INNER JOIN candidate_groups grouped \
+           ON grouped.album_dedup = representative.album_dedup \
+         ORDER BY grouped.feed_at DESC, representative.album COLLATE NOCASE ASC, \
+                  representative.server_id ASC, representative.album_id ASC \
+         LIMIT ? OFFSET ?"
+    );
+    binds.push(SqlValue::Integer(i64::from(result_limit)));
+    binds.push(SqlValue::Integer(i64::from(result_offset)));
+    (sql, binds)
+}
+
+fn map_mainstage_album(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(LibraryAlbumDto, u32)> {
+    let track_artist = r.get(3)?;
+    let album_artist = r.get(5)?;
+    Ok((
+        LibraryAlbumDto {
+            server_id: r.get(0)?,
+            id: r.get(1)?,
+            name: r.get(2)?,
+            artist: pick_album_group_artist(track_artist, album_artist),
+            artist_id: r.get(4)?,
+            song_count: None,
+            duration_sec: None,
+            year: r.get(6)?,
+            genre: r.get(7)?,
+            cover_art_id: r.get(8)?,
+            starred_at: r.get(9)?,
+            synced_at: r.get(10)?,
+            raw_json: Value::Null,
+        },
+        r.get(11)?,
+    ))
+}
 
 pub fn list_mainstage_albums(
     store: &LibraryStore,
     request: &LibraryMainstageAlbumsRequest,
 ) -> Result<LibraryMainstageAlbumsResponse, String> {
     let scopes = non_empty_scopes(&request.scopes)?;
-    ensure_cluster_keys_for_scopes(store, scopes)?;
 
     let limit = request.limit.unwrap_or(30).clamp(1, PAGE_LIMIT_MAX);
     let offset = request.offset.unwrap_or(0);
     let fetch_limit = limit.saturating_add(1);
-    let (cte, mut binds) = scope_cte_sql(scopes);
-    let feed_times_sql = match request.feed {
-        LibraryMainstageAlbumFeed::NewReleases => {
-            "SELECT album_dedup, MAX(server_created_at) AS feed_at \
-             FROM selected WHERE server_created_at IS NOT NULL GROUP BY album_dedup"
-        }
-        LibraryMainstageAlbumFeed::RecentlyPlayed => {
-            "SELECT st.album_dedup, MAX(ps.started_at_ms) AS feed_at \
-             FROM selected st \
-             INNER JOIN play_session ps \
-               ON ps.server_id = st.server_id AND ps.track_id = st.id \
-             GROUP BY st.album_dedup"
-        }
-    };
+    let requested_results = offset.saturating_add(fetch_limit);
+    let initial_candidates = candidate_limit(offset, fetch_limit);
 
-    let sql = format!(
-        "{cte}, \
-         selected AS ( \
-           SELECT t.server_id, t.album_id, t.album, t.artist, t.artist_id, t.album_artist, \
-                  t.year, t.genre, t.cover_art_id, t.starred_at, t.synced_at, t.duration_sec, \
-                  t.server_created_at, t.id, s.pr, {ALBUM_DEDUP_KEY} AS album_dedup, \
-                  {TRACK_DEDUP_KEY} AS track_dedup \
-           FROM scope s \
-           CROSS JOIN track t ON t.server_id = s.server_id AND t.library_id = s.library_id \
-           LEFT JOIN cluster.track_cluster_key ck \
-             ON ck.server_id = t.server_id AND ck.track_id = t.id \
-           WHERE t.deleted = 0 AND t.album_id IS NOT NULL AND t.album_id != '' \
-         ), \
-         feed_times AS ( \
-           {feed_times_sql} \
-         ), \
-         albums AS ( \
-           SELECT server_id, album_id, album, artist, artist_id, album_artist, \
-                  COUNT(DISTINCT track_dedup) AS song_count, SUM(duration_sec) AS duration_total, \
-                  year, genre, cover_art_id, starred_at, synced_at, album_dedup, \
-                  MIN({ALBUM_PICK_KEY}) AS _pick \
-           FROM selected GROUP BY album_dedup \
-         ) \
-         SELECT a.server_id, a.album_id, a.album, a.artist, a.artist_id, a.album_artist, \
-                a.song_count, a.duration_total, a.year, a.genre, a.cover_art_id, \
-                a.starred_at, a.synced_at \
-         FROM albums a \
-         INNER JOIN feed_times f ON f.album_dedup = a.album_dedup \
-         ORDER BY f.feed_at DESC, a.album COLLATE NOCASE ASC, a.server_id ASC, a.album_id ASC \
-         LIMIT ? OFFSET ?",
-    );
-    binds.push(SqlValue::Integer(i64::from(fetch_limit)));
-    binds.push(SqlValue::Integer(i64::from(offset)));
-
-    store
-        .with_read_conn(|conn| {
+    store.with_read_conn(|conn| {
+        let mut bounded_candidates = initial_candidates;
+        loop {
+            let (sql, binds) = build_mainstage_query(
+                scopes,
+                request.feed,
+                bounded_candidates,
+                0,
+                requested_results,
+            );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
-                .query_map(params_from_iter(binds.iter()), |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                        r.get(8)?,
-                        r.get(9)?,
-                        r.get(10)?,
-                        r.get(11)?,
-                        r.get(12)?,
-                    ))
-                })?
+                .query_map(params_from_iter(binds.iter()), map_mainstage_album)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut albums = rows.into_iter().map(album_row_to_dto).collect::<Vec<_>>();
+            let candidate_count = rows.first().map(|(_, count)| *count).unwrap_or(0);
+            let candidate_capacity = match request.feed {
+                LibraryMainstageAlbumFeed::NewReleases => {
+                    bounded_candidates.saturating_mul(scopes.len() as u32)
+                }
+                LibraryMainstageAlbumFeed::RecentlyPlayed => bounded_candidates,
+            };
+            if rows.len() < requested_results as usize
+                && candidate_count >= candidate_capacity
+                && bounded_candidates < MAX_CANDIDATE_LIMIT
+            {
+                bounded_candidates = bounded_candidates
+                    .saturating_mul(2)
+                    .min(MAX_CANDIDATE_LIMIT);
+                continue;
+            }
+            let mut albums = rows
+                .into_iter()
+                .skip(offset as usize)
+                .map(|(album, _)| album)
+                .collect::<Vec<_>>();
             let has_more = albums.len() > limit as usize;
             albums.truncate(limit as usize);
             overlay_album_starred_at_rows(conn, &mut albums);
-            Ok(LibraryMainstageAlbumsResponse { albums, has_more })
-        })
-        .map_err(|e| e.to_string())
+            return Ok(LibraryMainstageAlbumsResponse { albums, has_more });
+        }
+    }).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dto::{LibraryScopePair, PlaySessionInputDto};
+    use crate::identity::ensure_cluster_keys_built;
     use crate::repos::{PlaySessionRepository, TrackRepository, TrackRow};
+    use rusqlite::params;
+    use std::time::{Duration, Instant};
 
     fn scope(server_id: &str, library_id: &str) -> LibraryScopePair {
         LibraryScopePair {
@@ -271,6 +401,8 @@ mod tests {
                 track("s2", "t-later", "Shared", "later-id", "l2", Some(500)),
             ])
             .unwrap();
+        ensure_cluster_keys_built(&store, "s1").unwrap();
+        ensure_cluster_keys_built(&store, "s2").unwrap();
 
         let response = list_mainstage_albums(
             &store,
@@ -283,6 +415,36 @@ mod tests {
         assert_eq!(response.albums.len(), 1);
         assert_eq!(response.albums[0].server_id, "s1");
         assert_eq!(response.albums[0].id, "priority-id");
+    }
+
+    #[test]
+    fn missing_cluster_keys_use_non_merge_fallback_without_rebuild() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track("s1", "t1", "Shared", "a1", "l1", Some(200)),
+                track("s2", "t2", "Shared", "a2", "l2", Some(100)),
+            ])
+            .unwrap();
+
+        let response = list_mainstage_albums(
+            &store,
+            &request(
+                vec![scope("s1", "l1"), scope("s2", "l2")],
+                LibraryMainstageAlbumFeed::NewReleases,
+            ),
+        )
+        .unwrap();
+        assert_eq!(response.albums.len(), 2);
+
+        let key_count: i64 = store
+            .with_read_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM cluster.track_cluster_key", [], |row| {
+                    row.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(key_count, 0, "latency-sensitive browse must not rebuild keys");
     }
 
     #[test]
@@ -306,6 +468,47 @@ mod tests {
         let second = list_mainstage_albums(&store, &req).unwrap();
         assert_eq!(second.albums.len(), 1);
         assert!(!second.has_more);
+    }
+
+    #[test]
+    fn candidate_window_expands_when_one_album_dominates_newest_tracks() {
+        let store = LibraryStore::open_in_memory();
+        let mut tracks = (0..220)
+            .map(|n| track("s1", &format!("shared-{n}"), "Shared", "shared", "l1", Some(1_000 - n)))
+            .collect::<Vec<_>>();
+        tracks.push(track("s1", "other", "Other", "other", "l1", Some(700)));
+        TrackRepository::new(&store).upsert_batch(&tracks).unwrap();
+
+        let mut req = request(vec![scope("s1", "l1")], LibraryMainstageAlbumFeed::NewReleases);
+        req.limit = Some(2);
+        let response = list_mainstage_albums(&store, &req).unwrap();
+
+        assert_eq!(response.albums.len(), 2);
+        assert_eq!(response.albums[0].name, "Shared");
+        assert_eq!(response.albums[1].name, "Other");
+    }
+
+    #[test]
+    fn candidate_window_expands_when_one_album_dominates_recent_sessions() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track("s1", "shared", "Shared", "shared", "l1", Some(1)),
+                track("s1", "other", "Other", "other", "l1", Some(1)),
+            ])
+            .unwrap();
+        for started_at_ms in 1..=220 {
+            play(&store, "s1", "shared", 1_000 + started_at_ms);
+        }
+        play(&store, "s1", "other", 700);
+
+        let mut req = request(vec![scope("s1", "l1")], LibraryMainstageAlbumFeed::RecentlyPlayed);
+        req.limit = Some(2);
+        let response = list_mainstage_albums(&store, &req).unwrap();
+
+        assert_eq!(response.albums.len(), 2);
+        assert_eq!(response.albums[0].name, "Shared");
+        assert_eq!(response.albums[1].name, "Other");
     }
 
     #[test]
@@ -334,6 +537,8 @@ mod tests {
                 track("s2", "t-later", "Shared", "later-id", "l2", Some(500)),
             ])
             .unwrap();
+        ensure_cluster_keys_built(&store, "s1").unwrap();
+        ensure_cluster_keys_built(&store, "s2").unwrap();
         store
             .with_conn("test.mainstage_star", |conn| {
                 conn.execute(
@@ -356,5 +561,146 @@ mod tests {
         .unwrap();
         assert_eq!(response.albums[0].server_id, "s1");
         assert_eq!(response.albums[0].starred_at, Some(1234));
+    }
+
+    fn query_plan(
+        store: &LibraryStore,
+        scopes: &[LibraryScopePair],
+        feed: LibraryMainstageAlbumFeed,
+    ) -> Vec<String> {
+        let (sql, binds) = build_mainstage_query(
+            scopes,
+            feed,
+            candidate_limit(0, 31),
+            0,
+            31,
+        );
+        store
+            .with_read_conn(|conn| {
+                let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                let plan = stmt
+                    .query_map(params_from_iter(binds.iter()), |row| row.get(3))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(plan)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn mainstage_query_plans_use_bounded_feed_indexes() {
+        let store = LibraryStore::open_in_memory();
+        let scopes = vec![scope("s1", "l1"), scope("s2", "l2")];
+
+        let releases = query_plan(&store, &scopes, LibraryMainstageAlbumFeed::NewReleases);
+        assert!(
+            releases
+                .iter()
+                .any(|line| line.contains("idx_track_library_created_album")),
+            "New Releases plan did not use created index: {releases:#?}"
+        );
+        assert!(
+            !releases
+                .iter()
+                .any(|line| line == "SCAN t" || line.contains("SCAN track")),
+            "New Releases plan contains an unindexed track scan: {releases:#?}"
+        );
+
+        let recent = query_plan(&store, &scopes, LibraryMainstageAlbumFeed::RecentlyPlayed);
+        assert!(
+            recent
+                .iter()
+                .any(|line| line.contains("idx_play_session_started")),
+            "Recently Played plan did not drive from newest sessions: {recent:#?}"
+        );
+        assert!(
+            recent
+                .iter()
+                .any(|line| line.contains("sqlite_autoindex_track_1")),
+            "Recently Played plan did not use the track primary key: {recent:#?}"
+        );
+    }
+
+    #[test]
+    fn large_scoped_feeds_stay_bounded() {
+        const TRACKS: i64 = 214_000;
+        const SESSIONS: i64 = 40_000;
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.seed_mainstage_perf", |conn| {
+                conn.execute_batch(
+                    "DROP TRIGGER track_ai; DROP TRIGGER track_ad; DROP TRIGGER track_au;",
+                )?;
+                let tx = conn.transaction()?;
+                {
+                    let mut insert_track = tx.prepare(
+                        "INSERT INTO track (server_id, id, title, artist, artist_id, album, \
+                         album_id, album_artist, duration_sec, year, genre, cover_art_id, \
+                         library_id, server_created_at, deleted, synced_at, raw_json) \
+                         VALUES (?1, ?2, ?3, 'Artist', 'artist', ?4, ?5, 'Artist', 180, \
+                                 2026, 'Rock', ?6, ?7, ?8, 0, 1, '{}')",
+                    )?;
+                    for n in 0..TRACKS {
+                        let server = if n % 2 == 0 { "s1" } else { "s2" };
+                        let library = if n % 2 == 0 { "l1" } else { "l2" };
+                        let album = n / 10;
+                        insert_track.execute(params![
+                            server,
+                            format!("track-{n}"),
+                            format!("Track {n}"),
+                            format!("Album {album}"),
+                            format!("album-{album}"),
+                            format!("cover-{album}"),
+                            library,
+                            n,
+                        ])?;
+                    }
+                }
+                {
+                    let mut insert_session = tx.prepare(
+                        "INSERT INTO play_session \
+                         (server_id, track_id, started_at_ms, listened_sec, position_max_sec, \
+                          completion, end_reason) \
+                         VALUES (?1, ?2, ?3, 20.0, 20.0, 'partial', 'skip')",
+                    )?;
+                    for n in 0..SESSIONS {
+                        let track_number = TRACKS - 1 - n;
+                        let server = if track_number % 2 == 0 { "s1" } else { "s2" };
+                        insert_session.execute(params![
+                            server,
+                            format!("track-{track_number}"),
+                            n,
+                        ])?;
+                    }
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
+
+        let scopes = vec![scope("s1", "l1"), scope("s2", "l2")];
+        let release_request = request(scopes.clone(), LibraryMainstageAlbumFeed::NewReleases);
+        let started = Instant::now();
+        let releases = list_mainstage_albums(&store, &release_request).unwrap();
+        let release_elapsed = started.elapsed();
+
+        let recent_request = request(scopes, LibraryMainstageAlbumFeed::RecentlyPlayed);
+        let started = Instant::now();
+        let recent = list_mainstage_albums(&store, &recent_request).unwrap();
+        let recent_elapsed = started.elapsed();
+
+        eprintln!(
+            "mainstage 214k fixture: releases={release_elapsed:?}, recent={recent_elapsed:?}"
+        );
+        assert_eq!(releases.albums.len(), 30);
+        assert_eq!(recent.albums.len(), 30);
+        assert!(releases.albums.iter().all(|album| album.song_count.is_none()));
+        assert!(
+            release_elapsed < Duration::from_millis(500),
+            "New Releases regressed to an unbounded query: {release_elapsed:?}"
+        );
+        assert!(
+            recent_elapsed < Duration::from_millis(500),
+            "Recently Played regressed to an unbounded query: {recent_elapsed:?}"
+        );
     }
 }

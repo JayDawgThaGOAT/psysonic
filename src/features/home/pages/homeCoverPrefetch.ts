@@ -1,3 +1,4 @@
+import { albumCoverRef } from '@/cover/ref';
 import { coverServerScopeForServerId } from '@/cover/serverScope';
 import type { LibraryCoverPrefetchBucket } from '@/cover/useLibraryCoverPrefetch';
 import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
@@ -7,6 +8,10 @@ export function groupHomeCoverPrefetchBuckets(
 ): LibraryCoverPrefetchBucket[] {
   const grouped: LibraryCoverPrefetchBucket[] = [];
   for (const bucket of buckets) {
+    if (bucket.refs?.length) {
+      grouped.push(bucket);
+      continue;
+    }
     const byOwner = new Map<string, LibraryCoverPrefetchBucket>();
     const ownerBucket = (serverId?: string) => {
       const key = serverId?.trim() ?? '';
@@ -37,6 +42,25 @@ export function groupHomeCoverPrefetchBuckets(
     grouped.push(...byOwner.values());
   }
   return grouped;
+}
+
+export function homeDiscoverCoverPrefetchBucket(
+  songs: ReadonlyArray<Pick<SubsonicSong, 'albumId' | 'coverArt' | 'serverId'>>,
+  limit = 16,
+): LibraryCoverPrefetchBucket {
+  return {
+    refs: songs.flatMap(song => {
+      const albumId = song.albumId?.trim();
+      if (!albumId) return [];
+      return [albumCoverRef(
+        albumId,
+        song.coverArt ?? albumId,
+        coverServerScopeForServerId(song.serverId),
+      )];
+    }),
+    limit,
+    priority: 'middle',
+  };
 }
 
 export function shouldOfferHomeLoadMore(hasMore: boolean): boolean {

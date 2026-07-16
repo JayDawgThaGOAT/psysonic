@@ -23,6 +23,7 @@ import {
   isHomeFeedSnapshotEmpty,
   readHomeFeedCache,
   readHomeFeedCacheStale,
+  patchHomeFeedCache,
   writeHomeFeedCache,
   type HomeFeedSnapshot,
 } from '@/features/home/store/homeFeedCache';
@@ -34,12 +35,17 @@ import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import {
   deriveHomeFeedScope,
+  loadHomeChronologicalFeed,
   loadHomeFeed,
   loadMoreHomeAlbums,
+  patchHomeChronologicalFeed,
+  preserveHomeChronologicalFeeds,
+  type HomeChronologicalFeedResult,
   type HomeAlbumSection,
 } from '@/features/home/pages/homeFeedLoader';
 import {
   groupHomeCoverPrefetchBuckets,
+  homeDiscoverCoverPrefetchBucket,
   shouldOfferHomeLoadMore,
 } from '@/features/home/pages/homeCoverPrefetch';
 
@@ -109,6 +115,7 @@ export default function Home() {
   );
   const [loading, setLoading] = useState(initialFeed == null);
   const displayedSnapshotRef = useRef<HomeFeedSnapshot | null>(initialFeed);
+  const feedLoadVersionRef = useRef(0);
 
   const applyFeedSnapshot = (snap: HomeFeedSnapshot) => {
     displayedSnapshotRef.current = snap;
@@ -138,7 +145,7 @@ export default function Home() {
         limit: 24,
         priority: 'low',
       },
-      { songs: discoverSongs, limit: 16, priority: 'middle' },
+      homeDiscoverCoverPrefetchBucket(discoverSongs),
     ]),
     [heroAlbums, recent, random, mostPlayed, recentlyPlayed, starred, randomArtists, discoverSongs, servers],
   );
@@ -146,12 +153,14 @@ export default function Home() {
   useEffect(() => {
     if (serverIds.length === 0 || !scopeKey || !anchorServerId) return;
     let cancelled = false;
-    const fetchFreshHomeFeed = async (): Promise<HomeFeedSnapshot | null> => {
+    const loadVersion = ++feedLoadVersionRef.current;
+    const isCurrentLoad = () => !cancelled && feedLoadVersionRef.current === loadVersion;
+    const startFreshHomeFeed = () => {
       const mixCfg = getMixMinRatingsConfigFromAuth();
       const albumMix =
         mixCfg.enabled && (mixCfg.minAlbum > 0 || mixCfg.minArtist > 0);
       const randomSize = albumMix ? HOME_RANDOM_FETCH : HOME_DISCOVER_SLICE;
-      return loadHomeFeed({
+      const snapshot = loadHomeFeed({
         serverIds,
         scopeKey,
         anchorServerId,
@@ -163,6 +172,36 @@ export default function Home() {
         mixConfig: mixCfg,
         deps: { filterAlbumsByMixRatingsAcrossServers },
       });
+      const chronological = {
+        recent: loadHomeChronologicalFeed({
+          anchorServerId,
+          scopes,
+          feed: 'newReleases',
+        }),
+        recentlyPlayed: loadHomeChronologicalFeed({
+          anchorServerId,
+          scopes,
+          feed: 'recentlyPlayed',
+        }),
+      };
+      return { snapshot, chronological };
+    };
+    const applyChronologicalResult = (
+      section: 'recent' | 'recentlyPlayed',
+      result: HomeChronologicalFeedResult,
+    ) => {
+      if (result.status !== 'success' || !isCurrentLoad()) return;
+      const displayed = displayedSnapshotRef.current;
+      if (displayed?.scopeKey !== scopeKey || displayed.scopeVersion !== scopeVersion) return;
+      const nextDisplayed = patchHomeChronologicalFeed(displayed, section, result);
+      applyFeedSnapshot(nextDisplayed);
+      patchHomeFeedCache(scopeKey, scopeVersion, snapshot => (
+        patchHomeChronologicalFeed(snapshot, section, result)
+      ));
+    };
+    const patchChronologicalFeeds = (chronological: ReturnType<typeof startFreshHomeFeed>['chronological']) => {
+      void chronological.recent.then(result => applyChronologicalResult('recent', result));
+      void chronological.recentlyPlayed.then(result => applyChronologicalResult('recentlyPlayed', result));
     };
 
     const cached = readHomeFeedCache(scopeKey, scopeVersion)
@@ -177,15 +216,19 @@ export default function Home() {
       void primeAlbumCoversForDisplay(becauseSnap?.recs ?? [], HOME_BECAUSE_CARD_COVER_CSS_PX, {
         limit: 6,
       });
-      // Keep the current visit visually stable, but prepare fresh data so the
-      // next re-enter opens with a newer snapshot immediately.
+      // Keep cached content for first paint, then refresh this visit as soon as
+      // the independent server bundle is ready.
       if (!offlineBrowseActive) {
         void (async () => {
           try {
-            const fresh = await fetchFreshHomeFeed();
-            if (!fresh || cancelled || isHomeFeedSnapshotEmpty(fresh)) return;
-            if (displayedSnapshotRef.current !== cached) return;
+            const freshLoad = startFreshHomeFeed();
+            const loaded = await freshLoad.snapshot;
+            if (!isCurrentLoad()) return;
+            const fresh = preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current);
+            if (isHomeFeedSnapshotEmpty(fresh)) return;
             writeHomeFeedCache(fresh);
+            applyFeedSnapshot(fresh);
+            patchChronologicalFeeds(freshLoad.chronological);
             void warmHomeMainstageCovers(fresh);
           } catch {
             /* ignore */
@@ -207,12 +250,14 @@ export default function Home() {
     setLoading(true);
     (async () => {
       try {
-        const snap = await fetchFreshHomeFeed();
-        if (!snap) return;
-        if (cancelled) return;
+        const freshLoad = startFreshHomeFeed();
+        const loaded = await freshLoad.snapshot;
+        if (!isCurrentLoad()) return;
+        const snap = preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current);
         if (offlineBrowseActive && isHomeFeedSnapshotEmpty(snap)) return;
         writeHomeFeedCache(snap);
         applyFeedSnapshot(snap);
+        patchChronologicalFeeds(freshLoad.chronological);
         if (!cancelled) setLoading(false);
         void warmHomeMainstageCovers(snap);
         const becauseSnap = readBecauseYouLikeCache(scopeKey, scopeVersion);

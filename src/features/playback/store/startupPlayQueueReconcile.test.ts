@@ -3,6 +3,10 @@ import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { resetAllStores } from '@/test/helpers/storeReset';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import {
+  _resetQueueResolverForTest,
+  getCachedTrack,
+} from '@/features/playback/store/queueTrackResolver';
 
 const { fetchPlayQueueForServerMock, applyMappedQueueMock } = vi.hoisted(() => ({
   fetchPlayQueueForServerMock: vi.fn(),
@@ -30,6 +34,7 @@ function remote(ids: string[], current = ids[0]) {
 
 beforeEach(() => {
   resetAllStores();
+  _resetQueueResolverForTest();
   fetchPlayQueueForServerMock.mockReset();
   applyMappedQueueMock.mockReset();
   useAuthStore.setState({
@@ -64,19 +69,23 @@ describe('reconcileStartupPlayQueues', () => {
     expect(applyMappedQueueMock).not.toHaveBeenCalled();
   });
 
-  it('applies the only structurally changed server queue', async () => {
+  it('applies a changed non-active server projection with the reconciled owner', async () => {
+    const currentTrack = { id: 'a1', title: 'a1', artist: 'Artist', album: 'Album', albumId: 'album', duration: 100, serverId: 'a' };
+    usePlayerStore.setState({ queueIndex: 0, currentTrack });
     fetchPlayQueueForServerMock.mockImplementation(async (serverId: string) => (
-      serverId === 'a' ? remote(['a1', 'a3'], 'a1') : remote(['b1'], 'b1')
+      serverId === 'a' ? remote(['a1', 'a2'], 'a1') : remote(['b1', 'b2'], 'b1')
     ));
     await expect(reconcileStartupPlayQueues()).resolves.toBe('applied');
     expect(applyMappedQueueMock).not.toHaveBeenCalled();
     expect(usePlayerStore.getState().queueItems).toEqual([
-      { serverId: 'a.test', trackId: 'a1' },
-      { serverId: 'b', trackId: 'b1' },
-      { serverId: 'a.test', trackId: 'a3' },
+      { serverId: 'a', trackId: 'a1' },
+      { serverId: 'b.test', trackId: 'b1' },
+      { serverId: 'b.test', trackId: 'b2' },
+      { serverId: 'a', trackId: 'a2' },
     ]);
-    expect(usePlayerStore.getState().queueIndex).toBe(1);
-    expect(usePlayerStore.getState().currentTrack?.id).toBe('b1');
+    expect(usePlayerStore.getState().queueIndex).toBe(0);
+    expect(usePlayerStore.getState().currentTrack).toBe(currentTrack);
+    expect(getCachedTrack({ serverId: 'b.test', trackId: 'b2' })?.serverId).toBe('b');
   });
 
   it('keeps the existing whole-queue apply behavior for a single-server queue', async () => {
@@ -90,7 +99,7 @@ describe('reconcileStartupPlayQueues', () => {
 
     await expect(reconcileStartupPlayQueues()).resolves.toBe('applied');
     expect(applyMappedQueueMock).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ id: 'a3' })]),
+      expect.arrayContaining([expect.objectContaining({ id: 'a3', serverId: 'a' })]),
       expect.objectContaining({ current: 'a1' }),
       'a',
       true,

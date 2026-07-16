@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { albumCoverRef } from './ref';
 
 const coverCachePeekBatch = vi.hoisted(() => vi.fn(async (_refs: unknown[]) => ({})));
+const resolveAlbumCoverRefFromLibrary = vi.hoisted(() => vi.fn());
 
 vi.mock('@/lib/api/coverCache', () => ({ coverCachePeekBatch }));
 vi.mock('./diskSrcLookup', () => ({
@@ -24,11 +24,7 @@ vi.mock('./serverScope', () => ({
     : { kind: 'active' },
 }));
 vi.mock('./resolveEntryLibrary', () => ({
-  resolveAlbumCoverRefFromLibrary: vi.fn(async (
-    albumId: string,
-    coverArt: string,
-    serverScope: Parameters<typeof albumCoverRef>[2],
-  ) => albumCoverRef(albumId, coverArt, serverScope)),
+  resolveAlbumCoverRefFromLibrary,
 }));
 
 import { warmHomeMainstageCovers } from './warmDiskPeek';
@@ -36,6 +32,7 @@ import { warmHomeMainstageCovers } from './warmDiskPeek';
 describe('warmHomeMainstageCovers', () => {
   beforeEach(() => {
     coverCachePeekBatch.mockClear();
+    resolveAlbumCoverRefFromLibrary.mockClear();
   });
 
   it('builds owner-scoped album and song refs and uses song coverArt as the fetch fallback', async () => {
@@ -75,5 +72,6 @@ describe('warmHomeMainstageCovers', () => {
         serverScope: expect.objectContaining({ kind: 'server', serverId: 'srv-owner' }),
       }),
     ]));
+    expect(resolveAlbumCoverRefFromLibrary).not.toHaveBeenCalled();
   });
 });

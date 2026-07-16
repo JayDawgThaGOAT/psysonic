@@ -87,6 +87,19 @@ interface LoadMoreHomeAlbumsOptions {
   deps: Pick<HomeFeedLoaderDeps, 'filterAlbumsByMixRatingsAcrossServers'> & Partial<HomeFeedLoaderDeps>;
 }
 
+interface LoadHomeChronologicalFeedOptions {
+  anchorServerId: string;
+  scopes: LibraryScopePair[];
+  feed: 'newReleases' | 'recentlyPlayed';
+  offset?: number;
+  deps?: Pick<HomeFeedLoaderDeps, 'libraryScopeListMainstageAlbums'>;
+}
+
+export type HomeChronologicalFeedResult =
+  | { status: 'success'; albums: SubsonicAlbum[]; hasMore: boolean }
+  | { status: 'error' }
+  | { status: 'timeout' };
+
 interface ServerBundle {
   serverId: string;
   starred: OwnedAlbum[];
@@ -200,6 +213,67 @@ export async function withinHomeDeadline<T>(request: Promise<T>, fallback: T): P
   }
 }
 
+export async function loadHomeChronologicalFeed(
+  options: LoadHomeChronologicalFeedOptions,
+): Promise<HomeChronologicalFeedResult> {
+  const deps = { ...defaultDeps, ...options.deps };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const request = deps.libraryScopeListMainstageAlbums(options.anchorServerId, {
+    scopes: options.scopes,
+    feed: options.feed,
+    limit: HOME_PAGE_SIZE,
+    offset: options.offset ?? 0,
+  }).then(response => ({
+    status: 'success' as const,
+    albums: response.albums.map(albumToAlbum),
+    hasMore: response.hasMore,
+  })).catch(() => ({ status: 'error' as const }));
+  try {
+    return await Promise.race([
+      request,
+      new Promise<HomeChronologicalFeedResult>(resolve => {
+        timer = setTimeout(() => resolve({ status: 'timeout' }), HOME_REQUEST_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function patchHomeChronologicalFeed(
+  snapshot: HomeFeedSnapshot,
+  section: 'recent' | 'recentlyPlayed',
+  result: HomeChronologicalFeedResult,
+): HomeFeedSnapshot {
+  if (result.status !== 'success') return snapshot;
+  return {
+    ...snapshot,
+    savedAt: Date.now(),
+    offsets: {
+      ...snapshot.offsets,
+      [section]: { offset: result.albums.length, hasMore: result.hasMore },
+    },
+    [section]: result.albums,
+  };
+}
+
+export function preserveHomeChronologicalFeeds(
+  snapshot: HomeFeedSnapshot,
+  previous: HomeFeedSnapshot | null,
+): HomeFeedSnapshot {
+  if (!previous || previous.scopeKey !== snapshot.scopeKey) return snapshot;
+  return {
+    ...snapshot,
+    offsets: {
+      ...snapshot.offsets,
+      recent: previous.offsets.recent,
+      recentlyPlayed: previous.offsets.recentlyPlayed,
+    },
+    recent: previous.recent,
+    recentlyPlayed: previous.recentlyPlayed,
+  };
+}
+
 async function loadServerBundle(
   serverId: string,
   albumQuota: number,
@@ -258,20 +332,7 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
   const randomQuotas = allocateHomeQuotas(options.randomSize, options.serverIds.length);
   const artistQuotas = allocateHomeQuotas(HOME_DISCOVER_ARTISTS_SIZE, options.serverIds.length);
   const songQuotas = allocateHomeQuotas(HOME_DISCOVER_SONGS_SIZE, options.serverIds.length);
-  const localAlbums = (feed: 'newReleases' | 'recentlyPlayed') => withinHomeDeadline(
-    isolated(
-      () => deps.libraryScopeListMainstageAlbums(options.anchorServerId, {
-        scopes: options.scopes,
-        feed,
-        limit: HOME_PAGE_SIZE,
-        offset: 0,
-      }),
-      { albums: [], hasMore: false },
-    ),
-    { albums: [], hasMore: false },
-  );
-  const [bundles, newReleases, recentlyPlayed] = await Promise.all([
-    Promise.all(options.serverIds.map((serverId, index) => loadServerBundle(
+  const bundles = await Promise.all(options.serverIds.map((serverId, index) => loadServerBundle(
       serverId,
       albumQuotas[index] ?? 0,
       randomQuotas[index] ?? 0,
@@ -280,10 +341,7 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
       options.showArtists,
       options.showSongs,
       deps,
-    ))),
-    localAlbums('newReleases'),
-    localAlbums('recentlyPlayed'),
-  ]);
+    )));
 
   let offsets = createOffsets(options.serverIds);
   const advanceInitial = (section: PerServerHomeAlbumSection, groups: OwnedAlbum[][]) => {
@@ -297,11 +355,6 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
   advanceInitial('starred', starredGroups);
   advanceInitial('random', randomGroups);
   advanceInitial('mostPlayed', mostPlayedGroups);
-  offsets.recent = { offset: newReleases.albums.length, hasMore: newReleases.hasMore };
-  offsets.recentlyPlayed = {
-    offset: recentlyPlayed.albums.length,
-    hasMore: recentlyPlayed.hasMore,
-  };
 
   const randomRaw = dedupeOwned(stableRoundRobin(randomGroups, options.randomSize));
   const filteredRandom = dedupeOwned(await deps.filterAlbumsByMixRatingsAcrossServers(
@@ -319,11 +372,11 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
     savedAt: Date.now(),
     offsets,
     starred: dedupeOwned(stableRoundRobin(starredGroups, HOME_PAGE_SIZE)),
-    recent: newReleases.albums.map(albumToAlbum),
+    recent: [],
     heroAlbums: filteredRandom.slice(0, HOME_HERO_COUNT),
     random: filteredRandom.slice(HOME_HERO_COUNT, HOME_DISCOVER_SLICE),
     mostPlayed: dedupeOwned(stableRoundRobin(mostPlayedGroups, HOME_PAGE_SIZE)),
-    recentlyPlayed: recentlyPlayed.albums.map(albumToAlbum),
+    recentlyPlayed: [],
     randomArtists: artists,
     discoverSongs: dedupeOwned(stableRoundRobin(bundles.map(bundle => bundle.songs), HOME_DISCOVER_SONGS_SIZE)),
   };
@@ -335,18 +388,14 @@ export async function loadMoreHomeAlbums(options: LoadMoreHomeAlbumsOptions): Pr
     const section = options.section;
     const cursor = options.snapshot.offsets[section];
     if (!cursor.hasMore) return options.snapshot;
-    const response = await withinHomeDeadline(
-      isolated(
-        () => deps.libraryScopeListMainstageAlbums(options.anchorServerId, {
-          scopes: options.scopes,
-          feed: mainstageFeeds[section],
-          limit: HOME_PAGE_SIZE,
-          offset: cursor.offset,
-        }),
-        { albums: [], hasMore: false },
-      ),
-      { albums: [], hasMore: false },
-    );
+    const response = await loadHomeChronologicalFeed({
+      anchorServerId: options.anchorServerId,
+      scopes: options.scopes,
+      feed: mainstageFeeds[section],
+      offset: cursor.offset,
+      deps: { libraryScopeListMainstageAlbums: deps.libraryScopeListMainstageAlbums },
+    });
+    if (response.status !== 'success') return options.snapshot;
     return {
       ...options.snapshot,
       savedAt: Date.now(),
@@ -359,7 +408,7 @@ export async function loadMoreHomeAlbums(options: LoadMoreHomeAlbumsOptions): Pr
       },
       [section]: [
         ...options.snapshot[section],
-        ...response.albums.map(albumToAlbum),
+        ...response.albums,
       ],
     };
   }

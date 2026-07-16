@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 18;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 19;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -59,6 +59,10 @@ pub(crate) const MIGRATION_017_LIBRARY_TAG_STATE: &str =
 /// prune's freshness lookup is an index seek instead of a per-server scan.
 pub(crate) const MIGRATION_018_ARTIST_SYNCED_INDEX: &str =
     include_str!("../migrations/018_artist_synced_index.sql");
+/// Version 19: partial covering-order index for candidate-first main-stage
+/// New Releases reads over one `(server_id, library_id)` scope.
+pub(crate) const MIGRATION_019_MAINSTAGE_FEED_INDEXES: &str =
+    include_str!("../migrations/019_mainstage_feed_indexes.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -71,6 +75,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (16, MIGRATION_016_MULTI_LIBRARY_SCOPE),
     (17, MIGRATION_017_LIBRARY_TAG_STATE),
     (18, MIGRATION_018_ARTIST_SYNCED_INDEX),
+    (19, MIGRATION_019_MAINSTAGE_FEED_INDEXES),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -1432,6 +1437,22 @@ mod tests {
             .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM sqlite_stat1", [], |r| r.get(0)))
             .unwrap();
         assert!(stat_rows > 0, "ANALYZE should populate sqlite_stat1");
+    }
+
+    #[test]
+    fn migration_019_creates_mainstage_created_index() {
+        let store = LibraryStore::open_in_memory();
+        let sql: String = store
+            .with_conn("test.mainstage_index", |conn| {
+                conn.query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    params!["idx_track_library_created_album"],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert!(sql.contains("server_id, library_id, server_created_at DESC, album_id, id"));
+        assert!(sql.contains("server_created_at IS NOT NULL"));
     }
 
     #[test]

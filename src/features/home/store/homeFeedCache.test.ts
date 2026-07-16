@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearHomeFeedCache,
+  patchHomeFeedCache,
   readHomeFeedCache,
   readHomeFeedCacheStale,
   writeHomeFeedCache,
@@ -52,5 +53,23 @@ describe('homeFeedCache', () => {
     vi.setSystemTime(15 * 60 * 1000 + 1);
     expect(readHomeFeedCache('scope', 1)).toBeNull();
     expect(readHomeFeedCacheStale('scope')).toBeNull();
+  });
+
+  it('patches an existing initial snapshot without invalidating its cache key', () => {
+    write('scope', 1);
+    const patched = patchHomeFeedCache('scope', 1, snapshot => ({
+      ...snapshot,
+      recent: [{
+        id: 'new',
+        name: 'New',
+        artist: 'Artist',
+        artistId: 'artist',
+        songCount: 1,
+        duration: 1,
+      }],
+      offsets: { ...snapshot.offsets, recent: { offset: 1, hasMore: true } },
+    }));
+    expect(patched?.recent.map(album => album.id)).toEqual(['new']);
+    expect(readHomeFeedCache('scope', 1)?.offsets.recent).toEqual({ offset: 1, hasMore: true });
   });
 });

@@ -111,7 +111,7 @@ export async function reconcileStartupPlayQueues(): Promise<StartupQueueReconcil
 
   if (changed.length !== 1 || changed[0].queue.songs.length === 0) return 'kept-local';
   const [{ serverId, queue }] = changed;
-  const mappedTracks = queue.songs.map(songToTrack);
+  const mappedTracks = queue.songs.map(song => ({ ...songToTrack(song), serverId }));
   if (representedServerIds.size > 1) {
     applyMappedQueueProjection(mappedTracks, queue, serverId);
   } else {
