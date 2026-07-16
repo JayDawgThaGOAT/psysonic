@@ -11,7 +11,7 @@ let idleQueuePullSuspended = false;
  * (or a manual pull) clears it. Distinct from `idleQueuePullSuspended` — it does
  * NOT drive the handoff LED, so a single transient failure does not nag the user.
  */
-let queuePushFailed = false;
+const queuePushFailedByServer = new Set<string>();
 /** Set when repeat-off playback reaches the queue tail — blocks idle pull until play resumes. */
 let queueNaturallyEnded = false;
 /** Bumped on each local queue mutation; stale in-flight idle pulls must not apply. */
@@ -80,17 +80,20 @@ export function isIdleQueuePullSuspended(): boolean {
 }
 
 /** Mark the last server push as failed (blocks idle pull until a push succeeds). */
-export function markQueuePushFailed(): void {
-  queuePushFailed = true;
+export function markQueuePushFailed(serverId = ''): void {
+  queuePushFailedByServer.add(serverId);
 }
 
 /** Clear the failed-push guard — called on a successful push or a manual pull. */
-export function clearQueuePushFailed(): void {
-  queuePushFailed = false;
+export function clearQueuePushFailed(serverId = ''): void {
+  queuePushFailedByServer.delete(serverId);
+  if (serverId) queuePushFailedByServer.delete('');
 }
 
-export function isQueuePushFailed(): boolean {
-  return queuePushFailed;
+export function isQueuePushFailed(serverId?: string): boolean {
+  return serverId === undefined
+    ? queuePushFailedByServer.size > 0
+    : queuePushFailedByServer.has(serverId) || queuePushFailedByServer.has('');
 }
 
 export function getIdlePullGeneration(): number {
@@ -117,7 +120,7 @@ export function _resetQueuePlaybackIdleForTest(): void {
   playbackIdleSinceMs = 0;
   lastQueueMutationAt = 0;
   idleQueuePullSuspended = false;
-  queuePushFailed = false;
+  queuePushFailedByServer.clear();
   queueNaturallyEnded = false;
   idlePullGeneration = 0;
 }

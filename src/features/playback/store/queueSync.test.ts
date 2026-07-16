@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 
 const { savePlayQueueMock, playerState, progressSnapshot, isSubsonicServerReachableMock } = vi.hoisted(() => ({
-  savePlayQueueMock: vi.fn(async () => undefined),
+  savePlayQueueMock: vi.fn(async (
+    _ids?: string[],
+    _current?: string,
+    _position?: number,
+    _serverId?: string,
+  ) => undefined),
   isSubsonicServerReachableMock: vi.fn((_serverId: string) => true),
   playerState: {
     queueItems: [] as QueueItemRef[],
@@ -24,7 +29,13 @@ vi.mock('@/features/playback/utils/playback/playbackServer', () => ({
 }));
 vi.mock('@/features/playback/utils/playback/trackServerScope', () => ({
   filterQueueRefsForServerProfile: (refs: QueueItemRef[], profileId: string) =>
-    refs.filter(r => r.serverId === profileId || (profileId === 'srv-a' && r.serverId === 'srv-a')),
+    refs.filter(r => r.serverId === profileId
+      || (profileId === 'srv-a' && r.serverId === 'a.test')
+      || (profileId === 'srv-b' && r.serverId === 'b.test')),
+}));
+vi.mock('@/lib/media/trackServerScope', () => ({
+  profileIdFromQueueRef: (queueRef: QueueItemRef) =>
+    queueRef.serverId === 'a.test' ? 'srv-a' : queueRef.serverId === 'b.test' ? 'srv-b' : queueRef.serverId,
 }));
 vi.mock('@/features/playback/store/playerStore', () => ({
   usePlayerStore: { getState: () => playerState },
@@ -43,6 +54,7 @@ import {
   hasPendingQueueSync,
   pushQueueOnPlaybackStart,
   syncQueueToServer,
+  syncUserQueueClearToServers,
   syncUserQueueMutationToServer,
 } from '@/features/playback/store/queueSync';
 import {
@@ -128,6 +140,66 @@ describe('syncUserQueueMutationToServer (debounced)', () => {
     expect(isIdleQueuePullSuspended()).toBe(true);
     expect(isQueuePushFailed()).toBe(true);
   });
+
+  it('schedules independent server projections for a mixed queue', async () => {
+    const mixed = [ref('a1', 'a.test'), ref('b1', 'b.test'), ref('a2', 'a.test')];
+    syncUserQueueMutationToServer(mixed, track('a1', 'srv-a'), 12);
+
+    expect(hasPendingQueueSync()).toBe(true);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(savePlayQueueMock).toHaveBeenCalledTimes(2);
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['a1', 'a2'], 'a1', 12000, 'srv-a');
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['b1'], 'b1', 0, 'srv-b');
+    expect(hasPendingQueueSync()).toBe(false);
+  });
+
+  it('rescheduling one server does not cancel another server projection', async () => {
+    syncUserQueueMutationToServer(
+      [ref('a1', 'a.test'), ref('b1', 'b.test')],
+      track('a1', 'srv-a'),
+      4,
+    );
+    vi.advanceTimersByTime(1000);
+    syncUserQueueMutationToServer([ref('a2', 'a.test')], track('a2', 'srv-a'), 8);
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['b1'], 'b1', 0, 'srv-b');
+    expect(savePlayQueueMock).not.toHaveBeenCalledWith(['a1'], 'a1', 4000, 'srv-a');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['a2'], 'a2', 8000, 'srv-a');
+  });
+
+  it('a failed server projection does not mark another server as failed', async () => {
+    savePlayQueueMock.mockImplementation(async (_ids, _current, _position, serverId) => {
+      if (serverId === 'srv-b') throw new Error('offline');
+    });
+    syncUserQueueMutationToServer(
+      [ref('a1', 'a.test'), ref('b1', 'b.test')],
+      track('a1', 'srv-a'),
+      4,
+    );
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(isQueuePushFailed('srv-a')).toBe(false);
+    expect(isQueuePushFailed('srv-b')).toBe(true);
+  });
+});
+
+describe('syncUserQueueClearToServers', () => {
+  it('clears every remote server queue represented by the previous mixed queue', async () => {
+    syncUserQueueClearToServers([
+      ref('a1', 'a.test'),
+      ref('b1', 'b.test'),
+      ref('a2', 'a.test'),
+    ]);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(savePlayQueueMock).toHaveBeenCalledTimes(2);
+    expect(savePlayQueueMock).toHaveBeenCalledWith([], undefined, undefined, 'srv-a');
+    expect(savePlayQueueMock).toHaveBeenCalledWith([], undefined, undefined, 'srv-b');
+  });
 });
 
 describe('pushQueueOnPlaybackStart', () => {
@@ -203,6 +275,14 @@ describe('flushPlayQueueForServer', () => {
     progressSnapshot.currentTime = 9;
     await flushPlayQueueForServer('srv-a');
     expect(savePlayQueueMock).toHaveBeenCalledWith(['a'], 'a', 9000, 'srv-a');
+  });
+
+  it('saves an inactive server slice with its first item at position zero', async () => {
+    playerState.queueItems = [ref('a', 'a.test'), ref('b', 'b.test')];
+    playerState.currentTrack = track('a', 'srv-a');
+    progressSnapshot.currentTime = 9;
+    await flushPlayQueueForServer('srv-b');
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['b'], 'b', 0, 'srv-b');
   });
 });
 

@@ -8,6 +8,7 @@ import {
   playbackProfileIdForTrack,
 } from '@/features/playback/utils/playback/playbackServer';
 import { filterQueueRefsForServerProfile } from '@/features/playback/utils/playback/trackServerScope';
+import { profileIdFromQueueRef } from '@/lib/media/trackServerScope';
 import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackProgress';
 import {
   touchQueueMutationClock,
@@ -43,13 +44,35 @@ import { usePlayerStore } from '@/features/playback/store/playerStore';
 const SYNC_DEBOUNCE_MS = 5000;
 const QUEUE_ID_LIMIT = 1000;
 
-let syncTimeout: ReturnType<typeof setTimeout> | null = null;
-let lastQueueHeartbeatAt = 0;
+const syncTimeoutByServer = new Map<string, ReturnType<typeof setTimeout>>();
+const lastQueueHeartbeatAtByServer = new Map<string, number>();
 
-function isPlaybackServerReachable(): boolean {
-  const serverId = getPlaybackServerId();
+function isQueueServerReachable(serverId: string): boolean {
   if (!serverId || serverId === NAVIDROME_PUBLIC_SHARE_SERVER_ID) return false;
   return isSubsonicServerReachable(serverId);
+}
+
+function isPlaybackServerReachable(): boolean {
+  return isQueueServerReachable(getPlaybackServerId());
+}
+
+function queueRefsByServer(queue: QueueItemRef[]): Map<string, QueueItemRef[]> {
+  const grouped = new Map<string, QueueItemRef[]>();
+  for (const ref of queue) {
+    const serverId = profileIdFromQueueRef(ref);
+    if (!serverId || serverId === NAVIDROME_PUBLIC_SHARE_SERVER_ID) continue;
+    const refs = grouped.get(serverId);
+    if (refs) refs.push(ref);
+    else grouped.set(serverId, [ref]);
+  }
+  return grouped;
+}
+
+function cancelPendingQueueSync(serverId: string): void {
+  const timeout = syncTimeoutByServer.get(serverId);
+  if (!timeout) return;
+  clearTimeout(timeout);
+  syncTimeoutByServer.delete(serverId);
 }
 
 /** @returns true when the server accepted the queue (or there was nothing to push). */
@@ -59,15 +82,16 @@ function pushRefsForServer(
   currentTime: number,
   serverId: string,
 ): Promise<boolean> {
-  if (!serverId || refs.length === 0 || !currentTrack) return Promise.resolve(true);
-  if (playbackProfileIdForTrack(currentTrack) !== serverId) return Promise.resolve(true);
+  if (!serverId || refs.length === 0) return Promise.resolve(true);
   const ids = refs.slice(0, QUEUE_ID_LIMIT).map(r => r.trackId);
-  const pos = Math.floor(currentTime * 1000);
-  return savePlayQueue(ids, currentTrack.id, pos, serverId).then(
+  const ownsCurrentTrack = currentTrack != null && playbackProfileIdForTrack(currentTrack) === serverId;
+  const currentId = ownsCurrentTrack ? currentTrack.id : ids[0];
+  const pos = ownsCurrentTrack ? Math.floor(currentTime * 1000) : 0;
+  return savePlayQueue(ids, currentId, pos, serverId).then(
     () => {
       // Server accepted the queue: local and server agree, so any prior failed
       // push is resolved and idle auto-pull can safely resume.
-      clearQueuePushFailed();
+      clearQueuePushFailed(serverId);
       return true;
     },
     () => {
@@ -75,7 +99,7 @@ function pushRefsForServer(
       // idle auto-pull cannot rewind to the last successful server snapshot.
       // Transient and self-clearing (next successful push), and does not light
       // the handoff LED — unlike a user edit's `idleQueuePullSuspended`.
-      markQueuePushFailed();
+      markQueuePushFailed(serverId);
       return false;
     },
   );
@@ -87,14 +111,46 @@ function scheduleQueueSyncToServer(
   currentTime: number,
 ): void {
   if (!isPlaybackServerReachable()) return;
-  if (syncTimeout) clearTimeout(syncTimeout);
-  syncTimeout = setTimeout(() => {
-    syncTimeout = null;
-    if (!isPlaybackServerReachable()) return;
-    const serverId = getPlaybackServerId();
-    const refs = filterQueueRefsForPlaybackServer(queue);
+  const serverId = getPlaybackServerId();
+  cancelPendingQueueSync(serverId);
+  const timeout = setTimeout(() => {
+    syncTimeoutByServer.delete(serverId);
+    if (!isQueueServerReachable(serverId)) return;
+    const refs = filterQueueRefsForServerProfile(queue, serverId);
     void pushRefsForServer(refs, currentTrack, currentTime, serverId);
   }, SYNC_DEBOUNCE_MS);
+  syncTimeoutByServer.set(serverId, timeout);
+}
+
+function scheduleUserQueueSyncByServer(
+  queue: QueueItemRef[],
+  currentTrack: Track | null,
+  currentTime: number,
+): void {
+  for (const [serverId, refs] of queueRefsByServer(queue)) {
+    if (!isQueueServerReachable(serverId)) continue;
+    cancelPendingQueueSync(serverId);
+    const timeout = setTimeout(() => {
+      syncTimeoutByServer.delete(serverId);
+      if (!isQueueServerReachable(serverId)) return;
+      void pushRefsForServer(refs, currentTrack, currentTime, serverId);
+    }, SYNC_DEBOUNCE_MS);
+    syncTimeoutByServer.set(serverId, timeout);
+  }
+}
+
+function scheduleQueueClearForServer(serverId: string): void {
+  if (!isQueueServerReachable(serverId)) return;
+  cancelPendingQueueSync(serverId);
+  const timeout = setTimeout(() => {
+    syncTimeoutByServer.delete(serverId);
+    if (!isQueueServerReachable(serverId)) return;
+    void savePlayQueue([], undefined, undefined, serverId).then(
+      () => clearQueuePushFailed(serverId),
+      () => markQueuePushFailed(serverId),
+    );
+  }, SYNC_DEBOUNCE_MS);
+  syncTimeoutByServer.set(serverId, timeout);
 }
 
 /** Debounced push during playback (track advance, resume) — does not suspend idle pull. */
@@ -109,7 +165,15 @@ export function syncUserQueueMutationToServer(
   currentTime: number,
 ): void {
   touchQueueMutationClock();
-  scheduleQueueSyncToServer(queue, currentTrack, currentTime);
+  scheduleUserQueueSyncByServer(queue, currentTrack, currentTime);
+}
+
+/** Debounced remote clear for every server represented by the removed local refs. */
+export function syncUserQueueClearToServers(previousQueue: QueueItemRef[]): void {
+  touchQueueMutationClock();
+  for (const serverId of queueRefsByServer(previousQueue).keys()) {
+    scheduleQueueClearForServer(serverId);
+  }
 }
 
 /** @returns true when the push succeeded (or was a no-op). */
@@ -118,14 +182,11 @@ export function flushQueueSyncToServer(
   currentTrack: Track | null,
   currentTime: number,
 ): Promise<boolean> {
-  if (syncTimeout) {
-    clearTimeout(syncTimeout);
-    syncTimeout = null;
-  }
+  const serverId = getPlaybackServerId();
+  cancelPendingQueueSync(serverId);
   if (!isPlaybackServerReachable()) return Promise.resolve(true);
   if (!currentTrack || queue.length === 0) return Promise.resolve(true);
-  lastQueueHeartbeatAt = Date.now();
-  const serverId = getPlaybackServerId();
+  lastQueueHeartbeatAtByServer.set(serverId, Date.now());
   const refs = filterQueueRefsForPlaybackServer(queue);
   return pushRefsForServer(refs, currentTrack, currentTime, serverId);
 }
@@ -135,27 +196,26 @@ export function flushQueueSyncToServer(
  * Does not mutate local player state.
  */
 export function flushPlayQueueForServer(serverProfileId: string): Promise<boolean> {
-  if (syncTimeout) {
-    clearTimeout(syncTimeout);
-    syncTimeout = null;
-  }
+  cancelPendingQueueSync(serverProfileId);
   if (!serverProfileId || !isSubsonicServerReachable(serverProfileId)) return Promise.resolve(true);
   const s = usePlayerStore.getState();
   if (s.currentRadio) return Promise.resolve(true);
   const refs = filterQueueRefsForServerProfile(s.queueItems, serverProfileId);
-  if (refs.length === 0 || !s.currentTrack) return Promise.resolve(true);
+  if (refs.length === 0) return Promise.resolve(true);
   const currentTime = getPlaybackProgressSnapshot().currentTime;
   return pushRefsForServer(refs, s.currentTrack, currentTime, serverProfileId);
 }
 
 /** True while a debounced savePlayQueue is scheduled. */
-export function hasPendingQueueSync(): boolean {
-  return syncTimeout !== null;
+export function hasPendingQueueSync(serverId?: string): boolean {
+  return serverId === undefined
+    ? syncTimeoutByServer.size > 0
+    : syncTimeoutByServer.has(serverId);
 }
 
 /** Last heartbeat timestamp (ms epoch). Used by the playback heartbeat to throttle the 15-second auto-flush cadence. */
 export function getLastQueueHeartbeatAt(): number {
-  return lastQueueHeartbeatAt;
+  return lastQueueHeartbeatAtByServer.get(getPlaybackServerId()) ?? 0;
 }
 
 /**
@@ -178,10 +238,7 @@ export function finalizePlayQueueAtTrackEnd(
   queue: QueueItemRef[],
   currentTrack: Track,
 ): Promise<boolean> {
-  if (syncTimeout) {
-    clearTimeout(syncTimeout);
-    syncTimeout = null;
-  }
+  cancelPendingQueueSync(getPlaybackServerId());
   markQueueNaturallyEnded();
   const endSec = Math.max(0, currentTrack.duration ?? 0);
   return flushQueueSyncToServer(queue, currentTrack, endSec);
@@ -198,7 +255,8 @@ export function pushQueueOnPlaybackStart(
   currentTime: number,
 ): void {
   if (!currentTrack || queue.length === 0) return;
-  if (isIdleQueuePullSuspended() || isQueuePushFailed()) {
+  const serverId = getPlaybackServerId();
+  if (isIdleQueuePullSuspended() || isQueuePushFailed(serverId)) {
     void flushQueueSyncToServer(queue, currentTrack, currentTime).then(ok => {
       if (ok) resumeIdleQueuePull();
     });
@@ -208,7 +266,8 @@ export function pushQueueOnPlaybackStart(
 }
 
 export function flushLocalQueueWhenTakingPlayback(): Promise<void> {
-  if (!isIdleQueuePullSuspended() && !isQueuePushFailed()) return Promise.resolve();
+  const serverId = getPlaybackServerId();
+  if (!isIdleQueuePullSuspended() && !isQueuePushFailed(serverId)) return Promise.resolve();
   const s = usePlayerStore.getState();
   if (s.currentRadio || !s.currentTrack || s.queueItems.length === 0) {
     return Promise.resolve();
@@ -224,9 +283,9 @@ export function flushLocalQueueWhenTakingPlayback(): Promise<void> {
 
 /** Test-only: drop the debounce + reset the heartbeat. */
 export function _resetQueueSyncForTest(): void {
-  if (syncTimeout) {
-    clearTimeout(syncTimeout);
-    syncTimeout = null;
+  for (const timeout of syncTimeoutByServer.values()) {
+    clearTimeout(timeout);
   }
-  lastQueueHeartbeatAt = 0;
+  syncTimeoutByServer.clear();
+  lastQueueHeartbeatAtByServer.clear();
 }

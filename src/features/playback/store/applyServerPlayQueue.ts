@@ -139,7 +139,7 @@ export async function applyServerPlayQueue(
     return 'noop';
   }
 
-  if (options.mode === 'idle' && (isIdleQueuePullSuspended() || isQueuePushFailed())) {
+  if (options.mode === 'idle' && (isIdleQueuePullSuspended() || isQueuePushFailed(profileId))) {
     return 'noop';
   }
   const idleGenerationAtStart = options.mode === 'idle' ? getIdlePullGeneration() : null;
@@ -158,7 +158,7 @@ export async function applyServerPlayQueue(
 
     const preferServerPosition = options.preferServerPosition ?? options.mode !== 'startup';
     if (options.mode === 'idle') {
-      if (isIdleQueuePullSuspended() || isQueuePushFailed()) return 'noop';
+      if (isIdleQueuePullSuspended() || isQueuePushFailed(profileId)) return 'noop';
       if (idleGenerationAtStart !== getIdlePullGeneration()) return 'noop';
       const serverFp = fingerprintFromServer(q);
       const localFp = fingerprintFromLocalQueue();
@@ -202,7 +202,7 @@ export async function pullPlayQueueFromActiveServer(): Promise<ApplyPlayQueueRes
     const q = await getPlayQueueForServer(activeId);
     if (q.songs.length === 0) {
       resumeIdleQueuePull();
-      clearQueuePushFailed();
+      clearQueuePushFailed(activeId);
       return 'empty';
     }
 
@@ -210,7 +210,7 @@ export async function pullPlayQueueFromActiveServer(): Promise<ApplyPlayQueueRes
     const localFp = fingerprintFromLocalQueue();
     if (playQueueFingerprintsEqual(serverFp, localFp)) {
       resumeIdleQueuePull();
-      clearQueuePushFailed();
+      clearQueuePushFailed(activeId);
       return 'noop';
     }
 
@@ -221,7 +221,7 @@ export async function pullPlayQueueFromActiveServer(): Promise<ApplyPlayQueueRes
     });
     if (result === 'applied' || result === 'noop') {
       resumeIdleQueuePull();
-      clearQueuePushFailed();
+      clearQueuePushFailed(activeId);
     }
     return result;
   } catch (e) {

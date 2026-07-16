@@ -86,6 +86,16 @@ describe('queue push failed flag', () => {
     _resetQueuePlaybackIdleForTest();
     expect(isQueuePushFailed()).toBe(false);
   });
+
+  it('tracks failures independently by server', () => {
+    markQueuePushFailed('srv-b');
+    expect(isQueuePushFailed('srv-a')).toBe(false);
+    expect(isQueuePushFailed('srv-b')).toBe(true);
+    clearQueuePushFailed('srv-a');
+    expect(isQueuePushFailed('srv-b')).toBe(true);
+    clearQueuePushFailed('srv-b');
+    expect(isQueuePushFailed()).toBe(false);
+  });
 });
 
 describe('natural queue end', () => {

@@ -40,10 +40,10 @@ export function useIdlePlayQueuePull(status: ConnectionStatus) {
       if (isPlaying) return;
       if (!isPlaybackIdleLongEnough(IDLE_THRESHOLD_MS)) return;
       if (isIdleQueuePullSuspended()) return;
-      if (isQueuePushFailed()) return;
-      if (isQueueNaturallyEnded()) return;
-      if (hasPendingQueueSync()) return;
       if (!activeServerId) return;
+      if (isQueuePushFailed(activeServerId)) return;
+      if (isQueueNaturallyEnded()) return;
+      if (hasPendingQueueSync(activeServerId)) return;
 
       inFlightRef.current = true;
       void applyServerPlayQueue(activeServerId, { mode: 'idle', preferServerPosition: true })

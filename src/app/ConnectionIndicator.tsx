@@ -245,8 +245,6 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
                     <span className="nav-library-dropdown-item-label">{labelText}</span>
                     {switchingId === srv.id ? (
                       <div className="spinner" style={{ width: 14, height: 14, flexShrink: 0 }} aria-hidden />
-                    ) : active ? (
-                      <Check size={16} className="nav-library-dropdown-check" aria-hidden />
                     ) : (
                       <span className="nav-library-dropdown-check-spacer" aria-hidden />
                     )}

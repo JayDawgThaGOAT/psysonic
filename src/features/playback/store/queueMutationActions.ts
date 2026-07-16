@@ -8,7 +8,10 @@ import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
 import { toQueueItemRefs } from '@/features/playback/store/queueItemRef';
 import { seedQueueResolver } from '@/features/playback/store/queueTrackResolver';
 import { pushQueueUndoFromGetter } from '@/features/playback/store/queueUndo';
-import { syncUserQueueMutationToServer } from '@/features/playback/store/queueSync';
+import {
+  syncUserQueueClearToServers,
+  syncUserQueueMutationToServer,
+} from '@/features/playback/store/queueSync';
 import {
   addRadioSessionSeen,
   clearRadioSessionSeenIds,
@@ -253,8 +256,9 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       if (!s.currentTrack) {
         if (s.queueItems.length === 0) return;
         if (!skipQueueUndo) pushQueueUndoFromGetter(get);
+        const previousItems = itemsOf(s);
         set({ queueItems: [], queueIndex: 0 });
-        syncUserQueueMutationToServer([], null, 0);
+        syncUserQueueClearToServers(previousItems);
         return;
       }
       if (!skipQueueUndo) pushQueueUndoFromGetter(get);
@@ -272,6 +276,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
     },
 
     clearQueue: () => {
+      const previousItems = itemsOf(get());
       void playListenSessionFinalize('stop');
       audioStop().catch(console.error);
       setIsAudioPaused(false);
@@ -291,7 +296,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         buffered: 0,
         currentTime: 0,
       });
-      syncUserQueueMutationToServer([], null, 0);
+      syncUserQueueClearToServers(previousItems);
     },
 
     reorderQueue: (startIndex, endIndex) => {
