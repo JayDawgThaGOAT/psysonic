@@ -38,4 +38,5 @@ export const albums = {
   noFavorites: 'Geen favoriete albums komen overeen met de huidige filters.',
   noCompilations: 'Geen compilaties komen overeen met de huidige filters.',
   noMatchingFilters: 'Geen albums komen overeen met de huidige filters.',
+  copyDiagnostics: 'Tijdsrapport kopiëren',
 };

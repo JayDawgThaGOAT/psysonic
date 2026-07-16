@@ -2,7 +2,12 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { onInvoke } from '@/test/mocks/tauri';
 import { useAuthStore } from '@/store/authStore';
 import { setPsyLabDebugTrace } from '@/lib/perf/psyLabDebugTraces';
-import { beginAlbumBrowseTrace, emitAlbumBrowseDebug } from './albumBrowseDebug';
+import {
+  beginAlbumBrowseTrace,
+  emitAlbumBrowseDebug,
+  formatAlbumBrowseTraceReport,
+  getAlbumBrowseTraceSnapshot,
+} from './albumBrowseDebug';
 
 describe('albumBrowseDebug', () => {
   beforeEach(() => {
@@ -48,5 +53,22 @@ describe('albumBrowseDebug', () => {
     });
     emitAlbumBrowseDebug('page_mount');
     expect(invoked).toBe(false);
+  });
+
+  it('retains a copyable timeline when the Albums trace is enabled without debug logging', () => {
+    setPsyLabDebugTrace('albumsBrowse', true);
+    beginAlbumBrowseTrace({ serverId: 'srv' });
+    emitAlbumBrowseDebug('local_catalog_bootstrap_done', { stepMs: 42, albumCount: 30 });
+
+    expect(getAlbumBrowseTraceSnapshot()).toEqual([
+      expect.objectContaining({ step: 'session_start', details: { serverId: 'srv' } }),
+      expect.objectContaining({
+        step: 'local_catalog_bootstrap_done',
+        details: { stepMs: 42, albumCount: 30 },
+      }),
+    ]);
+    expect(formatAlbumBrowseTraceReport({ route: '/albums' })).toContain(
+      'step: local_catalog_bootstrap_done',
+    );
   });
 });

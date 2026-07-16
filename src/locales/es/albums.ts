@@ -38,5 +38,6 @@ export const albums = {
   noFavorites: 'Ningún álbum favorito coincide con los filtros actuales.',
   noCompilations: 'Ninguna compilación coincide con los filtros actuales.',
   noMatchingFilters: 'Ningún álbum coincide con los filtros actuales.',
+  copyDiagnostics: 'Copiar informe de tiempos',
   addToPlaylist: 'Agregar a Lista de Reproducción',
 };

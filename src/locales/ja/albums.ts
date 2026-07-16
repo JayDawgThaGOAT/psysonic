@@ -38,4 +38,5 @@ export const albums = {
   noFavorites: '現在のフィルターに一致するお気に入りアルバムはありません。',
   noCompilations: '現在のフィルターに一致するコンピレーションはありません。',
   noMatchingFilters: '現在のフィルターに一致するアルバムはありません。',
+  copyDiagnostics: '時間レポートをコピー',
 };

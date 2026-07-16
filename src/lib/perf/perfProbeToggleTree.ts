@@ -310,7 +310,7 @@ export const PERF_PROBE_TOGGLE_TREE: PerfToggleGroup[] = [
                 id: 'albumsBrowseTrace',
                 label: 'Browse perf trace',
                 description:
-                  'Step timing for nav → SQL → paint (`albums-browse` scope). Requires PsyLab → Logs → Debug.',
+                  'Copy nav → SQL → paint timings from Albums. Enable PsyLab → Logs → Debug for correlated `albums-browse` logs.',
                 trace: 'albumsBrowse',
               },
             ],

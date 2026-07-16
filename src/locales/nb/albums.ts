@@ -38,4 +38,5 @@ export const albums = {
   noFavorites: 'Ingen favorittalbum samsvarer med gjeldende filtre.',
   noCompilations: 'Ingen samleplater samsvarer med gjeldende filtre.',
   noMatchingFilters: 'Ingen album samsvarer med gjeldende filtre.',
+  copyDiagnostics: 'Kopier tidsrapport',
 };

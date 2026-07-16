@@ -1,7 +1,7 @@
 import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
 import { resolveAlbum } from '@/features/offline';
 import { songToTrack } from '@/lib/media/songToTrack';
-import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import AlbumCard from '@/features/album/components/AlbumCard';
 import AlbumBrowseGridSkeleton from '@/features/album/components/AlbumBrowseGridSkeleton';
 import { albumGridWarmCovers, coverDisplayCssPxForAlbumGrid } from '@/cover/layoutSizes';
@@ -57,8 +57,12 @@ import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
 import {
   beginAlbumBrowseTrace,
   emitAlbumBrowseDebug,
+  formatAlbumBrowseTraceReport,
+  getAlbumBrowseTraceSnapshot,
+  subscribeAlbumBrowseTrace,
 } from '@/lib/library/albumBrowseDebug';
 import { librarySelectionForServer } from '@/lib/api/subsonicClient';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 
 type SortType = AlbumBrowseSort;
 
@@ -73,6 +77,12 @@ function sanitizeFilename(name: string): string {
 
 export default function Albums() {
   const perfFlags = usePerfProbeFlags();
+  const albumsBrowseDiagnosticsEnabled = usePsyLabDebugTraces().albumsBrowse;
+  const traceEntries = useSyncExternalStore(
+    subscribeAlbumBrowseTrace,
+    getAlbumBrowseTraceSnapshot,
+    getAlbumBrowseTraceSnapshot,
+  );
   const { t } = useTranslation();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
@@ -415,8 +425,48 @@ export default function Albums() {
     { value: 'byArtistThenYear',     label: t('albums.sortByArtistYear') },
   ];
 
+  const copyAlbumBrowseDiagnostics = async () => {
+    const text = formatAlbumBrowseTraceReport({
+      route: '/albums',
+      serverId,
+      indexEnabled,
+      libraryScopeCount: librarySelectionForServer(serverId).length,
+      browseMode: browseData.browseMode,
+      sort,
+      genres: selectedGenres,
+      yearFrom: debouncedYearFields.from || null,
+      yearTo: debouncedYearFields.to || null,
+      losslessOnly,
+      starredOnly,
+      compFilter,
+      loading,
+      loadingMore,
+      albumCount: albums.length,
+      visibleAlbumCount: visibleAlbums.length,
+      displayAlbumCount: displayAlbums.length,
+      hasMore,
+      traceEntryCount: traceEntries.length,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
+
   return (
     <div className={`content-body animate-fade-in mainstage-inpage-split${mainstageHeaderTight ? ' mainstage-inpage--header-tight' : ''}`}>
+      {albumsBrowseDiagnosticsEnabled && (
+        <div className="mainstage-diagnostic-copy-all">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void copyAlbumBrowseDiagnostics()}
+          >
+            {t('albums.copyDiagnostics')}
+          </button>
+        </div>
+      )}
       {!perfFlags.disableMainstageStickyHeader && (
         <div className="mainstage-inpage-toolbar">
           <div className="page-sticky-header mainstage-inpage-toolbar-row">

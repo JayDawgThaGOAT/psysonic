@@ -668,12 +668,17 @@ export function useAlbumBrowseData({
 
   const loadMorePage = useCallback(() => {
     if (loadingRef.current || loadPendingRef.current || !hasMore || genreFiltered) return;
-    if (coverEnsureQueueBacklog() > LOAD_MORE_COVER_BACKLOG_MAX) return;
+    const coverBacklog = coverEnsureQueueBacklog();
+    if (coverBacklog > LOAD_MORE_COVER_BACKLOG_MAX) {
+      emitAlbumBrowseDebug('load_more_deferred_cover_backlog', { coverBacklog });
+      return;
+    }
     if (compFilterClientOnly && visibleAlbums.length === 0
       && albumBrowseCompScanComplete(albums, compFilter, hasMore)) {
       return;
     }
     const next = pageRef.current + 1;
+    emitAlbumBrowseDebug('load_more_page_start', { page: next, offset: next * PAGE_SIZE, coverBacklog });
     pageRef.current = next;
     setPage(next);
     void loadBrowse(browseQuery, next * PAGE_SIZE, true);
@@ -694,6 +699,7 @@ export function useAlbumBrowseData({
       return;
     }
     if (catalogHasMore && !catalogLoadingRef.current) {
+      emitAlbumBrowseDebug('load_more_catalog_start', { offset: catalogOffsetRef.current });
       void loadCatalogChunk(browseQuery, catalogOffsetRef.current, true);
     }
   }, [
