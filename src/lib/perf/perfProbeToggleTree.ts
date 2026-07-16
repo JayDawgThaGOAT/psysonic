@@ -318,6 +318,24 @@ export const PERF_PROBE_TOGGLE_TREE: PerfToggleGroup[] = [
         ],
       },
       {
+        id: 'home-mainstage',
+        label: 'Home (`/`)',
+        children: [
+          {
+            id: 'mainstage-debug-traces',
+            label: 'Debug traces',
+            children: [
+              {
+                id: 'mainstageTrace',
+                label: 'Mainstage diagnostics',
+                description: 'Show per-section timings, copy reports, and isolate Home sections.',
+                trace: 'mainstage',
+              },
+            ],
+          },
+        ],
+      },
+      {
         id: 'mainstage-artists',
         label: 'Artists (`/artists`)',
         children: [

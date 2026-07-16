@@ -10,18 +10,22 @@ interface MainstageDiagnosticFrameProps {
   sectionId: HomeSectionId;
   label: string;
   children: ReactNode;
+  active: boolean;
 }
 
 export default function MainstageDiagnosticFrame({
   sectionId,
   label,
   children,
+  active,
 }: MainstageDiagnosticFrameProps) {
   const { t } = useTranslation();
   const infoId = useId();
   const section = useMainstageDiagnosticStore(state => state.sections[sectionId]);
   const setEnabled = useMainstageDiagnosticStore(state => state.setEnabled);
   const statusLabel = t(`home.diagnostics.statuses.${section.status}`);
+
+  if (!active) return children;
 
   return (
     <section

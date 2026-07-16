@@ -22,7 +22,7 @@ describe('MainstageDiagnosticFrame', () => {
     });
 
     renderWithProviders(
-      <MainstageDiagnosticFrame sectionId="recent" label="Recently Added">
+      <MainstageDiagnosticFrame sectionId="recent" label="Recently Added" active>
         <div>Recent albums</div>
       </MainstageDiagnosticFrame>,
     );
@@ -38,7 +38,7 @@ describe('MainstageDiagnosticFrame', () => {
   it('keeps controls and disabled diagnostics visible while hiding children', async () => {
     const user = userEvent.setup();
     renderWithProviders(
-      <MainstageDiagnosticFrame sectionId="hero" label="Featured">
+      <MainstageDiagnosticFrame sectionId="hero" label="Featured" active>
         <div>Hero content</div>
       </MainstageDiagnosticFrame>,
     );
@@ -64,7 +64,7 @@ describe('MainstageDiagnosticFrame', () => {
     });
 
     renderWithProviders(
-      <MainstageDiagnosticFrame sectionId="recent" label="Recently Added">
+      <MainstageDiagnosticFrame sectionId="recent" label="Recently Added" active>
         <div>Recent albums</div>
       </MainstageDiagnosticFrame>,
     );
@@ -78,5 +78,17 @@ describe('MainstageDiagnosticFrame', () => {
       'enabled: true',
       'detail: cache',
     ].join('\n'));
+  });
+
+  it('renders children without diagnostic controls when inactive', () => {
+    renderWithProviders(
+      <MainstageDiagnosticFrame sectionId="recent" label="Recently Added" active={false}>
+        <div>Recent albums</div>
+      </MainstageDiagnosticFrame>,
+    );
+
+    expect(screen.getByText('Recent albums')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Recently Added' })).not.toBeInTheDocument();
   });
 });

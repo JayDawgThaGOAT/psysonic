@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 21;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 20;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -63,12 +63,9 @@ pub(crate) const MIGRATION_018_ARTIST_SYNCED_INDEX: &str =
 /// New Releases reads over one `(server_id, library_id)` scope.
 pub(crate) const MIGRATION_019_MAINSTAGE_FEED_INDEXES: &str =
     include_str!("../migrations/019_mainstage_feed_indexes.sql");
-/// Version 20: owner-scoped cache for track, album, and artist user ratings.
+/// Version 20: owner-scoped user ratings and a suffix-selective lossless browse index.
 pub(crate) const MIGRATION_020_ENTITY_USER_RATING: &str =
     include_str!("../migrations/020_entity_user_rating.sql");
-/// Version 21: suffix-selective candidate index for local lossless album browse.
-pub(crate) const MIGRATION_021_LOSSLESS_ALBUM_BROWSE_INDEX: &str =
-    include_str!("../migrations/021_lossless_album_browse_index.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -83,7 +80,6 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (18, MIGRATION_018_ARTIST_SYNCED_INDEX),
     (19, MIGRATION_019_MAINSTAGE_FEED_INDEXES),
     (20, MIGRATION_020_ENTITY_USER_RATING),
-    (21, MIGRATION_021_LOSSLESS_ALBUM_BROWSE_INDEX),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -105,11 +101,6 @@ pub(crate) fn ensure_entity_user_rating_schema(conn: &Connection) -> rusqlite::R
     conn.execute_batch(MIGRATION_020_ENTITY_USER_RATING)
 }
 
-/// Repairs a partial-v21 open where the migration marker exists but the
-/// additive lossless candidate index was not retained.
-pub(crate) fn ensure_lossless_album_browse_index(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(MIGRATION_021_LOSSLESS_ALBUM_BROWSE_INDEX)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MigrationOutcome {
@@ -692,7 +683,6 @@ fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> 
     ensure_genre_tags_schema(conn)?;
     ensure_mainstage_feed_indexes(conn)?;
     ensure_entity_user_rating_schema(conn)?;
-    ensure_lossless_album_browse_index(conn)?;
     checkpoint_wal_conn(conn, "open")?;
     Ok(())
 }
@@ -1512,6 +1502,17 @@ mod tests {
             })
             .unwrap();
         assert_eq!(table_count, 1);
+
+        let index_count: i64 = store
+            .with_conn("test.lossless_browse_index", |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_track_lossless_album_browse'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(index_count, 1);
     }
 
     #[test]

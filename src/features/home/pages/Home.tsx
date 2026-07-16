@@ -16,6 +16,7 @@ import {
   getMixMinRatingsConfigFromAuth,
 } from '@/features/playback/utils/mixRatingFilter';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 import { bumpPerfCounter } from '@/lib/perf/perfTelemetry';
 import { useLibraryCoverPrefetch } from '@/cover/useLibraryCoverPrefetch';
 import { primeAlbumCoversForDisplay, warmHomeMainstageCovers } from '@/cover/warmDiskPeek';
@@ -90,6 +91,7 @@ export default function Home() {
   const homeAlbumRowsDisabled = perfFlags.disableMainstageRails || perfFlags.disableHomeAlbumRows;
   const homeSongRailsDisabled = perfFlags.disableMainstageRails || perfFlags.disableHomeSongRails;
   const homeRailArtworkDisabled = perfFlags.disableMainstageRailArtwork || perfFlags.disableHomeRailArtwork;
+  const mainstageDiagnosticsEnabled = usePsyLabDebugTraces().mainstage;
   const homeSections = useHomeStore(s => s.sections);
   const diagnosticEnabled = useMainstageDiagnosticStore(useShallow(state => ({
     hero: state.sections.hero.enabled,
@@ -128,7 +130,9 @@ export default function Home() {
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const offlineBrowseReloadTs = useOfflineBrowseReloadToken();
   const isVisible = (id: string) => homeSections.find(s => s.id === id)?.visible ?? true;
-  const sectionEnabled = (id: HomeSectionId) => isVisible(id) && diagnosticEnabled[id];
+  const sectionEnabled = (id: HomeSectionId) => (
+    isVisible(id) && (!mainstageDiagnosticsEnabled || diagnosticEnabled[id])
+  );
   const getEffectiveEnabledSections = (): MainstageEnabledSections => Object.fromEntries(
     MAINSTAGE_DIAGNOSTIC_SECTION_IDS.map(id => [id, sectionEnabled(id)]),
   ) as MainstageEnabledSections;
@@ -187,7 +191,7 @@ export default function Home() {
     ]),
     [
       heroAlbums, recent, random, mostPlayed, recentlyPlayed, starred, randomArtists,
-      discoverSongs, servers, diagnosticEnabled, homeSections,
+      discoverSongs, servers, diagnosticEnabled, homeSections, mainstageDiagnosticsEnabled,
     ],
   );
 
@@ -219,7 +223,7 @@ export default function Home() {
           mostPlayed: sectionEnabled('mostPlayed'),
         },
         onSectionResult: (section, result) => {
-          if (result.status === 'disabled' || !isCurrentLoad()) return;
+          if (!mainstageDiagnosticsEnabled || result.status === 'disabled' || !isCurrentLoad()) return;
           finishDiagnostic(section, {
             status: result.itemCount > 0 ? 'ready' : 'empty',
             durationMs: result.durationMs,
@@ -231,7 +235,7 @@ export default function Home() {
         deps: { filterAlbumsByMixRatingsAcrossServers },
       });
       for (const section of ['hero', 'discover', 'discoverArtists', 'discoverSongs', 'starred', 'mostPlayed'] as const) {
-        if (sectionEnabled(section)) startDiagnostic(section);
+        if (mainstageDiagnosticsEnabled && sectionEnabled(section)) startDiagnostic(section);
       }
       const chronological = {
         recent: sectionEnabled('recent')
@@ -241,8 +245,8 @@ export default function Home() {
           ? loadHomeChronologicalFeed({ anchorServerId, scopes, feed: 'recentlyPlayed' })
           : null,
       };
-      if (chronological.recent) startDiagnostic('recent');
-      if (chronological.recentlyPlayed) startDiagnostic('recentlyPlayed');
+      if (mainstageDiagnosticsEnabled && chronological.recent) startDiagnostic('recent');
+      if (mainstageDiagnosticsEnabled && chronological.recentlyPlayed) startDiagnostic('recentlyPlayed');
       return { snapshot, chronological };
     };
     const applyChronologicalResult = (
@@ -257,7 +261,7 @@ export default function Home() {
       patchHomeFeedCache(scopeKey, scopeVersion, snapshot => (
         patchHomeChronologicalFeed(snapshot, section, result)
       ));
-      finishDiagnostic(section, {
+      if (mainstageDiagnosticsEnabled) finishDiagnostic(section, {
         status: result.albums.length > 0 ? 'ready' : 'empty',
         durationMs: result.durationMs,
         itemCount: result.albums.length,
@@ -266,7 +270,7 @@ export default function Home() {
     const patchChronologicalFeeds = (chronological: ReturnType<typeof startFreshHomeFeed>['chronological']) => {
       if (chronological.recent) {
         void chronological.recent.then(result => {
-          if (result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recent', {
+            if (mainstageDiagnosticsEnabled && result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recent', {
             status: result.status,
             durationMs: result.durationMs,
             itemCount: 0,
@@ -277,7 +281,7 @@ export default function Home() {
       }
       if (chronological.recentlyPlayed) {
         void chronological.recentlyPlayed.then(result => {
-          if (result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recentlyPlayed', {
+            if (mainstageDiagnosticsEnabled && result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recentlyPlayed', {
             status: result.status,
             durationMs: result.durationMs,
             itemCount: 0,
@@ -292,7 +296,9 @@ export default function Home() {
       ?? (offlineBrowseActive ? readHomeFeedCacheStale(scopeKey) : null);
     if (cached) {
       if (displayedSnapshotRef.current !== cached) applyFeedSnapshot(cached);
-      reportCachedHomeDiagnostics(cached, sectionEnabled, finishDiagnostic);
+      if (mainstageDiagnosticsEnabled) {
+        reportCachedHomeDiagnostics(cached, sectionEnabled, finishDiagnostic);
+      }
       // React Compiler set-state-in-effect rule: cache synchronization within this effect.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
@@ -381,6 +387,7 @@ export default function Home() {
     scopes,
     homeSections,
     diagnosticEnabled,
+    mainstageDiagnosticsEnabled,
     offlineBrowseActive,
     offlineBrowseReloadTs,
   ]);
@@ -523,7 +530,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (loading || !sectionEnabled('becauseYouLike') || becauseYouLikeHasSeed) return;
+    if (!mainstageDiagnosticsEnabled || loading || !sectionEnabled('becauseYouLike') || becauseYouLikeHasSeed) return;
     finishDiagnostic('becauseYouLike', {
       status: 'empty',
       durationMs: 0,
@@ -532,7 +539,7 @@ export default function Home() {
     });
     // sectionEnabled is derived from the explicit dependencies below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, becauseYouLikeHasSeed, diagnosticEnabled.becauseYouLike, homeSections, finishDiagnostic]);
+  }, [loading, becauseYouLikeHasSeed, diagnosticEnabled.becauseYouLike, homeSections, mainstageDiagnosticsEnabled, finishDiagnostic]);
 
   const homeLiteArtworkFx = perfFlags.disableHomeArtworkFx;
   const homeFlatArtworkClip = perfFlags.disableHomeArtworkClip;
@@ -551,7 +558,7 @@ export default function Home() {
         homeFlatArtworkClip ? 'home-flat-artwork-clip' : '',
       ].filter(Boolean).join(' ') || undefined}
     >
-      <div className="mainstage-diagnostic-copy-all">
+      {mainstageDiagnosticsEnabled && <div className="mainstage-diagnostic-copy-all">
         <button
           type="button"
           className="btn btn-secondary"
@@ -559,9 +566,9 @@ export default function Home() {
         >
           {t('home.diagnostics.copyAll')}
         </button>
-      </div>
+      </div>}
       {!perfFlags.disableMainstageHero && isVisible('hero') && (
-        <MainstageDiagnosticFrame sectionId="hero" label={t('home.hero')}>
+        <MainstageDiagnosticFrame sectionId="hero" label={t('home.hero')} active={mainstageDiagnosticsEnabled}>
           {!loading && <Hero albums={heroAlbums} />}
         </MainstageDiagnosticFrame>
       )}
@@ -585,7 +592,7 @@ export default function Home() {
         ) : (
           <>
             {!homeAlbumRowsDisabled && isVisible('recent') && (
-              <MainstageDiagnosticFrame sectionId="recent" label={t('sidebar.newReleases')}>
+              <MainstageDiagnosticFrame sectionId="recent" label={t('sidebar.newReleases')} active={mainstageDiagnosticsEnabled}>
                 <AlbumRow
                 title={t('sidebar.newReleases')}
                 titleLink="/new-releases"
@@ -600,7 +607,7 @@ export default function Home() {
               </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('becauseYouLike') && (
-              <MainstageDiagnosticFrame sectionId="becauseYouLike" label={t('home.becauseYouLike')}>
+              <MainstageDiagnosticFrame sectionId="becauseYouLike" label={t('home.becauseYouLike')} active={mainstageDiagnosticsEnabled}>
                 {becauseYouLikeHasSeed && <BecauseYouLikeRail
                 mostPlayed={mostPlayed}
                 recentlyPlayed={recentlyPlayed}
@@ -608,12 +615,14 @@ export default function Home() {
                 scopeKey={scopeKey}
                 scopeVersion={scopeVersion}
                   disableArtwork={!becauseYouLikeArtworkEnabled}
-                  onDiagnosticResult={result => reportAutonomousDiagnostic('becauseYouLike', result)}
+                  onDiagnosticResult={mainstageDiagnosticsEnabled
+                    ? result => reportAutonomousDiagnostic('becauseYouLike', result)
+                    : undefined}
                 />}
               </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('discover') && (
-              <MainstageDiagnosticFrame sectionId="discover" label={t('home.discover')}>
+              <MainstageDiagnosticFrame sectionId="discover" label={t('home.discover')} active={mainstageDiagnosticsEnabled}>
                 <AlbumRow
                 title={t('home.discover')}
                 titleLink="/random/albums"
@@ -628,7 +637,7 @@ export default function Home() {
               </MainstageDiagnosticFrame>
             )}
             {!homeSongRailsDisabled && isVisible('discoverSongs') && (
-              <MainstageDiagnosticFrame sectionId="discoverSongs" label={t('home.discoverSongs')}>
+              <MainstageDiagnosticFrame sectionId="discoverSongs" label={t('home.discoverSongs')} active={mainstageDiagnosticsEnabled}>
                 {discoverSongs.length > 0 && <SongRail
                 title={t('home.discoverSongs')}
                 songs={discoverSongs}
@@ -640,7 +649,7 @@ export default function Home() {
               </MainstageDiagnosticFrame>
             )}
             {!perfFlags.disableMainstageGridCards && isVisible('discoverArtists') && (
-              <MainstageDiagnosticFrame sectionId="discoverArtists" label={t('home.discoverArtists')}>
+              <MainstageDiagnosticFrame sectionId="discoverArtists" label={t('home.discoverArtists')} active={mainstageDiagnosticsEnabled}>
                 {randomArtists.length > 0 && <section className="album-row-section">
                 <div className="album-row-header">
                   <NavLink to="/artists" className="section-title-link" style={{ marginBottom: 0 }}>
@@ -669,7 +678,7 @@ export default function Home() {
               </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('recentlyPlayed') && (
-              <MainstageDiagnosticFrame sectionId="recentlyPlayed" label={t('home.recentlyPlayed')}>
+              <MainstageDiagnosticFrame sectionId="recentlyPlayed" label={t('home.recentlyPlayed')} active={mainstageDiagnosticsEnabled}>
                 <AlbumRow
                 title={t('home.recentlyPlayed')}
                 albums={recentlyPlayed}
@@ -685,7 +694,7 @@ export default function Home() {
               </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('starred') && (
-              <MainstageDiagnosticFrame sectionId="starred" label={t('home.starred')}>
+              <MainstageDiagnosticFrame sectionId="starred" label={t('home.starred')} active={mainstageDiagnosticsEnabled}>
                 <AlbumRow
                 title={t('home.starred')}
                 titleLink="/favorites"
@@ -700,7 +709,7 @@ export default function Home() {
               </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('mostPlayed') && (
-              <MainstageDiagnosticFrame sectionId="mostPlayed" label={t('home.mostPlayed')}>
+              <MainstageDiagnosticFrame sectionId="mostPlayed" label={t('home.mostPlayed')} active={mainstageDiagnosticsEnabled}>
                 <AlbumRow
                 title={t('home.mostPlayed')}
                 titleLink="/most-played"
@@ -715,7 +724,7 @@ export default function Home() {
               </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('losslessAlbums') && (
-              <MainstageDiagnosticFrame sectionId="losslessAlbums" label={t('home.losslessAlbums')}>
+              <MainstageDiagnosticFrame sectionId="losslessAlbums" label={t('home.losslessAlbums')} active={mainstageDiagnosticsEnabled}>
                 <LosslessAlbumsRail
                 serverIds={serverIds}
                 scopeVersion={scopeVersion}
@@ -723,7 +732,9 @@ export default function Home() {
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
                   initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
-                  onDiagnosticResult={result => reportAutonomousDiagnostic('losslessAlbums', result)}
+                  onDiagnosticResult={mainstageDiagnosticsEnabled
+                    ? result => reportAutonomousDiagnostic('losslessAlbums', result)
+                    : undefined}
                 />
               </MainstageDiagnosticFrame>
             )}
