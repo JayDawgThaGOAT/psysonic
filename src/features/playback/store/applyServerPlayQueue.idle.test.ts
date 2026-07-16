@@ -160,21 +160,31 @@ describe('applyServerPlayQueue idle guards', () => {
     expect(playerState.queueItems[0]?.trackId).toBe('ndshare:abc:0');
   });
 
-  it('does not fetch or replace a mixed queue in manual mode', async () => {
+  it('refreshes only the selected server projection in a mixed queue', async () => {
     playerState.queueItems = [
       { serverId: 'srv-a', trackId: 'a1' },
       { serverId: 'srv-b', trackId: 'b1' },
       { serverId: 'srv-a', trackId: 'a2' },
     ];
+    playerState.queueIndex = 1;
+    playerState.currentTrack = {
+      id: 'b1', title: 'b1', artist: '', album: '', albumId: '', duration: 60,
+    };
+    getPlayQueueForServerMock.mockResolvedValue({
+      songs: [{ id: 'a1' }, { id: 'a3' }],
+      current: 'a1',
+      position: 0,
+    });
 
     const result = await applyServerPlayQueue('srv-a', { mode: 'manual' });
 
-    expect(result).toBe('noop');
-    expect(getPlayQueueForServerMock).not.toHaveBeenCalled();
-    expect(playerState.queueItems.map(ref => ref.trackId)).toEqual(['a1', 'b1', 'a2']);
+    expect(result).toBe('applied');
+    expect(getPlayQueueForServerMock).toHaveBeenCalledWith('srv-a');
+    expect(playerState.queueItems.map(ref => ref.trackId)).toEqual(['a1', 'b1', 'a3']);
+    expect(playerState.queueIndex).toBe(1);
   });
 
-  it('makes the active-server manual pull a no-op for a mixed queue', async () => {
+  it('updates the active-server projection in a mixed queue', async () => {
     useAuthStore.setState({ activeServerId: 'srv-a' });
     playerState.queueItems = [
       { serverId: 'srv-a', trackId: 'a1' },
@@ -182,9 +192,15 @@ describe('applyServerPlayQueue idle guards', () => {
       { serverId: 'srv-a', trackId: 'a2' },
     ];
 
-    await expect(pullPlayQueueFromActiveServer()).resolves.toBe('noop');
-    expect(getPlayQueueForServerMock).not.toHaveBeenCalled();
-    expect(playerState.queueItems.map(ref => ref.trackId)).toEqual(['a1', 'b1', 'a2']);
+    getPlayQueueForServerMock.mockResolvedValue({
+      songs: [{ id: 'a1' }, { id: 'a3' }],
+      current: 'a1',
+      position: 0,
+    });
+
+    await expect(pullPlayQueueFromActiveServer()).resolves.toBe('applied');
+    expect(getPlayQueueForServerMock).toHaveBeenCalledWith('srv-a');
+    expect(playerState.queueItems.map(ref => ref.trackId)).toEqual(['a1', 'b1', 'a3']);
   });
 
   it('applies server queue on startup even when share refs are still in memory', async () => {

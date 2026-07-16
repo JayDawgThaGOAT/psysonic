@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { applyServerPlayQueue } from '@/features/playback/store/applyServerPlayQueue';
-import { useAuthStore } from '@/store/authStore';
 import { useOrbitStore } from '@/features/orbit';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { profileIdFromQueueRef } from '@/lib/media/trackServerScope';
+import { getPlaybackServerId } from '@/features/playback/utils/playback/playbackServer';
 import {
   getPlaybackIdleSinceMs,
   isIdleQueuePullSuspended,
@@ -18,11 +19,11 @@ import { canAutoIdlePlayQueuePull } from '@/app/hooks/usePlayQueueSyncLedState';
 const IDLE_THRESHOLD_MS = 30_000;
 const POLL_INTERVAL_MS = 10_000;
 
-/** Background pull when paused/stopped long enough on a single-server, in-sync browse context. */
+/** Background pull when paused/stopped long enough, reconciled by queue owner. */
 export function useIdlePlayQueuePull(status: ConnectionStatus) {
-  const activeServerId = useAuthStore(s => s.activeServerId);
   const orbitRole = useOrbitStore(s => s.role);
   const isPlaying = usePlayerStore(s => s.isPlaying);
+  const queueItems = usePlayerStore(s => s.queueItems);
   const inFlightRef = useRef(false);
 
   useEffect(() => {
@@ -40,13 +41,21 @@ export function useIdlePlayQueuePull(status: ConnectionStatus) {
       if (isPlaying) return;
       if (!isPlaybackIdleLongEnough(IDLE_THRESHOLD_MS)) return;
       if (isIdleQueuePullSuspended()) return;
-      if (!activeServerId) return;
-      if (isQueuePushFailed(activeServerId)) return;
       if (isQueueNaturallyEnded()) return;
-      if (hasPendingQueueSync(activeServerId)) return;
+      const serverIds = [...new Set(queueItems.map(profileIdFromQueueRef).filter(Boolean))];
+      if (serverIds.length === 0) {
+        const playbackServerId = getPlaybackServerId();
+        if (playbackServerId) serverIds.push(playbackServerId);
+      }
+      if (serverIds.length === 0) return;
 
       inFlightRef.current = true;
-      void applyServerPlayQueue(activeServerId, { mode: 'idle', preferServerPosition: true })
+      void (async () => {
+        for (const serverId of serverIds) {
+          if (isQueuePushFailed(serverId) || hasPendingQueueSync(serverId)) continue;
+          await applyServerPlayQueue(serverId, { mode: 'idle', preferServerPosition: true });
+        }
+      })()
         .finally(() => {
           inFlightRef.current = false;
         });
@@ -54,5 +63,5 @@ export function useIdlePlayQueuePull(status: ConnectionStatus) {
 
     const id = window.setInterval(tick, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [activeServerId, isPlaying, orbitRole, status]);
+  }, [isPlaying, orbitRole, queueItems, status]);
 }

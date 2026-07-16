@@ -53,6 +53,18 @@ export function fingerprintFromLocalQueue(): PlayQueueFingerprint {
   };
 }
 
+function fingerprintFromLocalQueueForServer(serverProfileId: string): PlayQueueFingerprint {
+  const state = usePlayerStore.getState();
+  const refs = state.queueItems.filter(ref => profileIdFromQueueRef(ref) === serverProfileId);
+  const currentRef = state.queueItems[state.queueIndex];
+  const ownsCurrentTrack = profileIdFromQueueRef(currentRef) === serverProfileId;
+  return {
+    trackIds: refs.map(ref => ref.trackId),
+    currentId: ownsCurrentTrack ? currentRef?.trackId ?? null : refs[0]?.trackId ?? null,
+    positionMs: ownsCurrentTrack ? Math.floor((state.currentTime ?? 0) * 1000) : 0,
+  };
+}
+
 export function playQueueFingerprintsEqual(
   a: PlayQueueFingerprint,
   b: PlayQueueFingerprint,
@@ -217,7 +229,6 @@ export async function applyServerPlayQueue(
   if (!profileId) return 'error';
 
   const local = usePlayerStore.getState();
-  if (options.mode === 'manual' && queueIsMultiServer()) return 'noop';
   if (options.mode !== 'startup' && isActivePublicShareQueue(local.queueServerId, local.queueItems)) {
     return 'noop';
   }
@@ -232,7 +243,6 @@ export async function applyServerPlayQueue(
     if (q.songs.length === 0) return 'empty';
 
     const localAfterFetch = usePlayerStore.getState();
-    if (options.mode === 'manual' && queueIsMultiServer()) return 'noop';
     if (
       options.mode !== 'startup'
       && isActivePublicShareQueue(localAfterFetch.queueServerId, localAfterFetch.queueItems)
@@ -245,7 +255,9 @@ export async function applyServerPlayQueue(
       if (isIdleQueuePullSuspended() || isQueuePushFailed(profileId)) return 'noop';
       if (idleGenerationAtStart !== getIdlePullGeneration()) return 'noop';
       const serverFp = fingerprintFromServer(q);
-      const localFp = fingerprintFromLocalQueue();
+      const localFp = queueIsMultiServer()
+        ? fingerprintFromLocalQueueForServer(profileId)
+        : fingerprintFromLocalQueue();
       if (playQueueFingerprintsEqual(serverFp, localFp)) return 'noop';
     }
 
@@ -253,9 +265,14 @@ export async function applyServerPlayQueue(
       pushQueueUndoFromGetter(usePlayerStore.getState);
     }
 
-    const mappedTracks: Track[] = q.songs.map(songToTrack);
+    const mappedTracks: Track[] = q.songs.map(song => ({ ...songToTrack(song), serverId: profileId }));
     const localTime = usePlayerStore.getState().currentTime;
-    applyMappedQueue(mappedTracks, q, profileId, preferServerPosition, localTime);
+    if (queueIsMultiServer()) {
+      // Keep the other owners' slots in place while refreshing this server's order.
+      applyMappedQueueProjection(mappedTracks, q, profileId);
+    } else {
+      applyMappedQueue(mappedTracks, q, profileId, preferServerPosition, localTime);
+    }
     clearQueueHandoffPending();
     return 'applied';
   } catch (e) {
@@ -276,42 +293,47 @@ export async function fetchActiveServerPlayQueueFingerprint(): Promise<PlayQueue
   }
 }
 
-export async function pullPlayQueueFromActiveServer(): Promise<ApplyPlayQueueResult> {
-  const activeId = useAuthStore.getState().activeServerId;
-  if (!activeId) return 'error';
-  if (queueIsMultiServer()) return 'noop';
+export async function pullPlayQueueFromServer(serverId: string): Promise<ApplyPlayQueueResult> {
+  if (!serverId) return 'error';
 
   clearQueueNaturallyEnded();
 
   try {
-    const q = await getPlayQueueForServer(activeId);
-    if (queueIsMultiServer()) return 'noop';
+    const q = await getPlayQueueForServer(serverId);
     if (q.songs.length === 0) {
       resumeIdleQueuePull();
-      clearQueuePushFailed(activeId);
+      clearQueuePushFailed(serverId);
       return 'empty';
     }
 
     const serverFp = fingerprintFromServer(q);
-    const localFp = fingerprintFromLocalQueue();
+    const localFp = queueIsMultiServer()
+      ? fingerprintFromLocalQueueForServer(serverId)
+      : fingerprintFromLocalQueue();
     if (playQueueFingerprintsEqual(serverFp, localFp)) {
       resumeIdleQueuePull();
-      clearQueuePushFailed(activeId);
+      clearQueuePushFailed(serverId);
       return 'noop';
     }
 
-    const result = await applyServerPlayQueue(activeId, {
+    const result = await applyServerPlayQueue(serverId, {
       mode: 'manual',
       preferServerPosition: true,
       pushUndo: true,
     });
     if (result === 'applied' || result === 'noop') {
       resumeIdleQueuePull();
-      clearQueuePushFailed(activeId);
+      clearQueuePushFailed(serverId);
     }
     return result;
   } catch (e) {
-    console.error('[psysonic] pullPlayQueueFromActiveServer failed', e);
+    console.error('[psysonic] pullPlayQueueFromServer failed', e);
     return 'error';
   }
+}
+
+/** @deprecated Resolve the queue owner and call {@link pullPlayQueueFromServer}. */
+export async function pullPlayQueueFromActiveServer(): Promise<ApplyPlayQueueResult> {
+  const activeId = useAuthStore.getState().activeServerId;
+  return activeId ? pullPlayQueueFromServer(activeId) : 'error';
 }

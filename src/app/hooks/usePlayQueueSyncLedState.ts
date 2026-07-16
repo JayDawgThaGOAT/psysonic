@@ -1,22 +1,20 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ConnectionStatus } from '@/lib/hooks/useConnectionStatus';
-import { pullPlayQueueFromActiveServer } from '@/features/playback/store/applyServerPlayQueue';
-import { useAuthStore } from '@/store/authStore';
+import { pullPlayQueueFromServer } from '@/features/playback/store/applyServerPlayQueue';
 import { useOrbitStore } from '@/features/orbit';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
-import { isMultiServerQueue } from '@/lib/media/trackServerScope';
-import { getPlaybackServerId, queueIsMultiServer } from '@/features/playback/utils/playback/playbackServer';
+import { profileIdFromQueueRef } from '@/lib/media/trackServerScope';
+import { getPlaybackServerId } from '@/features/playback/utils/playback/playbackServer';
 import {
   getIdleQueuePullSuspendedSnapshot,
   subscribeIdleQueuePullSuspended,
 } from '@/features/playback/store/queuePlaybackIdle';
-import { clearQueueHandoffPending, isQueueHandoffPending } from '@/features/playback/store/queueSyncUiState';
+import { clearQueueHandoffPending } from '@/features/playback/store/queueSyncUiState';
 import { showToast } from '@/lib/dom/toast';
 
 export function usePlayQueueSyncLedState(status: ConnectionStatus) {
   const { t } = useTranslation();
-  const activeServerId = useAuthStore(s => s.activeServerId);
   const orbitRole = useOrbitStore(s => s.role);
   const isPlaying = usePlayerStore(s => s.isPlaying);
   const currentRadio = usePlayerStore(s => s.currentRadio);
@@ -29,39 +27,30 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
   const queueItems = usePlayerStore(s => s.queueItems);
   const queueIndex = usePlayerStore(s => s.queueIndex);
   const currentTrackId = usePlayerStore(s => s.currentTrack?.id);
-  const mixedQueue = useMemo(() => isMultiServerQueue(queueItems), [queueItems]);
-
   const playbackServerId = useMemo(
     () => getPlaybackServerId(),
     // getPlaybackServerId() reads global queue/auth state; the listed values
     // are intentional recompute triggers, not direct inputs to the body.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeServerId, queueItems, queueIndex, currentTrackId],
+    [queueItems, queueIndex, currentTrackId],
   );
+  const queueServerIds = useMemo(() => {
+    const ids = [...new Set(queueItems.map(profileIdFromQueueRef).filter(Boolean))];
+    return ids.length > 0 ? ids : (playbackServerId ? [playbackServerId] : []);
+  }, [playbackServerId, queueItems]);
 
   useEffect(() => {
-    if (mixedQueue || (activeServerId && playbackServerId && activeServerId === playbackServerId)) {
-      clearQueueHandoffPending();
-    }
-  }, [activeServerId, mixedQueue, playbackServerId]);
+    clearQueueHandoffPending();
+  }, [playbackServerId]);
 
   const autoSyncContext = canAutoIdlePlayQueuePull(status, orbitRole);
   const localQueueSyncPaused = autoSyncContext && idlePullSuspended && !isPlaying;
 
   const needsQueuePull = status === 'connected'
-    && Boolean(activeServerId)
-    && !mixedQueue
-    && (
-      (Boolean(playbackServerId) && activeServerId !== playbackServerId)
-      || isQueueHandoffPending()
-      || localQueueSyncPaused
-    );
+    && queueServerIds.length > 0
+    && localQueueSyncPaused;
 
-  const queueHandoffReason = status === 'connected'
-    && Boolean(activeServerId)
-    && Boolean(playbackServerId)
-    && !mixedQueue
-    && activeServerId !== playbackServerId;
+  const queueHandoffReason = false;
 
   const ledVariant = status === 'checking'
     ? 'checking'
@@ -71,15 +60,19 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
         ? 'queue-handoff'
         : 'connected';
 
-  const pullFromActiveServer = useCallback(async () => {
+  const pullFromQueueServers = useCallback(async () => {
     if (status !== 'connected' || pullInFlight) return;
     if (orbitRole === 'host' || orbitRole === 'guest') return;
     if (currentRadio) return;
-    if (queueIsMultiServer()) return;
+    if (queueServerIds.length === 0) return;
 
     setPullInFlight(true);
     try {
-      const result = await pullPlayQueueFromActiveServer();
+      let result: 'applied' | 'noop' | 'empty' | 'error' = 'noop';
+      for (const serverId of queueServerIds) {
+        result = await pullPlayQueueFromServer(serverId);
+        if (result === 'error') break;
+      }
       switch (result) {
         case 'noop':
           showToast(t('connection.queueSynced'), 2500, 'info');
@@ -99,7 +92,7 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
     } finally {
       setPullInFlight(false);
     }
-  }, [currentRadio, orbitRole, pullInFlight, status, t]);
+  }, [currentRadio, orbitRole, pullInFlight, queueServerIds, status, t]);
 
   const syncRingVisible = status === 'connected' && (needsQueuePull || pullInFlight);
 
@@ -110,7 +103,7 @@ export function usePlayQueueSyncLedState(status: ConnectionStatus) {
     queueHandoffReason,
     pullInFlight,
     syncRingVisible,
-    pullFromActiveServer,
+    pullFromActiveServer: pullFromQueueServers,
   };
 }
 
@@ -121,9 +114,6 @@ export function canAutoIdlePlayQueuePull(
   if (status !== 'connected') return false;
   if (orbitRole === 'host' || orbitRole === 'guest') return false;
   if (usePlayerStore.getState().currentRadio) return false;
-  if (queueIsMultiServer()) return false;
-  const activeId = useAuthStore.getState().activeServerId;
   const playbackId = getPlaybackServerId();
-  if (!activeId || !playbackId || activeId !== playbackId) return false;
-  return true;
+  return Boolean(playbackId);
 }
