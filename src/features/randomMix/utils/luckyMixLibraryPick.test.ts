@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAuthStore } from '@/store/authStore';
 import {
   isPartialMultiLibrarySelection,
+  luckyMixLibraryCandidates,
+  pickLuckyMixTarget,
   pickLuckyMixTargetLibrary,
   LUCKY_MIX_LARGE_LIBRARY_TRACK_THRESHOLD,
 } from '@/features/randomMix/utils/luckyMixLibraryPick';
@@ -103,5 +105,41 @@ describe('pickLuckyMixTargetLibrary', () => {
     await expect(
       pickLuckyMixTargetLibrary('srv-1', ['tiny', 'mid']),
     ).resolves.toBe('mid');
+  });
+});
+
+describe('multi-server Lucky Mix candidates', () => {
+  const source = {
+    servers: [{ id: 'audio-a' }, { id: 'plain-b' }, { id: 'audio-c' }],
+    libraryBrowseServerIds: ['audio-a', 'plain-b', 'audio-c'],
+    musicFoldersByServer: {
+      'audio-a': [{ id: 'a1' }, { id: 'a2' }],
+      'plain-b': [{ id: 'b1' }],
+      'audio-c': [{ id: 'c1' }],
+    },
+    libraryBrowseSelectionByServer: {
+      'audio-a': ['a2'],
+      'plain-b': ['b1'],
+      'audio-c': [],
+    },
+    audiomuseByServer: { 'audio-a': true, 'plain-b': false, 'audio-c': true },
+  };
+
+  it('uses selected libraries from AudioMuse-capable servers only', () => {
+    expect(luckyMixLibraryCandidates(source)).toEqual([
+      { serverId: 'audio-a', libraryId: 'a2' },
+      { serverId: 'audio-c', libraryId: 'c1' },
+    ]);
+  });
+
+  it('randomly picks among large libraries across server owners', async () => {
+    libraryGetStatusMock.mockImplementation(async (serverId: string, libraryId: string) => ({
+      localTrackCount: serverId === 'audio-a' && libraryId === 'a2' ? 5000 : 2000,
+    }));
+    vi.spyOn(Math, 'random').mockReturnValue(0.99);
+
+    await expect(pickLuckyMixTarget(luckyMixLibraryCandidates(source))).resolves.toEqual({
+      serverId: 'audio-c', libraryId: 'c1',
+    });
   });
 });
