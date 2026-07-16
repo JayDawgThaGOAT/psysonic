@@ -3,7 +3,6 @@ import { getArtistForServer } from '@/lib/api/subsonicArtists';
 import { getAlbumForServer } from '@/lib/api/subsonicLibrary';
 import { mapServerIdFromIndexKey, serverIndexKeyForId } from '@/lib/api/library/internal';
 import { shouldAttemptSubsonicForServer } from '@/lib/network/subsonicNetworkGuard';
-import { useAuthStore } from '@/store/authStore';
 
 const MIX_RATING_PREFETCH_CONCURRENCY = 8;
 const ENTITY_RATING_BATCH_LIMIT = 300;
@@ -159,16 +158,8 @@ async function prefetchForServer(
   return byId;
 }
 
-export function prefetchArtistUserRatings(ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
-  return prefetchForServer('artist', useAuthStore.getState().activeServerId, ids);
-}
-
 export function prefetchArtistUserRatingsForServer(serverId: string, ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
   return prefetchForServer('artist', serverId, ids);
-}
-
-export function prefetchAlbumUserRatings(ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
-  return prefetchForServer('album', useAuthStore.getState().activeServerId, ids);
 }
 
 export function prefetchAlbumUserRatingsForServer(serverId: string, ids: string[], _concurrency = MIX_RATING_PREFETCH_CONCURRENCY): Promise<Map<string, number>> {
