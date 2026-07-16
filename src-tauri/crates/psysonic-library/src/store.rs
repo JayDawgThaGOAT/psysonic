@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 20;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 19;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -59,13 +59,10 @@ pub(crate) const MIGRATION_017_LIBRARY_TAG_STATE: &str =
 /// prune's freshness lookup is an index seek instead of a per-server scan.
 pub(crate) const MIGRATION_018_ARTIST_SYNCED_INDEX: &str =
     include_str!("../migrations/018_artist_synced_index.sql");
-/// Version 19: partial covering-order index for candidate-first main-stage
-/// New Releases reads over one `(server_id, library_id)` scope.
+/// Version 19: Mainstage feed indexes, owner-scoped rating cache, and a
+/// suffix-selective lossless browse index.
 pub(crate) const MIGRATION_019_MAINSTAGE_FEED_INDEXES: &str =
     include_str!("../migrations/019_mainstage_feed_indexes.sql");
-/// Version 20: owner-scoped user ratings and a suffix-selective lossless browse index.
-pub(crate) const MIGRATION_020_ENTITY_USER_RATING: &str =
-    include_str!("../migrations/020_entity_user_rating.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -79,7 +76,6 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (17, MIGRATION_017_LIBRARY_TAG_STATE),
     (18, MIGRATION_018_ARTIST_SYNCED_INDEX),
     (19, MIGRATION_019_MAINSTAGE_FEED_INDEXES),
-    (20, MIGRATION_020_ENTITY_USER_RATING),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -95,10 +91,10 @@ pub(crate) fn ensure_mainstage_feed_indexes(conn: &Connection) -> rusqlite::Resu
     conn.execute_batch(MIGRATION_019_MAINSTAGE_FEED_INDEXES)
 }
 
-/// Repairs a rare partial-v20 state where its migration marker was written but
-/// the additive cache table did not survive.
+/// Repairs a partial-v19 state where its additive indexes or ratings cache did
+/// not survive despite the migration marker being recorded.
 pub(crate) fn ensure_entity_user_rating_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(MIGRATION_020_ENTITY_USER_RATING)
+    conn.execute_batch(MIGRATION_019_MAINSTAGE_FEED_INDEXES)
 }
 
 
@@ -1476,18 +1472,18 @@ mod tests {
     }
 
     #[test]
-    fn migration_020_creates_entity_user_rating_table_idempotently() {
+    fn migration_019_creates_mainstage_rating_and_lossless_schema_idempotently() {
         let store = LibraryStore::open_in_memory();
         let version: i64 = store
             .with_conn("test.entity_user_rating_version", |conn| {
                 conn.query_row(
-                    "SELECT version FROM schema_migrations WHERE version = 20",
+                    "SELECT version FROM schema_migrations WHERE version = 19",
                     [],
                     |row| row.get(0),
                 )
             })
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 19);
 
         store
             .with_conn("test.entity_user_rating_ensure", ensure_entity_user_rating_schema)
