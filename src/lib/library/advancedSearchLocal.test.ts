@@ -423,4 +423,13 @@ describe('albumToAlbum', () => {
     expect(album.year).toBe(1999);
     expect(album.genre).toBe('Rock');
   });
+
+  it('maps a local catalog creation timestamp to the album created date', () => {
+    const album = albumToAlbum({
+      serverId: 's1', id: 'al1', name: 'Album', artist: 'Artist', artistId: 'ar1',
+      songCount: 1, durationSec: 100, year: null, genre: null, coverArtId: null,
+      starredAt: null, syncedAt: 0, rawJson: { createdMs: 1_700_000_000_000 },
+    });
+    expect(album.created).toBe('2023-11-14T22:13:20.000Z');
+  });
 });

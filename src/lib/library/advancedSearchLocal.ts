@@ -185,6 +185,12 @@ export function albumToAlbum(a: LibraryAlbumDto): SubsonicAlbum {
     starred: a.starredAt != null ? new Date(a.starredAt).toISOString() : undefined,
   };
   const merged = mergeAlbumRawJson(base, raw as Partial<SubsonicAlbum>);
+  const createdMs = typeof raw.createdMs === 'number' && Number.isFinite(raw.createdMs)
+    ? raw.createdMs
+    : null;
+  if (!merged.created && createdMs !== null) {
+    merged.created = new Date(createdMs).toISOString();
+  }
   if (albumIsCompilation(merged)) merged.isCompilation = true;
   return merged;
 }

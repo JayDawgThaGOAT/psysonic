@@ -38,4 +38,6 @@ export const albums = {
   noFavorites: 'Aucun album favori ne correspond aux filtres actuels.',
   noCompilations: 'Aucune compilation ne correspond aux filtres actuels.',
   noMatchingFilters: 'Aucun album ne correspond aux filtres actuels.',
+  newReleasesHotCount_one: '{{count}} nouveauté au cours des dernières 48 heures',
+  newReleasesHotCount_other: '{{count}} nouveautés au cours des dernières 48 heures',
 };

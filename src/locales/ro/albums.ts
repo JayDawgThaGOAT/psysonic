@@ -38,4 +38,6 @@ export const albums = {
   noFavorites: 'Niciun album favorit nu corespunde filtrelor curente.',
   noCompilations: 'Nicio compilație nu corespunde filtrelor curente.',
   noMatchingFilters: 'Niciun album nu corespunde filtrelor curente.',
+  newReleasesHotCount_one: '{{count}} noutate în ultimele 48 de ore',
+  newReleasesHotCount_other: '{{count}} noutăți în ultimele 48 de ore',
 };

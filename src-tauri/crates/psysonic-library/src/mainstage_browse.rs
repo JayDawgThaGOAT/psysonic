@@ -2,7 +2,6 @@
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::params_from_iter;
-use serde_json::Value;
 
 use crate::album_compilation_filter::pick_album_group_artist;
 use crate::browse_support::overlay_album_starred_at_rows;
@@ -136,9 +135,10 @@ fn build_mainstage_query(
          ) \
           SELECT representative.server_id, representative.album_id, representative.album, \
                  representative.artist, representative.artist_id, representative.album_artist, \
-                 representative.year, representative.genre, representative.cover_art_id, \
-                 representative.starred_at, representative.synced_at, \
-                 (SELECT COUNT(*) FROM candidates) AS candidate_count \
+                  representative.year, representative.genre, representative.cover_art_id, \
+                  representative.starred_at, representative.synced_at, \
+                  grouped.feed_at, \
+                  (SELECT COUNT(*) FROM candidates) AS candidate_count \
          FROM representatives representative \
          INNER JOIN candidate_groups grouped \
            ON grouped.album_dedup = representative.album_dedup \
@@ -153,6 +153,7 @@ fn build_mainstage_query(
 
 fn map_mainstage_album(
     r: &rusqlite::Row<'_>,
+    include_catalog_created_at: bool,
 ) -> rusqlite::Result<(LibraryAlbumDto, u32)> {
     let track_artist = r.get(3)?;
     let album_artist = r.get(5)?;
@@ -170,9 +171,13 @@ fn map_mainstage_album(
             cover_art_id: r.get(8)?,
             starred_at: r.get(9)?,
             synced_at: r.get(10)?,
-            raw_json: Value::Null,
+            raw_json: if include_catalog_created_at {
+                serde_json::json!({ "createdMs": r.get::<_, i64>(11)? })
+            } else {
+                serde_json::Value::Null
+            },
         },
-        r.get(11)?,
+        r.get(12)?,
     ))
 }
 
@@ -200,7 +205,9 @@ pub fn list_mainstage_albums(
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
-                .query_map(params_from_iter(binds.iter()), map_mainstage_album)?
+                .query_map(params_from_iter(binds.iter()), |row| {
+                    map_mainstage_album(row, request.feed == LibraryMainstageAlbumFeed::NewReleases)
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let candidate_count = rows.first().map(|(_, count)| *count).unwrap_or(0);
             let candidate_capacity = match request.feed {
@@ -345,6 +352,24 @@ mod tests {
             response.albums.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
             vec!["New", "Mid", "Old"]
         );
+        assert_eq!(response.albums[0].raw_json["createdMs"], 300);
+    }
+
+    #[test]
+    fn recently_played_does_not_expose_play_time_as_catalog_created_at() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[track("s1", "t1", "Album", "a1", "l1", Some(100))])
+            .unwrap();
+        play(&store, "s1", "t1", 999);
+
+        let response = list_mainstage_albums(
+            &store,
+            &request(vec![scope("s1", "l1")], LibraryMainstageAlbumFeed::RecentlyPlayed),
+        )
+        .unwrap();
+
+        assert_eq!(response.albums[0].raw_json, serde_json::Value::Null);
     }
 
     #[test]

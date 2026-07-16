@@ -40,6 +40,9 @@ import { filterAlbumsByGenres } from '@/lib/library/albumBrowseFilters';
 import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
 import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import { loadLocalNewReleases } from '@/lib/library/newReleasesLocal';
+import { mergeHotNewReleases } from '@/features/album/utils/hotNewReleases';
+import { useHotNewReleaseOverlay } from '@/features/album/hooks/useHotNewReleaseOverlay';
+import { isAlbumRecentlyAdded } from '@/features/album/utils/albumRecency';
 
 const PAGE_SIZE = 30;
 
@@ -120,6 +123,15 @@ export default function NewReleases() {
   } = useAsyncInpagePagination(PAGE_SIZE, { initialLoading: initialAlbums == null });
   const [selectionMode, setSelectionMode] = useState(false);
   const genreFiltered = selectedGenres.length > 0;
+  const hotOverlay = useHotNewReleaseOverlay(
+    releaseScopes,
+    releaseScopeFingerprint,
+    !genreFiltered && !scopedSearchQuery,
+  );
+  const hotAlbums = useMemo(
+    () => hotOverlay.scopeFingerprint === releaseScopeFingerprint ? hotOverlay.albums : [],
+    [hotOverlay.albums, hotOverlay.scopeFingerprint, releaseScopeFingerprint],
+  );
 
   const displayAlbums = useMemo(() => {
     if (textSearchActive && textSearchAlbums) {
@@ -127,8 +139,16 @@ export default function NewReleases() {
         ? filterAlbumsByGenres(textSearchAlbums, selectedGenres)
         : textSearchAlbums;
     }
-    return albums;
-  }, [textSearchActive, textSearchAlbums, albums, genreFiltered, selectedGenres]);
+    return !genreFiltered && !scopedSearchQuery
+      ? mergeHotNewReleases(albums, hotAlbums)
+      : albums;
+  }, [textSearchActive, textSearchAlbums, albums, hotAlbums, genreFiltered, selectedGenres, scopedSearchQuery]);
+  const hotReleaseCount = useMemo(
+    () => !genreFiltered && !scopedSearchQuery
+      ? displayAlbums.filter(album => isAlbumRecentlyAdded(album.created)).length
+      : 0,
+    [displayAlbums, genreFiltered, scopedSearchQuery],
+  );
 
   const loadingGrid = textSearchActive ? textSearchLoading : loading;
   const gridHasMore = textSearchActive ? false : (!genreFiltered && hasMore);
@@ -274,6 +294,11 @@ export default function NewReleases() {
               ? t('albums.selectionCount', { count: selectedIds.size })
               : t('sidebar.newReleases')}
           </h1>
+          {!selectionMode && hotReleaseCount > 0 && (
+            <span className="text-muted" style={{ fontSize: '0.8rem' }}>
+              {t('albums.newReleasesHotCount', { count: hotReleaseCount })}
+            </span>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             {selectionMode && selectedIds.size > 0 ? (
               <>

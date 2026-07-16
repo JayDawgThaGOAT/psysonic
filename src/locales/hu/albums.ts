@@ -38,4 +38,6 @@ export const albums = {
   noFavorites: 'Egyetlen kedvenc album sem felel meg a jelenlegi szűrőknek.',
   noCompilations: 'Egyetlen válogatás sem felel meg a jelenlegi szűrőknek.',
   noMatchingFilters: 'Egyetlen album sem felel meg a jelenlegi szűrőknek.',
+  newReleasesHotCount_one: '{{count}} új album az elmúlt 48 órában',
+  newReleasesHotCount_other: '{{count}} új album az elmúlt 48 órában',
 };

@@ -38,4 +38,6 @@ export const albums = {
   noFavorites: 'Няма любими албуми, съответстващи на текущите филтри.',
   noCompilations: 'Няма компилации, съответстващи на текущите филтри.',
   noMatchingFilters: 'Няма албуми, съответстващи на текущите филтри.',
+  newReleasesHotCount_one: '{{count}} нов албум през последните 48 часа',
+  newReleasesHotCount_other: '{{count}} нови албума през последните 48 часа',
 };
