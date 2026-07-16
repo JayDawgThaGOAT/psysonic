@@ -1,11 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
-import { reportNowPlaying, scrobbleSong } from '@/lib/api/subsonicScrobble';
+import {
+  getNowPlayingForServer,
+  getNowPlayingForServers,
+  reportNowPlaying,
+  scrobbleSong,
+} from '@/lib/api/subsonicScrobble';
 import { shouldAttemptSubsonicForServer } from '@/lib/network/subsonicNetworkGuard';
 
 const { apiForServerMock } = vi.hoisted(() => ({
-  apiForServerMock: vi.fn(async () => ({})),
+  apiForServerMock: vi.fn(async (
+    _serverId?: string,
+    _endpoint?: string,
+    _params?: Record<string, unknown>,
+  ): Promise<unknown> => ({})),
 }));
 
 vi.mock('@/lib/api/subsonicClient', () => ({
@@ -67,5 +76,26 @@ describe('subsonicScrobble', () => {
       'scrobble.view',
       expect.objectContaining({ id: 't-local', submission: true }),
     );
+  });
+
+  it('annotates now-playing entries with their owning server', async () => {
+    apiForServerMock.mockResolvedValueOnce({
+      nowPlaying: { entry: { id: 't1', title: 'One', username: 'alice' } },
+    });
+    await expect(getNowPlayingForServer('a')).resolves.toEqual([
+      expect.objectContaining({ id: 't1', username: 'alice', serverId: 'a' }),
+    ]);
+  });
+
+  it('aggregates selected servers in scope order and tolerates partial failure', async () => {
+    apiForServerMock.mockImplementation(async (serverId?: string) => {
+      if (serverId === 'b') throw new Error('offline');
+      return { nowPlaying: { entry: [{ id: `${serverId}-1`, title: serverId, username: 'listener' }] } };
+    });
+
+    await expect(getNowPlayingForServers(['a', 'b', 'a'])).resolves.toEqual([
+      expect.objectContaining({ id: 'a-1', serverId: 'a' }),
+    ]);
+    expect(apiForServerMock).toHaveBeenCalledTimes(2);
   });
 });
