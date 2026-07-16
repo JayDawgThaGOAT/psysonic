@@ -1,10 +1,10 @@
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 
-export type BecauseYouLikeAnchor = { id: string; name: string };
+export type BecauseYouLikeAnchor = { id: string; name: string; serverId: string };
 
 export type BecauseYouLikeSnapshot = {
-  serverId: string;
-  filterVersion: number;
+  scopeKey: string;
+  scopeVersion: number;
   savedAt: number;
   anchor: BecauseYouLikeAnchor;
   recs: SubsonicAlbum[];
@@ -14,11 +14,11 @@ const TTL_MS = 15 * 60 * 1000;
 let snapshot: BecauseYouLikeSnapshot | null = null;
 
 export function readBecauseYouLikeCache(
-  serverId: string | null | undefined,
-  filterVersion: number,
+  scopeKey: string | null | undefined,
+  scopeVersion: number,
 ): BecauseYouLikeSnapshot | null {
-  if (!serverId || !snapshot) return null;
-  if (snapshot.serverId !== serverId || snapshot.filterVersion !== filterVersion) return null;
+  if (!scopeKey || !snapshot) return null;
+  if (snapshot.scopeKey !== scopeKey || snapshot.scopeVersion !== scopeVersion) return null;
   if (Date.now() - snapshot.savedAt > TTL_MS) return null;
   return snapshot;
 }

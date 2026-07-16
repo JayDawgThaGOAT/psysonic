@@ -15,6 +15,8 @@ import { useNavigateToAlbum } from '@/features/album';
 import { useNavigateToArtist } from '@/features/artist';
 import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 
 interface SongCardProps {
   song: SubsonicSong;
@@ -36,7 +38,11 @@ function SongCard({
   const navigateToArtist = useNavigateToArtist();
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
   const enqueue = usePlayerStore(s => s.enqueue);
-  const coverRef = useTrackCoverRef(song, undefined, { libraryResolve: false });
+  const coverServerScope = useMemo(
+    () => coverServerScopeForServerId(song.serverId),
+    [song.serverId],
+  );
+  const coverRef = useTrackCoverRef(song, coverServerScope, { libraryResolve: false });
   const coverHandle = useCoverArt(coverRef, layoutPx, {
     surface: 'dense',
     ensurePriority: 'middle',
@@ -62,7 +68,7 @@ function SongCard({
   const handleAlbumClick = (e: React.MouseEvent) => {
     if (!song.albumId) return;
     e.stopPropagation();
-    navigateToAlbum(song.albumId);
+    navigateToAlbum(song.albumId, { search: appendServerQuery(undefined, song.serverId) });
   };
 
   return (
@@ -143,7 +149,9 @@ function SongCard({
           <OpenArtistRefInline
             refs={artistRefs}
             fallbackName={song.artist}
-            onGoArtist={id => navigateToArtist(id)}
+            onGoArtist={id => navigateToArtist(id, {
+              search: appendServerQuery(undefined, song.serverId),
+            })}
             as="none"
             linkTag="span"
             linkClassName="track-artist-link"

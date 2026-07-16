@@ -1,17 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import type { SubsonicAlbum, SubsonicSong } from '@/lib/api/subsonicTypes';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { resetPlayerStore } from '@/test/helpers/storeReset';
 
 vi.mock('@/lib/api/subsonicRatings', () => ({
   prefetchArtistUserRatings: vi.fn(),
   prefetchAlbumUserRatings: vi.fn(),
-  parseSubsonicEntityStarRating: vi.fn(),
+  prefetchArtistUserRatingsForServer: vi.fn(),
+  prefetchAlbumUserRatingsForServer: vi.fn(),
+  parseSubsonicEntityStarRating: vi.fn((entity: { userRating?: unknown; rating?: unknown }) =>
+    entity.userRating ?? entity.rating),
 }));
 
-import { prefetchArtistUserRatings, prefetchAlbumUserRatings } from '@/lib/api/subsonicRatings';
+import {
+  prefetchAlbumUserRatings,
+  prefetchAlbumUserRatingsForServer,
+  prefetchArtistUserRatings,
+  prefetchArtistUserRatingsForServer,
+} from '@/lib/api/subsonicRatings';
 import {
   enrichSongsForMixRatingFilter,
+  filterAlbumsByMixRatingsAcrossServers,
   filterTopArtistsForMixRatings,
   passesMixMinRatings,
 } from '@/features/playback/utils/mixRatingFilter';
@@ -35,11 +44,64 @@ function song(partial: Partial<SubsonicSong> & Pick<SubsonicSong, 'id'>): Subson
   };
 }
 
+function album(
+  partial: Pick<SubsonicAlbum, 'id' | 'name' | 'artistId'> & { serverId: string },
+): SubsonicAlbum & { serverId: string } {
+  return {
+    artist: 'Artist',
+    songCount: 1,
+    duration: 180,
+    ...partial,
+  };
+}
+
 beforeEach(() => {
   resetPlayerStore();
   vi.mocked(prefetchArtistUserRatings).mockReset();
   vi.mocked(prefetchAlbumUserRatings).mockReset();
+  vi.mocked(prefetchArtistUserRatingsForServer).mockReset();
+  vi.mocked(prefetchAlbumUserRatingsForServer).mockReset();
   vi.mocked(prefetchAlbumUserRatings).mockResolvedValue(new Map());
+  vi.mocked(prefetchArtistUserRatingsForServer).mockResolvedValue(new Map());
+  vi.mocked(prefetchAlbumUserRatingsForServer).mockResolvedValue(new Map());
+});
+
+describe('filterAlbumsByMixRatingsAcrossServers', () => {
+  it('enriches per server and preserves the original merged order', async () => {
+    const config = { enabled: true, minSong: 0, minAlbum: 2, minArtist: 2 };
+    const albums: Array<SubsonicAlbum & { serverId: string }> = [
+      album({ id: 'shared', name: 'A shared', artistId: 'artist-a', serverId: 'server-a' }),
+      album({ id: 'keep-b', name: 'B keep', artistId: 'artist-b', serverId: 'server-b' }),
+      album({ id: 'keep-a', name: 'A keep', artistId: 'artist-a2', serverId: 'server-a' }),
+      album({ id: 'shared', name: 'B shared', artistId: 'artist-b2', serverId: 'server-b' }),
+    ];
+    vi.mocked(prefetchAlbumUserRatingsForServer).mockImplementation(async serverId => (
+      serverId === 'server-a'
+        ? new Map([['shared', 1], ['keep-a', 4]])
+        : new Map([['keep-b', 4], ['shared', 5]])
+    ));
+    vi.mocked(prefetchArtistUserRatingsForServer).mockImplementation(async serverId => (
+      serverId === 'server-a'
+        ? new Map([['artist-a', 5], ['artist-a2', 5]])
+        : new Map([['artist-b', 5], ['artist-b2', 5]])
+    ));
+
+    const result = await filterAlbumsByMixRatingsAcrossServers(albums, config);
+
+    expect(result.map(album => `${album.serverId}:${album.id}`)).toEqual([
+      'server-b:keep-b',
+      'server-a:keep-a',
+      'server-b:shared',
+    ]);
+    expect(prefetchAlbumUserRatingsForServer).toHaveBeenCalledWith(
+      'server-a',
+      ['shared', 'keep-a'],
+    );
+    expect(prefetchAlbumUserRatingsForServer).toHaveBeenCalledWith(
+      'server-b',
+      ['keep-b', 'shared'],
+    );
+  });
 });
 
 describe('passesMixMinRatings — artist axis', () => {

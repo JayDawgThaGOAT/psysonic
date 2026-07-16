@@ -2,20 +2,28 @@ import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subs
 import { parseItemGenres } from '@/lib/library/genreTags';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuthStore } from '@/store/authStore';
-import { librarySelectionForServer } from '@/lib/api/subsonicClient';
+import { getServerById, librarySelectionForServer } from '@/lib/api/subsonicClient';
 import { ndLogin } from '@/lib/api/navidromeAdmin';
+import { connectBaseUrlForServer } from '@/lib/server/serverEndpoint';
+
 /** Server-keyed Bearer token cache. Cheap to keep — Navidrome tokens are long-lived. */
-let cachedToken: { serverUrl: string; token: string } | null = null;
+const cachedTokens = new Map<string, { serverUrl: string; token: string }>();
+
+async function getTokenForServer(serverId: string, force = false): Promise<string> {
+  const server = getServerById(serverId);
+  if (!server) throw new Error(`Unknown server: ${serverId}`);
+  const baseUrl = connectBaseUrlForServer(server);
+  const cached = cachedTokens.get(serverId);
+  if (!force && cached?.serverUrl === baseUrl) return cached.token;
+  const result = await ndLogin(baseUrl, server.username, server.password);
+  cachedTokens.set(serverId, { serverUrl: baseUrl, token: result.token });
+  return result.token;
+}
 
 async function getToken(force = false): Promise<string> {
-  const { getActiveServer, getBaseUrl } = useAuthStore.getState();
-  const server = getActiveServer();
-  const baseUrl = getBaseUrl();
-  if (!server || !baseUrl) throw new Error('No active server configured');
-  if (!force && cachedToken?.serverUrl === baseUrl) return cachedToken.token;
-  const result = await ndLogin(baseUrl, server.username, server.password);
-  cachedToken = { serverUrl: baseUrl, token: result.token };
-  return result.token;
+  const { activeServerId } = useAuthStore.getState();
+  if (!activeServerId) throw new Error('No active server configured');
+  return getTokenForServer(activeServerId, force);
 }
 
 function asString(v: unknown, fallback = ''): string {
@@ -321,15 +329,19 @@ export interface NdLosslessPage {
  *  because they require a codec check we can't reliably perform. */
 const LOSSLESS_SUFFIXES = new Set(['flac', 'wav', 'wave', 'aiff', 'aif', 'dsf', 'dff', 'ape', 'wv', 'shn', 'tta']);
 
-export async function ndListLosslessAlbumsPage(req: NdLosslessPageRequest): Promise<NdLosslessPage> {
+export async function ndListLosslessAlbumsPageForServer(
+  serverId: string,
+  req: NdLosslessPageRequest,
+): Promise<NdLosslessPage> {
   const PAGE_SIZE = req.songsPerPage ?? 200;
   const MAX_PAGES = req.maxPagesPerCall ?? 5;
   const targetAlbums = req.targetNewAlbums;
   const seen = req.seenAlbumIds ?? new Set<string>();
   let songOffset = req.startSongOffset ?? 0;
 
-  const baseUrl = useAuthStore.getState().getBaseUrl();
-  if (!baseUrl) throw new Error('No server configured');
+  const server = getServerById(serverId);
+  if (!server) throw new Error(`Unknown server: ${serverId}`);
+  const baseUrl = connectBaseUrlForServer(server);
 
   const fetchPage = async (start: number, end: number): Promise<unknown[]> => {
     const callOnce = async (token: string): Promise<unknown> =>
@@ -342,14 +354,14 @@ export async function ndListLosslessAlbumsPage(req: NdLosslessPageRequest): Prom
         end,
       });
 
-    let token = await getToken();
+    let token = await getTokenForServer(serverId);
     try {
       const raw = await callOnce(token);
       return Array.isArray(raw) ? raw : [];
     } catch (err) {
       const msg = String(err);
       if (msg.includes('401') || msg.includes('403')) {
-        token = await getToken(true);
+        token = await getTokenForServer(serverId, true);
         const raw = await callOnce(token);
         return Array.isArray(raw) ? raw : [];
       }
@@ -378,6 +390,7 @@ export async function ndListLosslessAlbumsPage(req: NdLosslessPageRequest): Prom
       seen.add(albumId);
 
       const album: SubsonicAlbum = {
+        serverId,
         id: albumId,
         name: asString(o.album),
         artist: asString(o.albumArtist) || asString(o.artist),
@@ -406,9 +419,16 @@ export async function ndListLosslessAlbumsPage(req: NdLosslessPageRequest): Prom
   return { entries, done, nextSongOffset: songOffset };
 }
 
+/** Active-server compatibility wrapper used by the dedicated Lossless Albums page. */
+export async function ndListLosslessAlbumsPage(req: NdLosslessPageRequest): Promise<NdLosslessPage> {
+  const { activeServerId } = useAuthStore.getState();
+  if (!activeServerId) throw new Error('No active server configured');
+  return ndListLosslessAlbumsPageForServer(activeServerId, req);
+}
+
 /** Drop the cached token AND the songs cache — call when the active server changes. */
 export function ndClearTokenCache(): void {
-  cachedToken = null;
+  cachedTokens.clear();
   songsCache.clear();
 }
 

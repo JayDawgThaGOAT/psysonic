@@ -1,6 +1,9 @@
-import { getArtist } from '@/lib/api/subsonicArtists';
-import { getAlbum } from '@/lib/api/subsonicLibrary';
-import { shouldAttemptSubsonicForActiveServer } from '@/lib/network/subsonicNetworkGuard';
+import { getArtist, getArtistForServer } from '@/lib/api/subsonicArtists';
+import { getAlbum, getAlbumForServer } from '@/lib/api/subsonicLibrary';
+import {
+  shouldAttemptSubsonicForActiveServer,
+  shouldAttemptSubsonicForServer,
+} from '@/lib/network/subsonicNetworkGuard';
 
 const MIX_RATING_PREFETCH_CONCURRENCY = 8;
 const RATING_CACHE_TTL = 7 * 60 * 1000; // 7 minutes
@@ -19,8 +22,9 @@ function setCachedRating(key: string, value: number): void {
 
 /** Drop cached entity ratings after `setRating` so mixes see fresh stars. */
 export function invalidateEntityUserRatingCaches(id: string): void {
-  ratingCache.delete(`artist:${ENTITY_RATING_CACHE_KEY_VER}:${id}`);
-  ratingCache.delete(`album:${ENTITY_RATING_CACHE_KEY_VER}:${id}`);
+  for (const key of ratingCache.keys()) {
+    if (key.endsWith(`:${id}`)) ratingCache.delete(key);
+  }
 }
 
 function parseEntityUserRating(v: unknown): number | undefined {
@@ -41,22 +45,31 @@ export function parseSubsonicEntityStarRating(entity: {
 /** Bump when rating parse keys change so stale cache entries are not reused. */
 const ENTITY_RATING_CACHE_KEY_VER = 'v2';
 
-/** Parallel `getArtist` calls to fill mix/album filters when list endpoints omit ratings. */
-export async function prefetchArtistUserRatings(
+type RatingEntity = 'artist' | 'album';
+
+function ratingCacheKey(entity: RatingEntity, serverId: string, id: string): string {
+  return `${entity}:${ENTITY_RATING_CACHE_KEY_VER}:${serverId}:${id}`;
+}
+
+async function prefetchUserRatings(
+  entity: RatingEntity,
+  serverId: string,
   ids: string[],
-  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
+  fetchEntity: (id: string) => Promise<{ userRating?: unknown; rating?: unknown }>,
+  concurrency: number,
+  networkAllowed: boolean,
 ): Promise<Map<string, number>> {
   const unique = [...new Set(ids.filter(Boolean))];
   const out = new Map<string, number>();
   if (!unique.length) return out;
   const uncached: string[] = [];
   for (const id of unique) {
-    const cached = getCachedRating(`artist:${ENTITY_RATING_CACHE_KEY_VER}:${id}`);
+    const cached = getCachedRating(ratingCacheKey(entity, serverId, id));
     if (cached !== null) out.set(id, cached);
     else uncached.push(id);
   }
   if (!uncached.length) return out;
-  if (!shouldAttemptSubsonicForActiveServer()) return out;
+  if (!networkAllowed) return out;
   let next = 0;
   async function worker() {
     for (;;) {
@@ -64,10 +77,9 @@ export async function prefetchArtistUserRatings(
       if (i >= uncached.length) return;
       const id = uncached[i];
       try {
-        const { artist } = await getArtist(id);
-        const r = parseSubsonicEntityStarRating(artist);
+        const r = parseSubsonicEntityStarRating(await fetchEntity(id));
         if (r !== undefined && r > 0) {
-          setCachedRating(`artist:${ENTITY_RATING_CACHE_KEY_VER}:${id}`, r);
+          setCachedRating(ratingCacheKey(entity, serverId, id), r);
           out.set(id, r);
         }
       } catch {
@@ -80,41 +92,85 @@ export async function prefetchArtistUserRatings(
   return out;
 }
 
-/** Parallel `getAlbum` calls when `albumList2` entries lack `userRating`. */
-export async function prefetchAlbumUserRatings(
+async function prefetchActiveServerUserRatings(
   ids: string[],
-  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
+  fetchEntity: (id: string) => Promise<{ userRating?: unknown; rating?: unknown }>,
+  concurrency: number,
 ): Promise<Map<string, number>> {
   const unique = [...new Set(ids.filter(Boolean))];
   const out = new Map<string, number>();
-  if (!unique.length) return out;
-  const uncached: string[] = [];
-  for (const id of unique) {
-    const cached = getCachedRating(`album:${ENTITY_RATING_CACHE_KEY_VER}:${id}`);
-    if (cached !== null) out.set(id, cached);
-    else uncached.push(id);
-  }
-  if (!uncached.length) return out;
-  if (!shouldAttemptSubsonicForActiveServer()) return out;
+  if (!unique.length || !shouldAttemptSubsonicForActiveServer()) return out;
   let next = 0;
   async function worker() {
     for (;;) {
       const i = next++;
-      if (i >= uncached.length) return;
-      const id = uncached[i];
+      if (i >= unique.length) return;
+      const id = unique[i];
       try {
-        const { album } = await getAlbum(id);
-        const r = parseSubsonicEntityStarRating(album);
-        if (r !== undefined && r > 0) {
-          setCachedRating(`album:${ENTITY_RATING_CACHE_KEY_VER}:${id}`, r);
-          out.set(id, r);
-        }
+        const r = parseSubsonicEntityStarRating(await fetchEntity(id));
+        if (r !== undefined && r > 0) out.set(id, r);
       } catch {
         /* ignore */
       }
     }
   }
-  const nWorkers = Math.min(concurrency, uncached.length);
+  const nWorkers = Math.min(concurrency, unique.length);
   await Promise.all(Array.from({ length: nWorkers }, () => worker()));
   return out;
+}
+
+/** Parallel `getArtist` calls to fill mix/album filters when list endpoints omit ratings. */
+export async function prefetchArtistUserRatings(
+  ids: string[],
+  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
+): Promise<Map<string, number>> {
+  return prefetchActiveServerUserRatings(
+    ids,
+    async id => (await getArtist(id)).artist,
+    concurrency,
+  );
+}
+
+/** Explicit-server variant for merged multi-server browse results. */
+export async function prefetchArtistUserRatingsForServer(
+  serverId: string,
+  ids: string[],
+  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
+): Promise<Map<string, number>> {
+  return prefetchUserRatings(
+    'artist',
+    serverId,
+    ids,
+    async id => (await getArtistForServer(serverId, id)).artist,
+    concurrency,
+    shouldAttemptSubsonicForServer(serverId),
+  );
+}
+
+/** Parallel `getAlbum` calls when `albumList2` entries lack `userRating`. */
+export async function prefetchAlbumUserRatings(
+  ids: string[],
+  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
+): Promise<Map<string, number>> {
+  return prefetchActiveServerUserRatings(
+    ids,
+    async id => (await getAlbum(id)).album,
+    concurrency,
+  );
+}
+
+/** Explicit-server variant for merged multi-server browse results. */
+export async function prefetchAlbumUserRatingsForServer(
+  serverId: string,
+  ids: string[],
+  concurrency = MIX_RATING_PREFETCH_CONCURRENCY,
+): Promise<Map<string, number>> {
+  return prefetchUserRatings(
+    'album',
+    serverId,
+    ids,
+    async id => (await getAlbumForServer(serverId, id)).album,
+    concurrency,
+    shouldAttemptSubsonicForServer(serverId),
+  );
 }

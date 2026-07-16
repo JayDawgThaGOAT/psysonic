@@ -219,6 +219,29 @@ export async function getRandomSongs(size = 50, genre?: string, timeout = 15000)
   return data.randomSongs?.song ?? [];
 }
 
+export async function getRandomSongsForServer(
+  serverId: string,
+  size = 50,
+  genre?: string,
+  timeout = 15000,
+): Promise<SubsonicSong[]> {
+  if (!shouldAttemptSubsonicForServer(serverId)) return [];
+  const params: Record<string, string | number> = {
+    size,
+    _t: Date.now(),
+    ...libraryFilterParamsForServer(serverId),
+  };
+  if (genre) params.genre = genre;
+  const data = await apiForServer<{ randomSongs: { song: SubsonicSong[] } }>(
+    serverId,
+    'getRandomSongs.view',
+    params,
+    timeout,
+  );
+  const songs = await filterSongsToServerLibrary(data.randomSongs?.song ?? [], serverId);
+  return songs.map(song => ({ ...song, serverId }));
+}
+
 /** Extended random song fetch with server-side year/genre filtering. */
 export async function getRandomSongsFiltered(
   filters: RandomSongsFilters,
@@ -242,17 +265,23 @@ export async function getAlbumListForServer(
   size = 30,
   offset = 0,
   extra: Record<string, unknown> = {},
+  timeout = 15000,
 ): Promise<SubsonicAlbum[]> {
   if (!shouldAttemptSubsonicForServer(serverId)) return [];
-  const data = await apiForServer<{ albumList2: { album: SubsonicAlbum[] } }>(serverId, 'getAlbumList2.view', {
-    type,
-    size,
-    offset,
-    _t: Date.now(),
-    ...libraryFilterParamsForServer(serverId),
-    ...extra,
-  });
-  return data.albumList2?.album ?? [];
+  const data = await apiForServer<{ albumList2: { album: SubsonicAlbum[] } }>(
+    serverId,
+    'getAlbumList2.view',
+    {
+      type,
+      size,
+      offset,
+      _t: Date.now(),
+      ...libraryFilterParamsForServer(serverId),
+      ...extra,
+    },
+    timeout,
+  );
+  return (data.albumList2?.album ?? []).map(album => ({ ...album, serverId }));
 }
 
 export async function getSong(id: string): Promise<SubsonicSong | null> {
@@ -269,7 +298,7 @@ export async function getSongForServer(serverId: string, id: string): Promise<Su
   if (!shouldAttemptSubsonicForServer(serverId, id)) return null;
   try {
     const data = await apiForServer<{ song: SubsonicSong }>(serverId, 'getSong.view', { id });
-    return data.song ?? null;
+    return data.song ? { ...data.song, serverId } : null;
   } catch {
     return null;
   }
@@ -311,8 +340,9 @@ export async function getAlbumForServer(
     'getAlbum.view',
     { id, ...libraryFilterParamsForServer(serverId) },
   );
-  const { song, ...album } = data.album;
-  const result = { album, songs: song ?? [] };
+  const { song, ...rawAlbum } = data.album;
+  const album = { ...rawAlbum, serverId };
+  const result = { album, songs: (song ?? []).map(entry => ({ ...entry, serverId })) };
   if (options?.mirrorToIndex !== false) {
     mirrorAlbumMetadataFromServerOnUse(serverId, id, result.album);
   }

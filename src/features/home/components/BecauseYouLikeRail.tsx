@@ -1,11 +1,10 @@
-import { getArtist, getArtistInfo } from '@/lib/api/subsonicArtists';
-import { filterAlbumsToActiveLibrary } from '@/lib/api/subsonicLibrary';
+import { getArtistForServer, getArtistInfoForServer } from '@/lib/api/subsonicArtists';
+import { filterAlbumsToServerLibrary } from '@/lib/api/subsonicLibrary';
 import { resolveAlbum, resolveMediaServerId } from '@/features/offline';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { shuffleArray } from '@/lib/util/shuffleArray';
 import React, { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Play, ListPlus, Music } from 'lucide-react';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
@@ -19,13 +18,13 @@ import {
   type BecauseYouLikeAnchor,
 } from '@/features/home/store/becauseYouLikeCache';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
-import { useAuthStore } from '@/store/authStore';
 import { playAlbum, playAlbumShuffled } from '@/features/playback/utils/playback/playAlbum';
 import { useLongPressAction } from '@/lib/hooks/useLongPressAction';
 import { LongPressWaveOverlay } from '@/ui/LongPressWaveOverlay';
 import { formatHumanHoursMinutes } from '@/lib/format/formatHumanDuration';
-import { AlbumRow } from '@/features/album';
-import { albumArtistDisplayName } from '@/features/album';
+import { AlbumRow, albumArtistDisplayName, useNavigateToAlbum } from '@/features/album';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 
 const ANCHOR_HISTORY_KEY_PREFIX = 'psysonic_because_anchor_history:';
 const PICKS_HISTORY_KEY_PREFIX = 'psysonic_because_picks:';
@@ -57,10 +56,10 @@ const ROW_STAGGER_MS = 150;
 
 // ── Module-level reserve: next batch pre-fetched in background after each display ──
 type BecauseReserve = {
-  serverId: string;
-  filterVersion: number;
+  scopeKey: string;
+  scopeVersion: number;
   // poolKey intentionally omitted — reserve is valid for any pool state on the
-  // same server. Pool (top-played artists) changes slowly; showing a slightly-off
+  // same scope. Pool (top-played artists) changes slowly; showing a slightly-off
   // anchor once before the next fill corrects it is far better than showing a
   // skeleton because the pool hadn't loaded yet.
   anchor: BecauseYouLikeAnchor;
@@ -90,19 +89,24 @@ async function resolvePicks(
   candidate: BecauseYouLikeAnchor,
   recentPicks: Set<string>,
 ): Promise<SubsonicAlbum[] | null> {
-  const info = await getArtistInfo(candidate.id, { similarArtistCount: SIMILAR_FETCH });
+  const info = await getArtistInfoForServer(candidate.serverId, candidate.id, {
+    similarArtistCount: SIMILAR_FETCH,
+  });
   const similar = (info.similarArtist ?? []).filter(s => s.id);
   if (similar.length === 0) return null;
 
   const sampled = shuffleArray(similar).slice(0, SIMILAR_PICK);
-  const results = await Promise.all(sampled.map(s => getArtist(s.id).catch(() => null)));
+  const results = await Promise.all(
+    sampled.map(s => getArtistForServer(candidate.serverId, s.id).catch(() => null)),
+  );
 
   const picks: SubsonicAlbum[] = [];
   for (const r of results) {
     if (!r) continue;
-    const albums = await filterAlbumsToActiveLibrary(r.albums);
+    const albums = (await filterAlbumsToServerLibrary(r.albums, candidate.serverId))
+      .map(album => ({ ...album, serverId: candidate.serverId }));
     if (albums.length === 0) continue;
-    const fresh = albums.filter(a => !recentPicks.has(a.id));
+    const fresh = albums.filter(a => !recentPicks.has(ownedEntityKey(candidate.serverId, a.id)));
     const choice = fresh.length > 0 ? fresh : albums;
     const album = choice[Math.floor(Math.random() * choice.length)];
     picks.push(album);
@@ -133,7 +137,7 @@ async function fetchBecauseYouLike(
 
   const cooldown = Math.min(ANCHOR_COOLDOWN, Math.max(0, Math.floor(pool.length / 2)));
   const recentAnchors = new Set(anchorHistory.slice(-cooldown));
-  const eligibleRaw = pool.filter(a => !recentAnchors.has(a.id));
+  const eligibleRaw = pool.filter(a => !recentAnchors.has(anchorKey(a)));
   const eligible = eligibleRaw.length > 0 ? eligibleRaw : pool.slice();
   const candidates = shuffleArray(eligible);
   const recentPicks = new Set(picksHistory);
@@ -144,8 +148,11 @@ async function fetchBecauseYouLike(
   const buildResult = (candidate: BecauseYouLikeAnchor, picks: SubsonicAlbum[]): FetchBecauseResult => ({
     anchor: candidate,
     recs: picks,
-    nextAnchorHistory: [...anchorHistory, candidate.id].slice(-ANCHOR_COOLDOWN),
-    nextPicksHistory: [...picksHistory, ...picks.map(p => p.id)].slice(-PICKS_HISTORY_SIZE),
+    nextAnchorHistory: [...anchorHistory, anchorKey(candidate)].slice(-ANCHOR_COOLDOWN),
+    nextPicksHistory: [
+      ...picksHistory,
+      ...picks.map(p => ownedEntityKey(p.serverId ?? candidate.serverId, p.id)),
+    ].slice(-PICKS_HISTORY_SIZE),
   });
 
   /** First two shuffled anchors in parallel — cuts cold-start wait on slow Last.fm. */
@@ -186,8 +193,8 @@ async function fetchBecauseYouLike(
  */
 async function fillBecauseReserve(
   pool: BecauseYouLikeAnchor[],
-  serverId: string,
-  filterVersion: number,
+  scopeKey: string,
+  scopeVersion: number,
   anchorHistKey: string | null,
   picksHistKey: string | null,
 ): Promise<void> {
@@ -196,10 +203,10 @@ async function fillBecauseReserve(
   try {
     const result = await fetchBecauseYouLike(pool, anchorHistKey, picksHistKey);
     if (result) {
-      _becauseReserve = { serverId, filterVersion, ...result };
+      _becauseReserve = { scopeKey, scopeVersion, ...result };
       // Also refresh the session snapshot so a quick leave→return can pick up
       // newer cards even before the reserve is explicitly consumed.
-      writeBecauseYouLikeCache({ serverId, filterVersion, anchor: result.anchor, recs: result.recs });
+      writeBecauseYouLikeCache({ scopeKey, scopeVersion, anchor: result.anchor, recs: result.recs });
     }
   } catch {
     /* Network failure — next visit falls back to a fresh fetch. */
@@ -286,14 +293,18 @@ interface Props {
   mostPlayed: SubsonicAlbum[];
   recentlyPlayed?: SubsonicAlbum[];
   starred?: SubsonicAlbum[];
+  scopeKey: string;
+  scopeVersion: number;
   disableArtwork?: boolean;
 }
 
-/** Round-robin merge of multiple album sources, dedup by artistId.
+/** Round-robin merge of multiple album sources, dedup by owner + artistId.
  *  Cycling sources (most-played, recently-played, starred) means the per-mount
  *  rotation cursor visits a different listening *mode* each visit instead of
  *  walking only down the top-played list. */
-function buildAnchorPool(sources: SubsonicAlbum[][], limit: number): BecauseYouLikeAnchor[] {
+// Exported for the focused owner-identity test below this feature boundary.
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildAnchorPool(sources: SubsonicAlbum[][], limit: number): BecauseYouLikeAnchor[] {
   const seen = new Set<string>();
   const out: BecauseYouLikeAnchor[] = [];
   const maxLen = sources.reduce((m, s) => Math.max(m, s.length), 0);
@@ -301,30 +312,38 @@ function buildAnchorPool(sources: SubsonicAlbum[][], limit: number): BecauseYouL
     for (const src of sources) {
       if (out.length >= limit) break;
       const a = src[i];
-      if (!a || !a.artistId || seen.has(a.artistId)) continue;
-      seen.add(a.artistId);
-      out.push({ id: a.artistId, name: a.artist });
+      if (!a?.artistId || !a.serverId) continue;
+      const key = ownedEntityKey(a.serverId, a.artistId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ id: a.artistId, name: a.artist, serverId: a.serverId });
     }
   }
   return out;
 }
 
 
-/** Both rotation memories are **per-server** — server A and server B keep
- *  independent state, so switching servers doesn't snap the anchor cooldown
- *  or the recently-shown-album buffer onto the new server's content. */
-function anchorHistoryKey(serverId: string | null): string | null {
-  return serverId ? `${ANCHOR_HISTORY_KEY_PREFIX}${serverId}` : null;
-}
-function picksHistoryKey(serverId: string | null): string | null {
-  return serverId ? `${PICKS_HISTORY_KEY_PREFIX}${serverId}` : null;
+function ownedEntityKey(serverId: string, id: string): string {
+  return `${serverId}:${id}`;
 }
 
-function hasValidReserve(serverId: string | null, filterVersion: number): boolean {
+function anchorKey(anchor: BecauseYouLikeAnchor): string {
+  return ownedEntityKey(anchor.serverId, anchor.id);
+}
+
+/** Rotation memories follow the complete mixed-server browse scope. */
+function anchorHistoryKey(scopeKey: string): string | null {
+  return scopeKey ? `${ANCHOR_HISTORY_KEY_PREFIX}${scopeKey}` : null;
+}
+function picksHistoryKey(scopeKey: string): string | null {
+  return scopeKey ? `${PICKS_HISTORY_KEY_PREFIX}${scopeKey}` : null;
+}
+
+function hasValidReserve(scopeKey: string, scopeVersion: number): boolean {
   return (
     _becauseReserve != null &&
-    _becauseReserve.serverId === (serverId ?? '') &&
-    _becauseReserve.filterVersion === filterVersion
+    _becauseReserve.scopeKey === scopeKey &&
+    _becauseReserve.scopeVersion === scopeVersion
   );
 }
 
@@ -332,35 +351,35 @@ export default function BecauseYouLikeRail({
   mostPlayed,
   recentlyPlayed,
   starred,
+  scopeKey,
+  scopeVersion,
   disableArtwork = false,
 }: Props) {
   const { t } = useTranslation();
-  const activeServerId = useAuthStore(s => s.activeServerId);
-  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const pool = useMemo(
     () => buildAnchorPool([mostPlayed, recentlyPlayed ?? [], starred ?? []], TOP_ARTIST_POOL),
     [mostPlayed, recentlyPlayed, starred],
   );
   const poolKey = useMemo(
-    () => pool.slice(0, 8).map(a => a.id).join('\u0001'),
+    () => pool.slice(0, 8).map(anchorKey).join('\u0001'),
     [pool],
   );
   // Initialise state in priority order: reserve (new batch) > session cache (stale-while-
   // revalidate) > skeleton. Both checks work without poolKey so they fire correctly on the
   // first render when pool is still [] (Home.tsx loads mostPlayed asynchronously).
   const [anchor, setAnchor] = useState<BecauseYouLikeAnchor | null>(() => {
-    if (hasValidReserve(activeServerId, musicLibraryFilterVersion)) return _becauseReserve!.anchor;
-    return readBecauseYouLikeCache(activeServerId, musicLibraryFilterVersion)?.anchor ?? null;
+    if (hasValidReserve(scopeKey, scopeVersion)) return _becauseReserve!.anchor;
+    return readBecauseYouLikeCache(scopeKey, scopeVersion)?.anchor ?? null;
   });
   const [recs, setRecs] = useState<SubsonicAlbum[]>(() => {
-    if (hasValidReserve(activeServerId, musicLibraryFilterVersion)) return _becauseReserve!.recs;
-    return readBecauseYouLikeCache(activeServerId, musicLibraryFilterVersion)?.recs ?? [];
+    if (hasValidReserve(scopeKey, scopeVersion)) return _becauseReserve!.recs;
+    return readBecauseYouLikeCache(scopeKey, scopeVersion)?.recs ?? [];
   });
   const containerRef = useRef<HTMLDivElement>(null);
   const [narrow, setNarrow] = useState(false);
   const [refreshing, setRefreshing] = useState(() => {
-    if (hasValidReserve(activeServerId, musicLibraryFilterVersion)) return false;
-    const snap = readBecauseYouLikeCache(activeServerId, musicLibraryFilterVersion);
+    if (hasValidReserve(scopeKey, scopeVersion)) return false;
+    const snap = readBecauseYouLikeCache(scopeKey, scopeVersion);
     return !snap || snap.recs.length === 0;
   });
   const skeletonSlots = useBecauseRowSlotCount(refreshing, SHOW_COUNT);
@@ -371,14 +390,14 @@ export default function BecauseYouLikeRail({
    *  (synchronous, before browser paint) or fall back to session cache (stale-
    *  while-revalidate), only clearing to skeleton when nothing is available. */
   useLayoutEffect(() => {
-    if (hasValidReserve(activeServerId, musicLibraryFilterVersion)) {
+    if (hasValidReserve(scopeKey, scopeVersion)) {
       // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setAnchor(_becauseReserve!.anchor);
       setRecs(_becauseReserve!.recs);
       setRefreshing(false);
     } else {
-      const snap = readBecauseYouLikeCache(activeServerId, musicLibraryFilterVersion);
+      const snap = readBecauseYouLikeCache(scopeKey, scopeVersion);
       if (snap && snap.recs.length > 0) {
         setAnchor(snap.anchor);
         setRecs(snap.recs);
@@ -389,7 +408,7 @@ export default function BecauseYouLikeRail({
         setRecs([]);
       }
     }
-  }, [activeServerId, musicLibraryFilterVersion, poolKey]);
+  }, [scopeKey, scopeVersion, poolKey]);
 
   // 696px ≙ exactly 2 BecauseCards side-by-side (2*340 + 16 gap). Below that
   // the hero-style cards stretch full-width and dwarf the rest of the page,
@@ -416,7 +435,7 @@ export default function BecauseYouLikeRail({
       // cache content. The effect will re-run once pool is populated.
       return;
     }
-    if (!activeServerId) {
+    if (!scopeKey) {
       // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setAnchor(null);
@@ -425,12 +444,12 @@ export default function BecauseYouLikeRail({
       return;
     }
 
-    const anchorHistKey = anchorHistoryKey(activeServerId);
-    const picksHistKey = picksHistoryKey(activeServerId);
-    const snap = readBecauseYouLikeCache(activeServerId, musicLibraryFilterVersion);
+    const anchorHistKey = anchorHistoryKey(scopeKey);
+    const picksHistKey = picksHistoryKey(scopeKey);
+    const snap = readBecauseYouLikeCache(scopeKey, scopeVersion);
 
-    // Consume module-level reserve (keyed by server + library scope).
-    const reserved = hasValidReserve(activeServerId, musicLibraryFilterVersion) ? _becauseReserve : null;
+    // Consume module-level reserve (keyed by the complete library scope).
+    const reserved = hasValidReserve(scopeKey, scopeVersion) ? _becauseReserve : null;
     _becauseReserve = null;
 
     (async () => {
@@ -448,17 +467,15 @@ export default function BecauseYouLikeRail({
         } catch { /* ignore */ }
         setAnchor(reserved.anchor);
         setRecs(reserved.recs);
-        if (activeServerId) {
-          writeBecauseYouLikeCache({
-            serverId: activeServerId,
-            filterVersion: musicLibraryFilterVersion,
-            anchor: reserved.anchor,
-            recs: reserved.recs,
-          });
-        }
+        writeBecauseYouLikeCache({
+          scopeKey,
+          scopeVersion,
+          anchor: reserved.anchor,
+          recs: reserved.recs,
+        });
         setRefreshing(false);
         // Pre-fetch the next batch so the next visit is also instant.
-        void fillBecauseReserve(pool, activeServerId, musicLibraryFilterVersion, anchorHistKey, picksHistKey);
+        void fillBecauseReserve(pool, scopeKey, scopeVersion, anchorHistKey, picksHistKey);
         return;
       }
 
@@ -467,7 +484,7 @@ export default function BecauseYouLikeRail({
       // for the next mount instead of swapping cards mid-visit.
       if (snap && snap.recs.length > 0) {
         setRefreshing(false);
-        void fillBecauseReserve(pool, activeServerId, musicLibraryFilterVersion, anchorHistKey, picksHistKey);
+        void fillBecauseReserve(pool, scopeKey, scopeVersion, anchorHistKey, picksHistKey);
         return;
       }
 
@@ -496,17 +513,15 @@ export default function BecauseYouLikeRail({
         } catch { /* ignore */ }
         setAnchor(result.anchor);
         setRecs(result.recs);
-        if (activeServerId) {
-          writeBecauseYouLikeCache({
-            serverId: activeServerId,
-            filterVersion: musicLibraryFilterVersion,
-            anchor: result.anchor,
-            recs: result.recs,
-          });
-        }
+        writeBecauseYouLikeCache({
+          scopeKey,
+          scopeVersion,
+          anchor: result.anchor,
+          recs: result.recs,
+        });
         setRefreshing(false);
         // Pre-fetch next batch so the next visit is instant.
-        void fillBecauseReserve(pool, activeServerId, musicLibraryFilterVersion, anchorHistKey, picksHistKey);
+        void fillBecauseReserve(pool, scopeKey, scopeVersion, anchorHistKey, picksHistKey);
       } else {
         // Network failed — restore session cache if available.
         if (snap) {
@@ -532,7 +547,7 @@ export default function BecauseYouLikeRail({
     // swap the cards — a height blip above the row that scroll anchoring turns into
     // an upward viewport jump. The sibling reserve effect already keys on poolKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [poolKey, activeServerId, musicLibraryFilterVersion, disableArtwork]);
+  }, [poolKey, scopeKey, scopeVersion, disableArtwork]);
 
   useLibraryCoverPrefetch(
     disableArtwork || recs.length === 0 ? [] : [{ albums: recs, priority: 'high' }],
@@ -570,7 +585,7 @@ export default function BecauseYouLikeRail({
           <div className="because-card-grid because-card-grid--stagger">
             {recs.slice(0, contentSlots).map((album, index) => (
               <BecauseCard
-                key={album.id}
+                key={ownedEntityKey(album.serverId ?? anchor.serverId, album.id)}
                 album={album}
                 anchor={anchor.name}
                 disableArtwork={disableArtwork}
@@ -593,13 +608,18 @@ interface CardProps {
 
 const BecauseCard = memo(function BecauseCard({ album, anchor, disableArtwork, enter }: CardProps) {
   const { t } = useTranslation();
+  const ownerServerId = album.serverId;
   const { isHolding, pressBind } = useLongPressAction({
-    onShortPress: () => playAlbum(album.id),
-    onLongPress: () => playAlbumShuffled(album.id),
+    onShortPress: () => playAlbum(album.id, ownerServerId ? { serverId: ownerServerId } : undefined),
+    onLongPress: () => playAlbumShuffled(album.id, ownerServerId ? { serverId: ownerServerId } : undefined),
   });
-  const navigate = useNavigate();
+  const navigateToAlbum = useNavigateToAlbum();
   const enqueue = usePlayerStore(s => s.enqueue);
-  const coverRef = useAlbumCoverRef(album.id, album.coverArt, undefined, { libraryResolve: false });
+  const coverServerScope = useMemo(
+    () => coverServerScopeForServerId(ownerServerId),
+    [ownerServerId],
+  );
+  const coverRef = useAlbumCoverRef(album.id, album.coverArt, coverServerScope, { libraryResolve: false });
   const coverHandle = useCoverArt(coverRef, BECAUSE_CARD_COVER_CSS_PX, {
     surface: 'dense',
     ensurePriority: 'high',
@@ -607,15 +627,18 @@ const BecauseCard = memo(function BecauseCard({ album, anchor, disableArtwork, e
   const imgSrc = coverImgSrc(coverHandle.src);
   const bgResolved = coverHandle.src;
   const artistLabel = useMemo(() => albumArtistDisplayName(album), [album]);
-  const handleOpen = () => navigate(`/album/${album.id}`);
+  const handleOpen = () => navigateToAlbum(album.id, {
+    search: appendServerQuery(undefined, ownerServerId),
+  });
   const handleEnqueue = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const serverId = resolveMediaServerId(album.serverId);
+      if (!ownerServerId) return;
+      const serverId = resolveMediaServerId(ownerServerId);
       if (!serverId) return;
       const data = await resolveAlbum(serverId, album.id);
       if (!data) return;
-      enqueue(data.songs.map(songToTrack));
+      enqueue(data.songs.map(song => ({ ...songToTrack(song), serverId })));
     } catch {
       /* silent — toast would be too noisy for a hover action */
     }

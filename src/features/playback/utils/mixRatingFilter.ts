@@ -1,4 +1,10 @@
-import { parseSubsonicEntityStarRating, prefetchAlbumUserRatings, prefetchArtistUserRatings } from '@/lib/api/subsonicRatings';
+import {
+  parseSubsonicEntityStarRating,
+  prefetchAlbumUserRatings,
+  prefetchAlbumUserRatingsForServer,
+  prefetchArtistUserRatings,
+  prefetchArtistUserRatingsForServer,
+} from '@/lib/api/subsonicRatings';
 import { getRandomSongs } from '@/lib/api/subsonicLibrary';
 import type { SubsonicAlbum, SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useAuthStore } from '@/store/authStore';
@@ -199,6 +205,20 @@ export async function filterAlbumsByMixRatings(
   albums: SubsonicAlbum[],
   c: MixMinRatingsConfig,
 ): Promise<SubsonicAlbum[]> {
+  return filterAlbumsByMixRatingsWithPrefetch(
+    albums,
+    c,
+    prefetchArtistUserRatings,
+    prefetchAlbumUserRatings,
+  );
+}
+
+async function filterAlbumsByMixRatingsWithPrefetch<T extends SubsonicAlbum>(
+  albums: T[],
+  c: MixMinRatingsConfig,
+  prefetchArtists: (ids: string[]) => Promise<Map<string, number>>,
+  prefetchAlbums: (ids: string[]) => Promise<Map<string, number>>,
+): Promise<T[]> {
   if (!c.enabled) return albums;
   if (c.minAlbum <= 0 && c.minArtist <= 0) return albums;
   const needArtist = c.minArtist > 0;
@@ -207,11 +227,11 @@ export async function filterAlbumsByMixRatings(
   let byAlbum = new Map<string, number>();
   if (needArtist) {
     const ids = [...new Set(albums.map(a => a.artistId).filter(Boolean))] as string[];
-    byArtist = await prefetchArtistUserRatings(ids);
+    byArtist = await prefetchArtists(ids);
   }
   if (needAlbum) {
     const ids = [...new Set(albums.filter(a => a.userRating === undefined).map(a => a.id))];
-    if (ids.length) byAlbum = await prefetchAlbumUserRatings(ids);
+    if (ids.length) byAlbum = await prefetchAlbums(ids);
   }
   return albums.filter(a =>
     passesMixMinRatingsForAlbum(a, c, {
@@ -219,6 +239,31 @@ export async function filterAlbumsByMixRatings(
       albumUserRating: byAlbum.get(a.id),
     }),
   );
+}
+
+/** Filters owner-stamped merged albums against ratings from each album's server. */
+export async function filterAlbumsByMixRatingsAcrossServers<T extends SubsonicAlbum & { serverId: string }>(
+  albums: T[],
+  c: MixMinRatingsConfig,
+): Promise<T[]> {
+  if (!c.enabled || (c.minAlbum <= 0 && c.minArtist <= 0)) return albums;
+  const byServer = new Map<string, T[]>();
+  for (const album of albums) {
+    const group = byServer.get(album.serverId);
+    if (group) group.push(album);
+    else byServer.set(album.serverId, [album]);
+  }
+  const accepted = new Set<T>();
+  await Promise.all([...byServer].map(async ([serverId, group]) => {
+    const filtered = await filterAlbumsByMixRatingsWithPrefetch(
+      group,
+      c,
+      ids => prefetchArtistUserRatingsForServer(serverId, ids),
+      ids => prefetchAlbumUserRatingsForServer(serverId, ids),
+    );
+    for (const album of filtered) accepted.add(album);
+  }));
+  return albums.filter(album => accepted.has(album));
 }
 
 /** Enrich when needed, then drop songs excluded by Settings → Ratings → filter-by-rating. */

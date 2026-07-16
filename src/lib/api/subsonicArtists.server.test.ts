@@ -1,0 +1,84 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { apiForServerMock, librarySelectionMock } = vi.hoisted(() => ({
+  apiForServerMock: vi.fn(),
+  librarySelectionMock: vi.fn<() => string[]>(() => []),
+}));
+
+vi.mock('@/lib/api/subsonicClient', () => ({
+  api: vi.fn(),
+  apiForServer: apiForServerMock,
+  libraryFilterParams: () => ({}),
+  libraryFilterParamsForServer: () => ({ musicFolderId: ['folder-a', 'folder-b'] }),
+  librarySelectionForServer: librarySelectionMock,
+}));
+
+vi.mock('@/lib/api/subsonicLibrary', () => ({
+  filterSongsToActiveLibrary: async (songs: unknown[]) => songs,
+  filterSongsToServerLibrary: async (songs: unknown[]) => songs,
+  similarSongsRequestCount: (count: number) => count,
+}));
+
+import {
+  getArtistForServer,
+  getArtistInfoForServer,
+  getArtistsForServer,
+} from '@/lib/api/subsonicArtists';
+
+const artist = { id: 'artist-1', name: 'Artist' };
+const album = { id: 'album-1', name: 'Album', artist: 'Artist', artistId: 'artist-1', songCount: 1, duration: 30 };
+
+describe('explicit-server artist wrappers', () => {
+  beforeEach(() => {
+    apiForServerMock.mockReset();
+    librarySelectionMock.mockReset();
+    librarySelectionMock.mockReturnValue([]);
+  });
+
+  it('preserves multi-folder fan-out, timeout, deduplication, and stamping', async () => {
+    librarySelectionMock.mockReturnValue(['folder-a', 'folder-b']);
+    apiForServerMock
+      .mockResolvedValueOnce({ artists: { index: { artist: [artist] } } })
+      .mockResolvedValueOnce({ artists: { index: { artist: [artist, { id: 'artist-2', name: 'Second' }] } } });
+
+    await expect(getArtistsForServer('srv-artists', 3210)).resolves.toEqual([
+      { ...artist, serverId: 'srv-artists' },
+      { id: 'artist-2', name: 'Second', serverId: 'srv-artists' },
+    ]);
+    expect(apiForServerMock).toHaveBeenNthCalledWith(1, 'srv-artists', 'getArtists.view', { musicFolderId: 'folder-a' }, 3210);
+    expect(apiForServerMock).toHaveBeenNthCalledWith(2, 'srv-artists', 'getArtists.view', { musicFolderId: 'folder-b' }, 3210);
+  });
+
+  it('forwards artist-detail timeout and stamps artist and albums', async () => {
+    apiForServerMock.mockResolvedValue({ artist: { ...artist, album: [album] } });
+
+    await expect(getArtistForServer('srv-detail', 'artist-1', { timeout: 4567 })).resolves.toEqual({
+      artist: { ...artist, serverId: 'srv-detail' },
+      albums: [{ ...album, serverId: 'srv-detail' }],
+    });
+    expect(apiForServerMock).toHaveBeenCalledWith(
+      'srv-detail',
+      'getArtist.view',
+      expect.objectContaining({ id: 'artist-1' }),
+      4567,
+    );
+  });
+
+  it('forwards artist-info timeout and stamps similar artists at runtime', async () => {
+    apiForServerMock.mockResolvedValue({
+      artistInfo2: { biography: 'Bio', similarArtist: [{ id: 'similar-1', name: 'Similar' }] },
+    });
+
+    const info = await getArtistInfoForServer('srv-info', 'artist-1', { similarArtistCount: 9, timeout: 5678 });
+    expect(info).toEqual({
+      biography: 'Bio',
+      similarArtist: [{ id: 'similar-1', name: 'Similar', serverId: 'srv-info' }],
+    });
+    expect(apiForServerMock).toHaveBeenCalledWith(
+      'srv-info',
+      'getArtistInfo2.view',
+      expect.objectContaining({ id: 'artist-1', count: 9 }),
+      5678,
+    );
+  });
+});

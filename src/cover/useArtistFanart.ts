@@ -3,6 +3,7 @@ import { artistCoverRef } from './ref';
 import { coverDiskUrl } from './diskSrcCache';
 import { coverCacheEnsure } from '@/lib/api/coverCache';
 import { useThemeStore } from '../store/themeStore';
+import { COVER_SCOPE_ACTIVE, coverScopeKey, type CoverServerScope } from './types';
 
 /**
  * Resolve an external fanart.tv artist image to a webview-loadable asset URL for
@@ -28,6 +29,7 @@ function useArtistExternalImage(
   artistId: string | null | undefined,
   surface: 'fanart' | 'banner',
   ctx?: ArtistImageCtx,
+  serverScope: CoverServerScope = COVER_SCOPE_ACTIVE,
 ): ArtistImage {
   const enabled = useThemeStore((s) => s.externalArtworkEnabled);
   const [image, setImage] = useState<ArtistImage>({ src: '', pending: false });
@@ -40,7 +42,8 @@ function useArtistExternalImage(
   // cached into per-album memory) a neighbouring slide's banner. This is the
   // React "adjust state on prop change" pattern — the set-state-during-render
   // restarts the render, so `image` is already cleared this pass.
-  const resetKey = `${enabled ? '1' : '0'}|${artistId ?? ''}|${surface}`;
+  const scopeKey = coverScopeKey(serverScope);
+  const resetKey = `${enabled ? '1' : '0'}|${scopeKey}|${artistId ?? ''}|${surface}`;
   const [seenKey, setSeenKey] = useState(resetKey);
   if (seenKey !== resetKey) {
     setSeenKey(resetKey);
@@ -59,7 +62,7 @@ function useArtistExternalImage(
     // callers hold their fallback until this resolves.
     setImage({ src: '', pending: true });
     let cancelled = false;
-    const ref = artistCoverRef(artistId);
+    const ref = artistCoverRef(artistId, undefined, serverScope);
     void coverCacheEnsure(ref, 2000, 'high', { surfaceKind: surface, artistName, albumTitle })
       .then((res) => {
         if (!cancelled)
@@ -71,7 +74,7 @@ function useArtistExternalImage(
     return () => {
       cancelled = true;
     };
-  }, [enabled, artistId, surface, artistName, albumTitle]);
+  }, [enabled, artistId, surface, artistName, albumTitle, scopeKey, serverScope]);
 
   return image;
 }
@@ -80,14 +83,16 @@ function useArtistExternalImage(
 export function useArtistFanart(
   artistId: string | null | undefined,
   ctx?: ArtistImageCtx,
+  serverScope?: CoverServerScope,
 ): ArtistImage {
-  return useArtistExternalImage(artistId, 'fanart', ctx);
+  return useArtistExternalImage(artistId, 'fanart', ctx, serverScope);
 }
 
 /** fanart.tv wide `musicbanner` (artist-detail header strip). */
 export function useArtistBanner(
   artistId: string | null | undefined,
   ctx?: ArtistImageCtx,
+  serverScope?: CoverServerScope,
 ): ArtistImage {
-  return useArtistExternalImage(artistId, 'banner', ctx);
+  return useArtistExternalImage(artistId, 'banner', ctx, serverScope);
 }

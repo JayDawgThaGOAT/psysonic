@@ -3,6 +3,7 @@ import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { coverEnsureQueued, ensureArtistBackdropQueued } from './ensureQueue';
 import { getDiskSrcForGrid, rememberGridDiskSrc } from './diskSrcLookup';
 import { albumCoverRef, artistCoverRef } from './ref';
+import { coverServerScopeForServerId } from './serverScope';
 import { coverDiskUrl } from './diskSrcCache';
 import { resolveAlbumCoverRefFromLibrary } from './resolveEntryLibrary';
 import { coverStorageKeyFromRef } from './storageKeys';
@@ -302,9 +303,13 @@ export async function warmHeroArtistBackdrops(
     heroAlbums.flatMap((album, idx) => {
       const artist = deriveAlbumArtistRefs(album)[0];
       if (!artist?.id || !album.id) return [];
-      const ref = artistCoverRef(artist.id);
+      const ref = artistCoverRef(
+        artist.id,
+        undefined,
+        coverServerScopeForServerId(album.serverId),
+      );
       const priority = heroSlidePriority(idx);
-      const albumId = album.id;
+      const albumId = album.serverId ? `${album.serverId}:${album.id}` : album.id;
       return surfaces.map(surface => {
         const key = `${coverStorageKeyFromRef(ref, HERO_BACKDROP_TIER)}:${surface}`;
         return ensureArtistBackdropQueued(key, ref, surface, priority, {

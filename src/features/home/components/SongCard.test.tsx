@@ -6,16 +6,25 @@ import SongCard from '@/features/home/components/SongCard';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 
 const navigateToArtist = vi.fn();
+const navigateToAlbum = vi.fn();
+const useTrackCoverRef = vi.fn();
 
-// Only navigate-to-artist is stubbed; mock that submodule directly so the
-// barrel re-exports the stub while coerceOpenArtistRefs (used by
-// trackArtistRefs, a different submodule) stays real.
+// Mock navigation submodules directly so their barrels re-export the stubs
+// while unrelated helpers used by SongCard stay real.
 vi.mock('@/features/artist/hooks/useNavigateToArtist', () => ({
   useNavigateToArtist: () => navigateToArtist,
 }));
 
+vi.mock('@/features/album/hooks/useNavigateToAlbum', () => ({
+  useNavigateToAlbum: () => navigateToAlbum,
+}));
+
 vi.mock('@/cover/useLibraryCoverRef', () => ({
-  useTrackCoverRef: () => undefined,
+  useTrackCoverRef: (...args: unknown[]) => useTrackCoverRef(...args),
+}));
+
+vi.mock('@/cover/serverScope', () => ({
+  coverServerScopeForServerId: (serverId: string | undefined) => ({ kind: 'test', serverId }),
 }));
 
 function song(overrides: Partial<SubsonicSong>): SubsonicSong {
@@ -41,6 +50,28 @@ describe('SongCard', () => {
     expect(screen.getByText('Apocalyptica')).toHaveClass('track-artist-link');
     expect(screen.getByText('Joe Duplantier')).toHaveClass('track-artist-link');
     await user.click(screen.getByText('Joe Duplantier'));
-    expect(navigateToArtist).toHaveBeenCalledWith('a2');
+    expect(navigateToArtist).toHaveBeenCalledWith('a2', { search: undefined });
+  });
+
+  it('scopes covers and detail navigation to the song owner', async () => {
+    navigateToAlbum.mockClear();
+    navigateToArtist.mockClear();
+    useTrackCoverRef.mockClear();
+    const user = userEvent.setup();
+    const ownedSong = song({ artistId: 'a1', serverId: 'srv-2' });
+
+    renderWithProviders(<SongCard disableArtwork song={ownedSong} />);
+
+    expect(useTrackCoverRef).toHaveBeenCalledWith(
+      ownedSong,
+      { kind: 'test', serverId: 'srv-2' },
+      { libraryResolve: false },
+    );
+
+    await user.click(screen.getByText('A'));
+    expect(navigateToArtist).toHaveBeenCalledWith('a1', { search: 'server=srv-2' });
+
+    await user.click(screen.getByRole('button', { name: /to album/i }));
+    expect(navigateToAlbum).toHaveBeenCalledWith('al1', { search: 'server=srv-2' });
   });
 });

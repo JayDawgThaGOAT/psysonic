@@ -1,6 +1,12 @@
 import { commands } from '@/generated/bindings';
 import { useAuthStore } from '@/store/authStore';
-import { api, apiForServer, libraryFilterParams, libraryFilterParamsForServer } from '@/lib/api/subsonicClient';
+import {
+  api,
+  apiForServer,
+  libraryFilterParams,
+  libraryFilterParamsForServer,
+  librarySelectionForServer,
+} from '@/lib/api/subsonicClient';
 import { filterSongsToServerLibrary } from '@/lib/api/subsonicLibrary';
 import { filterSongsToActiveLibrary, similarSongsRequestCount } from '@/lib/api/subsonicLibrary';
 import {
@@ -14,6 +20,10 @@ import type {
   SubsonicArtistInfo,
   SubsonicSong,
 } from '@/lib/api/subsonicTypes';
+
+export type SubsonicArtistInfoForServer = Omit<SubsonicArtistInfo, 'similarArtist'> & {
+  similarArtist?: Array<NonNullable<SubsonicArtistInfo['similarArtist']>[number] & { serverId: string }>;
+};
 
 export async function getArtists(): Promise<SubsonicArtist[]> {
   return fetchArtistsWithParams(libraryFilterParams());
@@ -49,6 +59,47 @@ async function fetchArtistsWithParams(
   return artists;
 }
 
+async function fetchArtistsForServerWithParams(
+  serverId: string,
+  params: Record<string, string | number | string[]>,
+  timeout: number,
+): Promise<SubsonicArtist[]> {
+  type ArtistIndexEntry = { artist?: SubsonicArtist | SubsonicArtist[] };
+  const data = await apiForServer<{ artists?: { index?: ArtistIndexEntry | ArtistIndexEntry[] } }>(
+    serverId,
+    'getArtists.view',
+    params,
+    timeout,
+  );
+  const rawIdx = data.artists?.index;
+  const indices = Array.isArray(rawIdx) ? rawIdx : (rawIdx ? [rawIdx] : []);
+  const artists: SubsonicArtist[] = [];
+  for (const idx of indices) {
+    const rawArt = idx.artist;
+    const arr = Array.isArray(rawArt) ? rawArt : (rawArt ? [rawArt] : []);
+    artists.push(...arr.map(artist => ({ ...artist, serverId })));
+  }
+  return artists;
+}
+
+/** Merge explicit-server artist indexes per folder because many servers ignore multi `musicFolderId`. */
+export async function getArtistsForServer(serverId: string, timeout = 15000): Promise<SubsonicArtist[]> {
+  const libraryIds = librarySelectionForServer(serverId);
+  if (libraryIds.length <= 1) {
+    return fetchArtistsForServerWithParams(
+      serverId,
+      libraryIds.length === 1 ? { musicFolderId: libraryIds[0]! } : libraryFilterParamsForServer(serverId),
+      timeout,
+    );
+  }
+  const byId = new Map<string, SubsonicArtist>();
+  for (const libraryId of libraryIds) {
+    const batch = await fetchArtistsForServerWithParams(serverId, { musicFolderId: libraryId }, timeout).catch(() => []);
+    for (const artist of batch) byId.set(artist.id, artist);
+  }
+  return [...byId.values()];
+}
+
 export async function getArtist(id: string): Promise<{ artist: SubsonicArtist; albums: SubsonicAlbum[] }> {
   const data = await api<{ artist: SubsonicArtist & { album: SubsonicAlbum[] } }>('getArtist.view', {
     id,
@@ -61,14 +112,18 @@ export async function getArtist(id: string): Promise<{ artist: SubsonicArtist; a
 export async function getArtistForServer(
   serverId: string,
   id: string,
+  options?: { timeout?: number },
 ): Promise<{ artist: SubsonicArtist; albums: SubsonicAlbum[] }> {
   const data = await apiForServer<{ artist: SubsonicArtist & { album: SubsonicAlbum[] } }>(
     serverId,
     'getArtist.view',
     { id, ...libraryFilterParamsForServer(serverId) },
+    options?.timeout,
   );
-  const { album, ...artist } = data.artist;
-  return { artist, albums: album ?? [] };
+  const { album, ...rawArtist } = data.artist;
+  const artist = { ...rawArtist, serverId };
+  const albums = (album ?? []).map(entry => ({ ...entry, serverId }));
+  return { artist, albums };
 }
 
 export async function getArtistInfo(id: string, options?: { similarArtistCount?: number }): Promise<SubsonicArtistInfo> {
@@ -80,15 +135,22 @@ export async function getArtistInfo(id: string, options?: { similarArtistCount?:
 export async function getArtistInfoForServer(
   serverId: string,
   id: string,
-  options?: { similarArtistCount?: number },
-): Promise<SubsonicArtistInfo> {
+  options?: { similarArtistCount?: number; timeout?: number },
+): Promise<SubsonicArtistInfoForServer> {
   const count = options?.similarArtistCount ?? 5;
   const data = await apiForServer<{ artistInfo2: SubsonicArtistInfo }>(
     serverId,
     'getArtistInfo2.view',
     { id, count, ...libraryFilterParamsForServer(serverId) },
+    options?.timeout,
   );
-  return data.artistInfo2 ?? {};
+  const info = data.artistInfo2 ?? {};
+  const { similarArtist: rawSimilarArtist, ...baseInfo } = info;
+  const similarArtist: SubsonicArtistInfoForServer['similarArtist'] = rawSimilarArtist?.map(artist => ({
+    ...artist,
+    serverId,
+  }));
+  return similarArtist ? { ...baseInfo, similarArtist } : baseInfo;
 }
 
 export async function getTopSongs(artist: string): Promise<SubsonicSong[]> {

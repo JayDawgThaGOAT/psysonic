@@ -5,6 +5,7 @@ vi.mock('@/lib/api/subsonicClient', () => ({
   apiForServer: vi.fn(),
   libraryFilterParams: () => ({}),
   libraryFilterParamsForServer: () => ({}),
+  librarySelectionForServer: () => [],
 }));
 
 vi.mock('@/lib/api/subsonicLibrary', () => ({
