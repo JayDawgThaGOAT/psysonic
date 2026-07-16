@@ -12,6 +12,7 @@ import {
 import type {
   LibraryAlbumDto,
   LibraryArtistDto,
+  GenreAlbumCountRow,
   LibraryScopePair,
   LibraryTrackDto,
 } from './dto';
@@ -36,11 +37,13 @@ export interface LibraryScopeMainstageAlbumsRequest {
   feed: 'newReleases' | 'recentlyPlayed';
   limit: number;
   offset: number;
+  genres?: string[];
 }
 
 export interface LibraryScopeMainstageAlbumsResponse {
   albums: LibraryAlbumDto[];
   hasMore: boolean;
+  genreCounts: GenreAlbumCountRow[];
 }
 
 export interface LibraryScopeAlbumDetailRequest {
@@ -143,6 +146,7 @@ export function libraryScopeListMainstageAlbums(
   }).then(response => ({
     albums: mapAlbumsServerId(response.albums, serverId),
     hasMore: response.hasMore,
+    genreCounts: response.genreCounts,
   }));
 }
 

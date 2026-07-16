@@ -38,8 +38,4 @@ export const albums = {
   noFavorites: 'Brak ulubionych albumów pasujących do bieżących filtrów.',
   noCompilations: 'Brak kompilacji pasujących do bieżących filtrów.',
   noMatchingFilters: 'Brak albumów pasujących do bieżących filtrów.',
-  newReleasesHotCount_one: '{{count}} nowy album w ciągu ostatnich 48 godzin',
-  newReleasesHotCount_few: '{{count}} nowe albumy w ciągu ostatnich 48 godzin',
-  newReleasesHotCount_many: '{{count}} nowych albumów w ciągu ostatnich 48 godzin',
-  newReleasesHotCount_other: '{{count}} nowych albumów w ciągu ostatnich 48 godzin',
 };

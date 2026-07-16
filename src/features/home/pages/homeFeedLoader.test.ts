@@ -145,6 +145,7 @@ describe('homeFeedLoader failure isolation', () => {
         libraryScopeListMainstageAlbums: vi.fn(() => new Promise<{
           albums: LibraryAlbumDto[];
           hasMore: boolean;
+          genreCounts: [];
         }>(() => {})),
       },
     });
@@ -168,7 +169,7 @@ describe('homeFeedLoader failure isolation', () => {
   it('distinguishes a successful empty chronological query from an error', async () => {
     const success = await loadHomeChronologicalFeed({
       anchorServerId: 'a', scopes: [], feed: 'recentlyPlayed',
-      deps: { libraryScopeListMainstageAlbums: vi.fn(async () => ({ albums: [], hasMore: false })) },
+      deps: { libraryScopeListMainstageAlbums: vi.fn(async () => ({ albums: [], hasMore: false, genreCounts: [] })) },
     });
     const error = await loadHomeChronologicalFeed({
       anchorServerId: 'a', scopes: [], feed: 'recentlyPlayed',
@@ -355,6 +356,7 @@ describe('homeFeedLoader failure isolation', () => {
     const libraryScopeListMainstageAlbums = vi.fn(async () => ({
       albums: [albumDto('b', 'next-2'), albumDto('a', 'next-1')],
       hasMore: false,
+      genreCounts: [],
     }));
     const result = await loadMoreHomeAlbums({
       snapshot: snapshot(), section: 'recent', mixConfig,

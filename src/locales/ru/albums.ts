@@ -42,8 +42,4 @@ export const albums = {
   noFavorites: 'Нет избранных альбомов с текущими фильтрами.',
   noCompilations: 'Нет сборников с текущими фильтрами.',
   noMatchingFilters: 'Нет альбомов с текущими фильтрами.',
-  newReleasesHotCount_one: '{{count}} новинка за последние 48 часов',
-  newReleasesHotCount_few: '{{count}} новинки за последние 48 часов',
-  newReleasesHotCount_many: '{{count}} новинок за последние 48 часов',
-  newReleasesHotCount_other: '{{count}} новинки за последние 48 часов',
 };

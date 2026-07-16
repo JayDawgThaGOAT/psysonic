@@ -6,8 +6,8 @@ use rusqlite::params_from_iter;
 use crate::album_compilation_filter::pick_album_group_artist;
 use crate::browse_support::overlay_album_starred_at_rows;
 use crate::dto::{
-    LibraryAlbumDto, LibraryMainstageAlbumFeed, LibraryMainstageAlbumsRequest,
-    LibraryMainstageAlbumsResponse, LibraryScopePair,
+    GenreAlbumCountDto, LibraryAlbumDto, LibraryMainstageAlbumFeed,
+    LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse, LibraryScopePair,
 };
 use crate::scope_merge::{
     non_empty_scopes, scope_cte_sql, ALBUM_DEDUP_KEY, ALBUM_PICK_KEY,
@@ -35,12 +35,22 @@ fn candidate_columns(feed_at: &str, priority: usize) -> String {
     )
 }
 
-fn new_release_candidates_sql(scopes: &[LibraryScopePair]) -> String {
+fn new_release_candidates_sql(scopes: &[LibraryScopePair], genre_count: usize) -> String {
     scopes
         .iter()
         .enumerate()
         .map(|(priority, _)| {
             let columns = candidate_columns("t.server_created_at", priority);
+            let genre_predicate = if genre_count == 0 {
+                String::new()
+            } else {
+                let placeholders = (0..genre_count).map(|_| "?").collect::<Vec<_>>().join(", ");
+                format!(
+                    " AND EXISTS (SELECT 1 FROM track_genre tg \
+                     WHERE tg.server_id = t.server_id AND tg.track_id = t.id \
+                       AND tg.genre COLLATE NOCASE IN ({placeholders}))"
+                )
+            };
             format!(
                 "SELECT * FROM ( \
                    SELECT {columns} \
@@ -49,7 +59,7 @@ fn new_release_candidates_sql(scopes: &[LibraryScopePair]) -> String {
                      ON ck.server_id = t.server_id AND ck.track_id = t.id \
                    WHERE t.server_id = ? AND t.library_id = ? \
                      AND t.deleted = 0 AND t.server_created_at IS NOT NULL \
-                     AND t.album_id IS NOT NULL AND t.album_id != '' \
+                      AND t.album_id IS NOT NULL AND t.album_id != '' {genre_predicate} \
                    ORDER BY t.server_created_at DESC, t.album_id ASC, t.id ASC \
                    LIMIT ? \
                  )"
@@ -81,6 +91,7 @@ fn recently_played_candidates_sql() -> String {
 fn build_mainstage_query(
     scopes: &[LibraryScopePair],
     feed: LibraryMainstageAlbumFeed,
+    genres: &[String],
     bounded_candidates: u32,
     result_offset: u32,
     result_limit: u32,
@@ -91,9 +102,12 @@ fn build_mainstage_query(
             for pair in scopes {
                 binds.push(SqlValue::Text(pair.server_id.clone()));
                 binds.push(SqlValue::Text(pair.library_id.clone()));
+                for genre in genres {
+                    binds.push(SqlValue::Text(genre.clone()));
+                }
                 binds.push(SqlValue::Integer(i64::from(bounded_candidates)));
             }
-            new_release_candidates_sql(scopes)
+            new_release_candidates_sql(scopes, genres.len())
         }
         LibraryMainstageAlbumFeed::RecentlyPlayed => {
             binds.push(SqlValue::Integer(i64::from(bounded_candidates)));
@@ -151,6 +165,33 @@ fn build_mainstage_query(
     (sql, binds)
 }
 
+fn new_release_genre_counts(
+    conn: &rusqlite::Connection,
+    scopes: &[LibraryScopePair],
+) -> rusqlite::Result<Vec<GenreAlbumCountDto>> {
+    let (cte, binds) = scope_cte_sql(scopes);
+    let sql = format!(
+        "{cte} \
+         SELECT tg.genre, COUNT(DISTINCT t.album_id), COUNT(DISTINCT t.id) \
+         FROM scope s CROSS JOIN track t \
+           ON t.server_id = s.server_id AND t.library_id = s.library_id \
+         INNER JOIN track_genre tg ON tg.server_id = t.server_id AND tg.track_id = t.id \
+         WHERE t.deleted = 0 AND t.server_created_at IS NOT NULL \
+           AND t.album_id IS NOT NULL AND t.album_id != '' \
+         GROUP BY tg.genre COLLATE NOCASE \
+         ORDER BY COUNT(DISTINCT t.album_id) DESC, tg.genre COLLATE NOCASE ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(binds.iter()), |row| {
+        Ok(GenreAlbumCountDto {
+            value: row.get(0)?,
+            album_count: row.get::<_, i64>(1)?.max(0) as u32,
+            song_count: row.get::<_, i64>(2)?.max(0) as u32,
+        })
+    })?.collect::<rusqlite::Result<Vec<_>>>();
+    rows
+}
+
 fn map_mainstage_album(
     r: &rusqlite::Row<'_>,
     include_catalog_created_at: bool,
@@ -194,11 +235,17 @@ pub fn list_mainstage_albums(
     let initial_candidates = candidate_limit(offset, fetch_limit);
 
     store.with_read_conn(|conn| {
+        let genre_counts = if request.feed == LibraryMainstageAlbumFeed::NewReleases {
+            new_release_genre_counts(conn, scopes)?
+        } else {
+            Vec::new()
+        };
         let mut bounded_candidates = initial_candidates;
         loop {
             let (sql, binds) = build_mainstage_query(
                 scopes,
                 request.feed,
+                &request.genres,
                 bounded_candidates,
                 0,
                 requested_results,
@@ -233,7 +280,7 @@ pub fn list_mainstage_albums(
             let has_more = albums.len() > limit as usize;
             albums.truncate(limit as usize);
             overlay_album_starred_at_rows(conn, &mut albums);
-            return Ok(LibraryMainstageAlbumsResponse { albums, has_more });
+            return Ok(LibraryMainstageAlbumsResponse { albums, has_more, genre_counts });
         }
     }).map_err(|e| e.to_string())
 }
@@ -311,6 +358,7 @@ mod tests {
             feed,
             limit: Some(30),
             offset: None,
+            genres: Vec::new(),
         }
     }
 
@@ -389,6 +437,50 @@ mod tests {
         .unwrap();
         assert_eq!(response.albums.len(), 1);
         assert_eq!(response.albums[0].name, "Selected");
+    }
+
+    #[test]
+    fn genre_filter_and_counts_stay_within_dated_selected_release_scope() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track("s1", "rock", "Rock release", "a-rock", "l1", Some(200)),
+                track("s2", "jazz", "Jazz release", "a-jazz", "l2", Some(300)),
+                track("s1", "missing-date", "Undated", "a-undated", "l1", None),
+                track("s1", "outside", "Outside", "a-outside", "other", Some(400)),
+            ])
+            .unwrap();
+        store
+            .with_conn_mut("test.mainstage_genres", |conn| {
+                for (server, track_id, genre) in [
+                    ("s1", "rock", "Rock"),
+                    ("s2", "jazz", "Jazz"),
+                    ("s1", "missing-date", "Ambient"),
+                    ("s1", "outside", "Metal"),
+                ] {
+                    conn.execute(
+                        "INSERT INTO track_genre (server_id, track_id, genre, album_id, library_id) \
+                         VALUES (?1, ?2, ?3, (SELECT album_id FROM track WHERE server_id = ?1 AND id = ?2), \
+                                 (SELECT library_id FROM track WHERE server_id = ?1 AND id = ?2))",
+                        rusqlite::params![server, track_id, genre],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let mut req = request(
+            vec![scope("s1", "l1"), scope("s2", "l2")],
+            LibraryMainstageAlbumFeed::NewReleases,
+        );
+        req.genres = vec!["rock".into()];
+        let response = list_mainstage_albums(&store, &req).unwrap();
+
+        assert_eq!(response.albums.iter().map(|album| album.id.as_str()).collect::<Vec<_>>(), ["a-rock"]);
+        assert_eq!(
+            response.genre_counts.iter().map(|row| (row.value.as_str(), row.album_count)).collect::<Vec<_>>(),
+            [("Jazz", 1), ("Rock", 1)],
+        );
     }
 
     #[test]
@@ -549,6 +641,7 @@ mod tests {
         let response = LibraryMainstageAlbumsResponse {
             albums: Vec::new(),
             has_more: true,
+            genre_counts: Vec::new(),
         };
         assert_eq!(serde_json::to_value(response).unwrap()["hasMore"], true);
     }
@@ -596,6 +689,7 @@ mod tests {
         let (sql, binds) = build_mainstage_query(
             scopes,
             feed,
+            &[],
             candidate_limit(0, 31),
             0,
             31,

@@ -38,5 +38,4 @@ export const albums = {
   noFavorites: '没有符合当前筛选条件的收藏专辑。',
   noCompilations: '没有符合当前筛选条件的合辑。',
   noMatchingFilters: '没有符合当前筛选条件的专辑。',
-  newReleasesHotCount_other: '过去 48 小时内有 {{count}} 张新专辑',
 };

@@ -791,6 +791,9 @@ pub struct LibraryMainstageAlbumsRequest {
     pub limit: Option<u32>,
     #[serde(default)]
     pub offset: Option<u32>,
+    /// OR-matched atomic genres, applied before chronological album grouping.
+    #[serde(default)]
+    pub genres: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -798,6 +801,7 @@ pub struct LibraryMainstageAlbumsRequest {
 pub struct LibraryMainstageAlbumsResponse {
     pub albums: Vec<LibraryAlbumDto>,
     pub has_more: bool,
+    pub genre_counts: Vec<GenreAlbumCountDto>,
 }
 
 /// FTS track search over an ordered multi-library scope.

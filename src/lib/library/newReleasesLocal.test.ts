@@ -29,6 +29,7 @@ describe('loadLocalNewReleases', () => {
       feed: 'newReleases',
       limit: 30,
       offset: 60,
+      genres: [],
     });
     expect(result.albums.map(album => [album.serverId, album.id])).toEqual([
       ['server-b', 'newer'],
@@ -38,7 +39,9 @@ describe('loadLocalNewReleases', () => {
   });
 
   it('skips IPC for an empty selected scope', async () => {
-    await expect(loadLocalNewReleases('', [], 30)).resolves.toEqual({ albums: [], hasMore: false });
+    await expect(loadLocalNewReleases('', [], 30)).resolves.toEqual({
+      albums: [], hasMore: false, genreCounts: [],
+    });
     expect(libraryScopeListMainstageAlbums).not.toHaveBeenCalled();
   });
 });

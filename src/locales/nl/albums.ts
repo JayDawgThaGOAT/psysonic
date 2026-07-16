@@ -38,6 +38,4 @@ export const albums = {
   noFavorites: 'Geen favoriete albums komen overeen met de huidige filters.',
   noCompilations: 'Geen compilaties komen overeen met de huidige filters.',
   noMatchingFilters: 'Geen albums komen overeen met de huidige filters.',
-  newReleasesHotCount_one: '{{count}} nieuw album in de afgelopen 48 uur',
-  newReleasesHotCount_other: '{{count}} nieuwe albums in de afgelopen 48 uur',
 };

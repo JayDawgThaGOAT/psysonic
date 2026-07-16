@@ -1,8 +1,6 @@
 import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
-import { getAlbumsByGenre } from '@/lib/api/subsonicGenres';
 import { resolveAlbum } from '@/features/offline';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
-import { dedupeById } from '@/lib/util/dedupeById';
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Download, HardDriveDownload } from 'lucide-react';
 import SelectionToggleButton from '@/ui/SelectionToggleButton';
@@ -42,18 +40,12 @@ import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import { loadLocalNewReleases } from '@/lib/library/newReleasesLocal';
 import { mergeHotNewReleases } from '@/features/album/utils/hotNewReleases';
 import { useHotNewReleaseOverlay } from '@/features/album/hooks/useHotNewReleaseOverlay';
-import { isAlbumRecentlyAdded } from '@/features/album/utils/albumRecency';
 
 const PAGE_SIZE = 30;
 
 function sanitizeFilename(name: string): string {
   // eslint-disable-next-line no-control-regex -- intentional: strip control chars for safe download filenames
   return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'download';
-}
-
-async function fetchByGenres(genres: string[]): Promise<SubsonicAlbum[]> {
-  const results = await Promise.all(genres.map(g => getAlbumsByGenre(g, 500, 0)));
-  return dedupeById(results.flat()).sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
 }
 
 export default function NewReleases() {
@@ -108,6 +100,7 @@ export default function NewReleases() {
 
   const [albums, setAlbums] = useState<SubsonicAlbum[]>(() => initialAlbums ?? []);
   const [hasMore, setHasMore] = useState(() => initialHasMore ?? true);
+  const [genreCounts, setGenreCounts] = useState<Array<{ genre: string; count: number }>>([]);
   const {
     scrollBodyEl,
     bindScrollBody: bindNewReleasesScrollBody,
@@ -115,7 +108,6 @@ export default function NewReleases() {
   } = useInpageScrollViewport();
   const {
     loading,
-    setLoading,
     resetPage,
     runLoad,
     requestNextPage,
@@ -143,12 +135,6 @@ export default function NewReleases() {
       ? mergeHotNewReleases(albums, hotAlbums)
       : albums;
   }, [textSearchActive, textSearchAlbums, albums, hotAlbums, genreFiltered, selectedGenres, scopedSearchQuery]);
-  const hotReleaseCount = useMemo(
-    () => !genreFiltered && !scopedSearchQuery
-      ? displayAlbums.filter(album => isAlbumRecentlyAdded(album.created)).length
-      : 0,
-    [displayAlbums, genreFiltered, scopedSearchQuery],
-  );
 
   const loadingGrid = textSearchActive ? textSearchLoading : loading;
   const gridHasMore = textSearchActive ? false : (!genreFiltered && hasMore);
@@ -212,42 +198,35 @@ export default function NewReleases() {
     clearSelection();
   };
 
-  const load = useCallback(async (offset: number, append = false) => {
+  const load = useCallback(async (offset: number, append = false, genres: string[] = []) => {
     await runLoad(async () => {
-      const data = await loadLocalNewReleases(anchorServerId ?? '', releaseScopes, PAGE_SIZE, offset);
+      const data = await loadLocalNewReleases(
+        anchorServerId ?? '', releaseScopes, PAGE_SIZE, offset, genres,
+      );
       if (append) setAlbums(prev => [...prev, ...data.albums]);
       else setAlbums(data.albums);
       setHasMore(data.hasMore);
+      if (!append) setGenreCounts(data.genreCounts.map(row => ({ genre: row.value, count: row.albumCount })));
     });
   }, [anchorServerId, releaseScopes, runLoad]);
 
   const loadFiltered = useCallback(async (genres: string[]) => {
-    setLoading(true);
-    try {
-      setAlbums(await fetchByGenres(genres));
-      setHasMore(false);
-    } finally {
-      setLoading(false);
-    }
-    // musicLibraryFilterVersion is an intentional re-create trigger (fetchByGenres
-    // reads the active library filter internally); the setters are stable. The
-    // loader must refresh when that version bumps even though it is unused here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [musicLibraryFilterVersion]);
+    await load(0, false, genres);
+  }, [load]);
 
   useEffect(() => {
     if (restoringSessionRef.current || scopedSearchQuery) return;
     if (genreFiltered) loadFiltered(selectedGenres);
     else {
       resetPage();
-      void load(0);
+      void load(0, false, selectedGenres);
     }
-  }, [genreFiltered, selectedGenres, load, loadFiltered, resetPage, scopedSearchQuery, releaseScopeFingerprint]);
+  }, [genreFiltered, selectedGenres, load, loadFiltered, resetPage, scopedSearchQuery, releaseScopeFingerprint, musicLibraryFilterVersion]);
 
   const loadMore = useCallback(() => {
     if (!gridHasMore || genreFiltered || textSearchActive || isBlocked()) return;
-    requestNextPage(offset => load(offset, true));
-  }, [gridHasMore, genreFiltered, textSearchActive, isBlocked, requestNextPage, load]);
+    requestNextPage(offset => load(offset, true, selectedGenres));
+  }, [gridHasMore, genreFiltered, textSearchActive, isBlocked, requestNextPage, load, selectedGenres]);
 
   const bindLoadMoreSentinel = useInpageScrollSentinel({
     active: gridHasMore,
@@ -294,11 +273,6 @@ export default function NewReleases() {
               ? t('albums.selectionCount', { count: selectedIds.size })
               : t('sidebar.newReleases')}
           </h1>
-          {!selectionMode && hotReleaseCount > 0 && (
-            <span className="text-muted" style={{ fontSize: '0.8rem' }}>
-              {t('albums.newReleasesHotCount', { count: hotReleaseCount })}
-            </span>
-          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             {selectionMode && selectedIds.size > 0 ? (
               <>
@@ -312,7 +286,11 @@ export default function NewReleases() {
                 </button>
               </>
             ) : (
-              <GenreFilterBar selected={selectedGenres} onSelectionChange={setSelectedGenres} />
+              <GenreFilterBar
+                selected={selectedGenres}
+                onSelectionChange={setSelectedGenres}
+                catalogGenres={genreCounts}
+              />
             )}
             <SelectionToggleButton
               active={selectionMode}

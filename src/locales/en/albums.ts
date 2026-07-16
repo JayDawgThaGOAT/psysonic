@@ -38,6 +38,4 @@ export const albums = {
   noFavorites: 'No favorite albums match the current filters.',
   noCompilations: 'No compilations match the current filters.',
   noMatchingFilters: 'No albums match the current filters.',
-  newReleasesHotCount_one: '{{count}} new in the last 48 hours',
-  newReleasesHotCount_other: '{{count}} new in the last 48 hours',
 };

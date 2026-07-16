@@ -38,7 +38,5 @@ export const albums = {
   noFavorites: 'Ningún álbum favorito coincide con los filtros actuales.',
   noCompilations: 'Ninguna compilación coincide con los filtros actuales.',
   noMatchingFilters: 'Ningún álbum coincide con los filtros actuales.',
-  newReleasesHotCount_one: '{{count}} novedad en las últimas 48 horas',
-  newReleasesHotCount_other: '{{count}} novedades en las últimas 48 horas',
   addToPlaylist: 'Agregar a Lista de Reproducción',
 };

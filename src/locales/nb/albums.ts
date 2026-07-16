@@ -38,6 +38,4 @@ export const albums = {
   noFavorites: 'Ingen favorittalbum samsvarer med gjeldende filtre.',
   noCompilations: 'Ingen samleplater samsvarer med gjeldende filtre.',
   noMatchingFilters: 'Ingen album samsvarer med gjeldende filtre.',
-  newReleasesHotCount_one: '{{count}} nyhet de siste 48 timene',
-  newReleasesHotCount_other: '{{count}} nyheter de siste 48 timene',
 };
