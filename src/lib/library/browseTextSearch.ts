@@ -6,7 +6,12 @@ import { getArtists } from '@/lib/api/subsonicArtists';
 import type { ArtistCreditMode } from '@/lib/api/library';
 import { search, searchSongsPaged } from '@/lib/api/subsonicSearch';
 import type { SearchResults, SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
-import { libraryAdvancedSearch, libraryGetArtistLosslessBrowse, libraryListLosslessAlbums } from '@/lib/api/library';
+import {
+  libraryAdvancedSearch,
+  libraryGetArtistLosslessBrowse,
+  libraryListLosslessAlbums,
+  libraryListRandomArtists,
+} from '@/lib/api/library';
 import {
   libraryScopeForServer,
   libraryScopePairsForServer,
@@ -517,6 +522,24 @@ export async function runLocalRandomAlbums(
     });
     if (resp.source !== 'local') return null;
     return resp.albums.map(albumToAlbum);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Random artist sample from a complete local index. Scoped selections must use
+ * the server so the selection remains authoritative.
+ */
+export async function runLocalRandomArtists(
+  serverId: string | null | undefined,
+  limit: number,
+): Promise<SubsonicArtist[] | null> {
+  if (!serverId || librarySelectionForServer(serverId).length > 0 || !(await libraryIsReady(serverId))) {
+    return null;
+  }
+  try {
+    return (await libraryListRandomArtists(serverId, limit)).map(artistToArtist);
   } catch {
     return null;
   }

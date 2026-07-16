@@ -116,6 +116,7 @@ describe('homeFeedLoader failure isolation', () => {
         getArtistsForServer: vi.fn(async () => []),
         getRandomSongsForServer: vi.fn(async () => []),
         runLocalRandomSongs: vi.fn(async () => null),
+        runLocalRandomArtists: vi.fn(async () => null),
         filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
         shuffle: items => items,
       },
@@ -184,6 +185,7 @@ describe('homeFeedLoader failure isolation', () => {
     const getArtistsForServer = vi.fn(async () => []);
     const getRandomSongsForServer = vi.fn(async () => []);
     const runLocalRandomSongs = vi.fn(async () => null);
+    const runLocalRandomArtists = vi.fn(async () => null);
     const filterAlbumsByMixRatingsAcrossServers = vi.fn(async albums => albums);
     const onSectionResult = vi.fn();
 
@@ -204,6 +206,7 @@ describe('homeFeedLoader failure isolation', () => {
         getArtistsForServer,
         getRandomSongsForServer,
         runLocalRandomSongs,
+        runLocalRandomArtists,
         filterAlbumsByMixRatingsAcrossServers,
         shuffle: items => items,
       },
@@ -212,6 +215,7 @@ describe('homeFeedLoader failure isolation', () => {
     expect(getAlbumListForServer).not.toHaveBeenCalled();
     expect(getArtistsForServer).not.toHaveBeenCalled();
     expect(runLocalRandomSongs).not.toHaveBeenCalled();
+    expect(runLocalRandomArtists).not.toHaveBeenCalled();
     expect(getRandomSongsForServer).not.toHaveBeenCalled();
     expect(filterAlbumsByMixRatingsAcrossServers).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -250,6 +254,7 @@ describe('homeFeedLoader failure isolation', () => {
         getArtistsForServer: vi.fn(async () => []),
         getRandomSongsForServer: vi.fn(async () => []),
         runLocalRandomSongs: vi.fn(async () => null),
+        runLocalRandomArtists: vi.fn(async () => null),
         filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
         shuffle: items => items,
       },
@@ -278,6 +283,43 @@ describe('homeFeedLoader failure isolation', () => {
     for (const report of Object.values(reports).filter(value => value.status === 'success')) {
       expect(report.durationMs).toBeGreaterThan(0);
     }
+  });
+
+  it('uses local random artists before the network and records each server source', async () => {
+    const getArtistsForServer = vi.fn(async (serverId: string) => [
+      { id: `network-${serverId}`, name: `Network ${serverId}` },
+    ]);
+    const runLocalRandomArtists = vi.fn(async (serverId: string | null | undefined) => (
+      serverId === 'a' ? [{ id: 'local-a', name: 'Local A', serverId }] : null
+    ));
+    const onSectionResult = vi.fn();
+
+    const result = await loadHomeFeed({
+      serverIds: ['a', 'b'], scopeKey: 'scope', scopeVersion: 1, randomSize: 0,
+      anchorServerId: 'a', scopes: [], showArtists: true, showSongs: false, mixConfig,
+      onSectionResult,
+      deps: {
+        getAlbumListForServer: vi.fn(async () => []) as never,
+        getArtistsForServer,
+        getRandomSongsForServer: vi.fn(async () => []),
+        runLocalRandomSongs: vi.fn(async () => null),
+        runLocalRandomArtists,
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+        shuffle: items => items,
+      },
+    });
+
+    expect(runLocalRandomArtists).toHaveBeenCalledWith('a', 8);
+    expect(runLocalRandomArtists).toHaveBeenCalledWith('b', 8);
+    expect(getArtistsForServer).toHaveBeenCalledTimes(1);
+    expect(getArtistsForServer).toHaveBeenCalledWith('b', HOME_REQUEST_TIMEOUT_MS);
+    expect(result.randomArtists.map(artist => `${artist.serverId}:${artist.id}`))
+      .toEqual(['a:local-a', 'b:network-b']);
+    const report = onSectionResult.mock.calls.find(([section]) => section === 'discoverArtists')?.[1];
+    expect(report.detail).toContain('a: ');
+    expect(report.detail).toContain('/local/rows');
+    expect(report.detail).toContain('b: ');
+    expect(report.detail).toContain('/network/rows');
   });
 
   it('uses per-server offsets, dedupes owner-qualified ids, and advances raw cursors', async () => {

@@ -38,6 +38,7 @@ pub mod lossless_albums;
 pub mod lossless_formats;
 pub mod payload;
 pub mod repos;
+pub mod random_artists;
 pub mod runtime;
 pub mod scope_merge;
 pub mod search;

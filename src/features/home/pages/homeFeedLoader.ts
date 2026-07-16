@@ -6,7 +6,7 @@ import {
   type LibraryScopePair,
 } from '@/lib/api/library/scopeReads';
 import { albumToAlbum } from '@/lib/library/advancedSearchLocal';
-import { runLocalRandomSongs } from '@/lib/library/browseTextSearch';
+import { runLocalRandomArtists, runLocalRandomSongs } from '@/lib/library/browseTextSearch';
 import { shuffleArray } from '@/lib/util/shuffleArray';
 import type { HomeFeedOffsets, HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
 
@@ -66,6 +66,7 @@ interface HomeFeedLoaderDeps {
   getRandomSongsForServer: typeof getRandomSongsForServer;
   libraryScopeListMainstageAlbums: typeof libraryScopeListMainstageAlbums;
   runLocalRandomSongs: typeof runLocalRandomSongs;
+  runLocalRandomArtists: typeof runLocalRandomArtists;
   filterAlbumsByMixRatingsAcrossServers: <T extends OwnedAlbum>(
     albums: T[],
     config: MixMinRatingsConfig,
@@ -79,6 +80,7 @@ const defaultDeps: Omit<HomeFeedLoaderDeps, 'filterAlbumsByMixRatingsAcrossServe
   getRandomSongsForServer,
   libraryScopeListMainstageAlbums,
   runLocalRandomSongs,
+  runLocalRandomArtists,
   shuffle: shuffleArray,
 };
 
@@ -305,6 +307,7 @@ type TimedServerItems<T> = {
   items: T[];
   durationMs: number;
   outcome: 'rows' | 'empty' | 'timeout' | 'error';
+  source?: 'local' | 'network';
 };
 
 async function loadServerAlbums(
@@ -333,12 +336,41 @@ async function loadServerAlbums(
   };
 }
 
-async function loadServerArtists(serverId: string, deps: HomeFeedLoaderDeps): Promise<OwnedArtist[]> {
-  const artists = await withinHomeDeadline(
-    isolated(() => deps.getArtistsForServer(serverId, HOME_REQUEST_TIMEOUT_MS), []),
-    [] as SubsonicArtist[],
-  );
-  return artists.map(artist => ({ ...artist, serverId }));
+async function loadServerArtists(
+  serverId: string,
+  size: number,
+  deps: HomeFeedLoaderDeps,
+): Promise<TimedServerItems<OwnedArtist>> {
+  const startedAt = nowMs();
+  if (size <= 0) return { items: [], durationMs: 0, outcome: 'empty' };
+  const request: Promise<{
+    artists: SubsonicArtist[];
+    source: 'local' | 'network';
+    outcome: TimedServerItems<OwnedArtist>['outcome'];
+  }> = (async () => {
+    try {
+      const local = await deps.runLocalRandomArtists(serverId, size);
+      if (local != null) return { artists: local, source: 'local' as const, outcome: local.length > 0 ? 'rows' as const : 'empty' as const };
+    } catch {
+      // A local read failure must not prevent the existing server fallback.
+    }
+    try {
+      const artists = await deps.getArtistsForServer(serverId, HOME_REQUEST_TIMEOUT_MS);
+      return { artists, source: 'network' as const, outcome: artists.length > 0 ? 'rows' as const : 'empty' as const };
+    } catch {
+      return { artists: [] as SubsonicArtist[], source: 'network' as const, outcome: 'error' as const };
+    }
+  })();
+  const result = await withinHomeDeadline(request, {
+    artists: [] as SubsonicArtist[], source: 'local' as const, outcome: 'timeout' as const,
+  });
+  const items = result.artists.map(artist => ({ ...artist, serverId }));
+  return {
+    items,
+    durationMs: elapsedMs(startedAt),
+    outcome: result.outcome,
+    source: result.source,
+  };
 }
 
 async function loadServerSongs(
@@ -364,7 +396,7 @@ function formatServerTimings<T>(
 ): string {
   return serverIds.map((serverId, index) => {
     const group = groups[index];
-    return `${serverId}: ${group?.durationMs ?? 0}ms/${group?.items.length ?? 0}/${group?.outcome ?? 'empty'}`;
+    return `${serverId}: ${group?.durationMs ?? 0}ms/${group?.items.length ?? 0}/${group?.source ?? 'network'}/${group?.outcome ?? 'empty'}`;
   }).join(', ');
 }
 
@@ -459,13 +491,16 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
 
   const artistsStartedAt = nowMs();
   const artistsPromise = enabled.discoverArtists
-    ? Promise.all(options.serverIds.map(serverId => loadServerArtists(serverId, deps))).then(groups => {
+    ? Promise.all(options.serverIds.map((serverId, index) => (
+      loadServerArtists(serverId, artistQuotas[index] ?? 0, deps)
+    ))).then(groups => {
         const items = dedupeOwned(stableRoundRobin(
-          groups.map((group, index) => deps.shuffle(group).slice(0, artistQuotas[index] ?? 0)),
+          groups.map((group, index) => deps.shuffle(group.items).slice(0, artistQuotas[index] ?? 0)),
           HOME_DISCOVER_ARTISTS_SIZE,
         ));
         report('discoverArtists', {
           status: 'success', durationMs: elapsedMs(artistsStartedAt), itemCount: items.length,
+          detail: formatServerTimings(options.serverIds, groups),
         });
         return items;
       })

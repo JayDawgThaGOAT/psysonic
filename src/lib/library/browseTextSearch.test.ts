@@ -1,5 +1,28 @@
-import { describe, expect, it } from 'vitest';
-import { browseRaceCountsArtists, filterBrowseArtistsByNameQuery, raceBrowseWithLocalFallback } from './browseTextSearch';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const libraryListRandomArtists = vi.fn();
+const librarySelectionForServer = vi.fn();
+const libraryIsReady = vi.fn();
+
+vi.mock('@/lib/api/library', () => ({
+  libraryListRandomArtists: (...args: unknown[]) => libraryListRandomArtists(...args),
+}));
+vi.mock('@/lib/api/subsonicClient', () => ({
+  libraryScopeForServer: vi.fn(),
+  libraryScopePairsForServer: vi.fn(),
+  librarySelectionForServer: (...args: unknown[]) => librarySelectionForServer(...args),
+}));
+vi.mock('./libraryReady', () => ({
+  libraryIsReady: (...args: unknown[]) => libraryIsReady(...args),
+  waitForLibraryBrowseReady: vi.fn(),
+}));
+
+import {
+  browseRaceCountsArtists,
+  filterBrowseArtistsByNameQuery,
+  raceBrowseWithLocalFallback,
+  runLocalRandomArtists,
+} from './browseTextSearch';
 
 describe('filterBrowseArtistsByNameQuery', () => {
   it('matches Cyrillic names regardless of query case', () => {
@@ -49,5 +72,34 @@ describe('raceBrowseWithLocalFallback', () => {
     );
     expect(outcome?.source).toBe('network');
     expect(outcome?.result).toEqual(['network']);
+  });
+});
+
+describe('runLocalRandomArtists', () => {
+  beforeEach(() => {
+    libraryListRandomArtists.mockReset();
+    librarySelectionForServer.mockReset();
+    libraryIsReady.mockReset();
+  });
+
+  it('uses the local command for a ready whole-library server', async () => {
+    librarySelectionForServer.mockReturnValue([]);
+    libraryIsReady.mockResolvedValue(true);
+    libraryListRandomArtists.mockResolvedValue([
+      { serverId: 'server-a', id: 'artist-a', name: 'Artist A', syncedAt: 1, rawJson: {} },
+    ]);
+
+    await expect(runLocalRandomArtists('server-a', 16)).resolves.toEqual([
+      expect.objectContaining({ serverId: 'server-a', id: 'artist-a', name: 'Artist A' }),
+    ]);
+    expect(libraryListRandomArtists).toHaveBeenCalledWith('server-a', 16);
+  });
+
+  it('keeps scoped selections on the network path', async () => {
+    librarySelectionForServer.mockReturnValue(['library-a']);
+
+    await expect(runLocalRandomArtists('server-a', 16)).resolves.toBeNull();
+    expect(libraryIsReady).not.toHaveBeenCalled();
+    expect(libraryListRandomArtists).not.toHaveBeenCalled();
   });
 });

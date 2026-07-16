@@ -18,6 +18,7 @@ import type {
   LibraryLosslessAlbumsResponse,
   LibraryArtistLosslessBrowseRequest,
   LibraryArtistLosslessBrowseResponse,
+  LibraryArtistDto,
   LibraryCrossServerSearchResponse,
   LibraryTrackDto,
   TrackRefDto,
@@ -101,6 +102,21 @@ export function libraryLiveSearch(request: LibraryLiveSearchRequest): Promise<Li
     })),
     tracks: mapTracksServerId(response.tracks, request.serverId),
   }));
+}
+
+/** Bounded random artist sample from one complete local server index. */
+export function libraryListRandomArtists(
+  serverId: string,
+  limit: number,
+): Promise<LibraryArtistDto[]> {
+  const indexKey = serverIndexKeyForId(serverId);
+  return invoke<LibraryArtistDto[]>('library_list_random_artists', {
+    serverId: indexKey,
+    limit,
+  }).then(artists => artists.map(artist => ({
+    ...artist,
+    serverId: mapServerIdFromIndexKey(artist.serverId, serverId),
+  })));
 }
 
 /** Paginated lossless albums from the local track index. */
