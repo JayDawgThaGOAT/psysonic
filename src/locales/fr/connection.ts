@@ -31,6 +31,7 @@ export const connection = {
   retry: 'Réessayer',
   serverSettings: 'Paramètres serveur',
   switchServerTitle: 'Changer de serveur',
+  multiServer: 'Plusieurs serveurs',
   switchServerHint: 'Cliquez pour choisir un autre serveur enregistré.',
   manageServers: 'Gérer les serveurs…',
   switchFailed: 'Impossible de changer — serveur injoignable.',

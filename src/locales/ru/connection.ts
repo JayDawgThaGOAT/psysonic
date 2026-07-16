@@ -35,6 +35,7 @@ export const connection = {
   retry: 'Повторить',
   serverSettings: 'Настройки сервера',
   switchServerTitle: 'Сменить сервер',
+  multiServer: 'Несколько серверов',
   switchServerHint: 'Нажмите, чтобы выбрать другой сохранённый сервер.',
   manageServers: 'Управление серверами…',
   switchFailed: 'Не удалось переключиться — сервер недоступен.',

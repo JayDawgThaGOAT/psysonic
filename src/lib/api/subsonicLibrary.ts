@@ -49,10 +49,7 @@ export async function getMusicIndexes(musicFolderId: string): Promise<SubsonicDi
   return entries;
 }
 
-export async function getMusicFolders(): Promise<SubsonicMusicFolder[]> {
-  const data = await api<{ musicFolders: { musicFolder: SubsonicMusicFolder | SubsonicMusicFolder[] } }>(
-    'getMusicFolders.view',
-  );
+function mapMusicFolders(data: { musicFolders: { musicFolder: SubsonicMusicFolder | SubsonicMusicFolder[] } }): SubsonicMusicFolder[] {
   const raw = data.musicFolders?.musicFolder;
   if (!raw) return [];
   const arr = Array.isArray(raw) ? raw : [raw];
@@ -60,6 +57,21 @@ export async function getMusicFolders(): Promise<SubsonicMusicFolder[]> {
     id: String((f as { id: string | number }).id),
     name: (f as { name?: string }).name ?? 'Library',
   }));
+}
+
+export async function getMusicFolders(): Promise<SubsonicMusicFolder[]> {
+  const data = await api<{ musicFolders: { musicFolder: SubsonicMusicFolder | SubsonicMusicFolder[] } }>(
+    'getMusicFolders.view',
+  );
+  return mapMusicFolders(data);
+}
+
+export async function getMusicFoldersForServer(serverId: string): Promise<SubsonicMusicFolder[]> {
+  const data = await apiForServer<{ musicFolders: { musicFolder: SubsonicMusicFolder | SubsonicMusicFolder[] } }>(
+    serverId,
+    'getMusicFolders.view',
+  );
+  return mapMusicFolders(data);
 }
 
 export async function getRandomAlbums(size = 6): Promise<SubsonicAlbum[]> {

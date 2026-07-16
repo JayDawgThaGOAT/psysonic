@@ -27,6 +27,7 @@ export const connection = {
   retry: '重试',
   serverSettings: '服务器设置',
   switchServerTitle: '切换服务器',
+  multiServer: '多个服务器',
   switchServerHint: '点击选择其他已保存的服务器。',
   manageServers: '管理服务器…',
   switchFailed: '无法切换 — 无法连接服务器。',

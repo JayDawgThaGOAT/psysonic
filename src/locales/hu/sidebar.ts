@@ -37,6 +37,7 @@ export const sidebar = {
   librarySelect: '{{name}} belefoglalása',
   libraryDeselect: '{{name}} kizárása',
   librarySelectionCount: '{{count}} könyvtár',
+  serverSelectionCount: '{{count}} szerver',
   expandPlaylists: 'Lejátszási listák kibontása',
   collapsePlaylists: 'Lejátszási listák összecsukása',
   more: 'Több',

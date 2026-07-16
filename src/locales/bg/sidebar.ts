@@ -37,6 +37,7 @@ export const sidebar = {
   librarySelect: 'Включи {{name}}',
   libraryDeselect: 'Изключи {{name}}',
   librarySelectionCount: '{{count}} библиотеки',
+  serverSelectionCount: '{{count}} сървъра',
   expandPlaylists: 'Разшири плейлисти',
   collapsePlaylists: 'Свий плейлисти',
   more: 'Още',

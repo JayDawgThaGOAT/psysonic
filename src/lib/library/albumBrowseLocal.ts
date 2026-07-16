@@ -9,6 +9,7 @@ import { libraryIsReady } from './libraryReady';
 import type { AlbumBrowsePageResult, AlbumBrowseQuery } from './albumBrowseTypes';
 import { GENRE_ALBUM_FETCH_LIMIT } from './albumBrowseTypes';
 import { albumBrowseTimed, emitAlbumBrowseDebug } from './albumBrowseDebug';
+import { getLibraryBrowseScope } from './libraryBrowseScope';
 
 function markServerStarredAlbums(albums: SubsonicAlbum[]) {
   return albums.map(a => ({ ...a, starred: a.starred ?? 'true' }));
@@ -33,8 +34,9 @@ export async function runLocalAlbumBrowse(
     return null;
   }
 
-  const scope = libraryScopeForServer(serverId) ?? undefined;
-  const libraryScopes = libraryScopePairsForServer(serverId);
+  const browseScope = getLibraryBrowseScope();
+  const scope = browseScope.pairs.length > 0 ? undefined : (libraryScopeForServer(serverId) ?? undefined);
+  const libraryScopes = browseScope.pairs.length > 0 ? browseScope.pairs : libraryScopePairsForServer(serverId);
   const useServerStarredIds = restrictAlbumIds != null;
   const shared = sharedServerFilters(query, useServerStarredIds);
   const starredOnly = useServerStarredIds ? undefined : (query.starredOnly || undefined);

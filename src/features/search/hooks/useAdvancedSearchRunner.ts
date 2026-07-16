@@ -21,6 +21,7 @@ import {
   runNetworkBrowseFullSearch,
 } from '@/lib/library/browseTextSearch';
 import type { SearchOpts, Results } from '@/features/search/searchBrowseTypes';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 
 const MOOD_UI_ENABLED = OXIMEDIA_MOOD_SEARCH_ENABLED;
 
@@ -132,6 +133,16 @@ export function useAdvancedSearchRunner({
 
     try {
       if (serverId && indexEnabled) {
+        if (getLibraryBrowseScope().multiServer) {
+          const local = await runLocalBrowseFullSearch(serverId, q, BASIC_SONGS_INITIAL);
+          if (isStale()) return;
+          const result = local ?? { artists: [], albums: [], songs: [] };
+          setResults(result);
+          setSongsServerOffset(result.songs.length);
+          setSongsHasMore(result.songs.length >= BASIC_SONGS_INITIAL);
+          setLocalMode(true);
+          return;
+        }
         const outcome = await raceBrowseWithLocalFallback(
           isStale,
           () => runLocalBrowseFullSearch(serverId, q, BASIC_SONGS_INITIAL),
@@ -189,6 +200,18 @@ export function useAdvancedSearchRunner({
 
     // Track-only filters (BPM dual-storage, mood) need the local index for full coverage.
     // Lossless skips the race — network search3 cannot filter albums by format reliably.
+    if (q && serverId && indexEnabled && getLibraryBrowseScope().multiServer) {
+      const localPage = await tryRunLocalAdvancedSearch(serverId, opts, SONGS_INITIAL);
+      if (isStale()) return;
+      const page = localPage ?? { artists: [], albums: [], songs: [], songsTotal: 0 };
+      setResults({ artists: page.artists, albums: page.albums, songs: page.songs });
+      setSongsServerOffset(page.songs.length);
+      setSongsHasMore(page.songs.length >= SONGS_INITIAL);
+      setLocalMode(true);
+      setLoading(false);
+      return;
+    }
+
     if (q && serverId && indexEnabled && !trackOnlyFilterActive && !losslessFilterActive) {
       try {
         const winner = await raceSearchSources(

@@ -32,6 +32,7 @@ export const connection = {
   retry: '再試行',
   serverSettings: 'サーバー設定',
   switchServerTitle: 'サーバーを切り替え',
+  multiServer: '複数サーバー',
   switchServerHint: 'クリックして別の保存済みサーバーを選択します。',
   manageServers: 'サーバーを管理…',
   switchFailed: '切り替えできませんでした。サーバーに到達できません。',

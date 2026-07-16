@@ -37,6 +37,7 @@ export const sidebar = {
   librarySelect: '{{name}} を含める',
   libraryDeselect: '{{name}} を除外',
   librarySelectionCount: '{{count}} 個のライブラリ',
+  serverSelectionCount: '{{count}} 台のサーバー',
   expandPlaylists: 'プレイリストを展開',
   collapsePlaylists: 'プレイリストを折りたたむ',
   more: 'その他',

@@ -47,11 +47,18 @@ import {
   beginArtistsBrowseTrace,
   emitArtistsBrowseDebug,
 } from '@/lib/library/artistBrowseDebug';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+
+function artistEntityKey(artist: { id: string; serverId?: string }): string {
+  return artist.serverId ? `${artist.serverId}:${artist.id}` : artist.id;
+}
 
 export default function Artists() {
   const perfFlags = usePerfProbeFlags();
   const { t } = useTranslation();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const libraryBrowseVersion = musicLibraryFilterVersion + libraryBrowseScopeVersion;
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const libraryScopeKey = useAuthStore(s => {
     if (!serverId) return 'all';
@@ -86,14 +93,14 @@ export default function Artists() {
     beginArtistsBrowseTrace({
       serverId,
       indexEnabled,
-      libraryFilterVersion: musicLibraryFilterVersion,
+      libraryFilterVersion: libraryBrowseVersion,
       libraryScopeCount: librarySelectionForServer(serverId).length,
       creditMode,
       letterFilter,
       viewMode,
     });
     return () => emitArtistsBrowseDebug('page_unmount');
-  }, [serverId, indexEnabled, musicLibraryFilterVersion, creditMode, letterFilter, viewMode]);
+  }, [serverId, indexEnabled, libraryBrowseVersion, creditMode, letterFilter, viewMode]);
 
   const artistsSearchQuery = useScopedBrowseSearchQuery('artists');
 
@@ -106,6 +113,9 @@ export default function Artists() {
   const showArtistImages = useAuthStore(s => s.showArtistImages);
   const PAGE_SIZE = showArtistImages ? 50 : 100; // Smaller with images to reduce I/O
   const navigateToArtist = useNavigateToArtist();
+  const openArtist = useCallback((artistId: string, ownerServerId?: string) => {
+    navigateToArtist(artistId, { search: appendServerQuery(undefined, ownerServerId) });
+  }, [navigateToArtist]);
   const location = useLocation();
   const navigate = useNavigate();
   const openContextMenu = usePlayerStore(state => state.openContextMenu);
@@ -126,8 +136,8 @@ export default function Artists() {
     starredOnly,
     creditMode,
     letterFilter,
-    musicLibraryFilterVersion,
-    libraryScopeKey,
+    musicLibraryFilterVersion: libraryBrowseVersion,
+    libraryScopeKey: `${libraryScopeKey}:${libraryBrowseScopeVersion}`,
     ignoredArticles,
   });
 
@@ -154,7 +164,7 @@ export default function Artists() {
     loadMore: sliceLoadMore,
   } = useClientSliceInfiniteScroll({
     pageSize: PAGE_SIZE,
-    resetDeps: [artistsSearchQuery, letterFilter, starredOnly, creditMode, viewMode, musicLibraryFilterVersion, serverId],
+    resetDeps: [artistsSearchQuery, letterFilter, starredOnly, creditMode, viewMode, libraryBrowseVersion, serverId],
     getScrollRoot: getArtistsScrollRoot,
     scrollRootEl: artistsScrollBodyEl,
     restoreDisplayCount: restoreVisibleCountRef.current,
@@ -177,7 +187,7 @@ export default function Artists() {
     });
   }, []);
 
-  const selectedArtists = artists.filter(a => selectedIds.has(a.id));
+  const selectedArtists = artists.filter(a => selectedIds.has(artistEntityKey(a)));
 
   const {
     filtered, visible, hasMore, groups, letters, artistListFlatRows,
@@ -517,7 +527,7 @@ export default function Artists() {
             selectedArtists={selectedArtists}
             showArtistImages={showArtistImages}
             toggleSelect={toggleSelect}
-            onOpenArtist={navigateToArtist}
+            onOpenArtist={openArtist}
             openContextMenu={openContextMenu}
             t={t}
           />
@@ -537,7 +547,7 @@ export default function Artists() {
             selectedArtists={selectedArtists}
             showArtistImages={showArtistImages}
             toggleSelect={toggleSelect}
-            onOpenArtist={navigateToArtist}
+            onOpenArtist={openArtist}
             openContextMenu={openContextMenu}
             t={t}
           />

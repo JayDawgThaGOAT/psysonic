@@ -13,7 +13,7 @@ interface RowProps {
   selectedArtists: SubsonicArtist[];
   showArtistImages: boolean;
   toggleSelect: (id: string) => void;
-  onOpenArtist: (id: string) => void;
+  onOpenArtist: (id: string, serverId?: string) => void;
   openContextMenu: PlayerState['openContextMenu'];
   t: TFunction;
 }
@@ -29,15 +29,16 @@ function ArtistListRow({
   openContextMenu,
   t,
 }: RowProps) {
+  const entityKey = artist.serverId ? `${artist.serverId}:${artist.id}` : artist.id;
   return (
     <button
       type="button"
-      className={`artist-row${selectionMode && selectedIds.has(artist.id) ? ' selected' : ''}`}
+      className={`artist-row${selectionMode && selectedIds.has(entityKey) ? ' selected' : ''}`}
       onClick={() => {
         if (selectionMode) {
-          toggleSelect(artist.id);
+          toggleSelect(entityKey);
         } else {
-          onOpenArtist(artist.id);
+          onOpenArtist(artist.id, artist.serverId);
         }
       }}
       onContextMenu={(e) => {
@@ -48,8 +49,8 @@ function ArtistListRow({
           openContextMenu(e.clientX, e.clientY, artist, 'artist');
         }
       }}
-      id={`artist-${artist.id}`}
-      style={selectionMode && selectedIds.has(artist.id) ? {
+      id={`artist-${entityKey}`}
+      style={selectionMode && selectedIds.has(entityKey) ? {
         background: 'var(--accent-dim)',
         color: 'var(--accent)',
       } : {}}
@@ -78,7 +79,7 @@ interface Props {
   selectedArtists: SubsonicArtist[];
   showArtistImages: boolean;
   toggleSelect: (id: string) => void;
-  onOpenArtist: (id: string) => void;
+  onOpenArtist: (id: string, serverId?: string) => void;
   openContextMenu: PlayerState['openContextMenu'];
   t: TFunction;
 }
@@ -126,7 +127,7 @@ export function ArtistsListView({
             <h3 className="letter-heading">{letter === OTHER_BUCKET ? t('artists.other') : letter}</h3>
             <div className="artist-list">
               {groups[letter].map(artist => (
-                <ArtistListRow key={artist.id} artist={artist} {...rowCommonProps} />
+                <ArtistListRow key={artist.serverId ? `${artist.serverId}:${artist.id}` : artist.id} artist={artist} {...rowCommonProps} />
               ))}
             </div>
           </div>

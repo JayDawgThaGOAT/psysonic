@@ -175,6 +175,24 @@
   overflow-y: auto;
 }
 
+.nav-library-server-group + .nav-library-server-group {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 15%, transparent);
+}
+
+.nav-library-server-group-heading {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .nav-library-dropdown-item {
   display: flex;
   align-items: center;
@@ -496,4 +514,3 @@
   background: var(--accent-dim);
   color: var(--accent);
 }
-

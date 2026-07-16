@@ -57,6 +57,11 @@ export interface ServerProfile {
   customHeadersApplyTo?: CustomHeadersApplyTo;
 }
 
+export interface MusicFolder {
+  id: string;
+  name: string;
+}
+
 export type SeekbarStyle = 'truewave' | 'pseudowave' | 'linedot' | 'bar' | 'thick' | 'segmented' | 'neon' | 'pulsewave' | 'particletrail' | 'liquidfill' | 'retrotape';
 /**
  * Look of the custom-title-bar window buttons (minimize/maximize/close).
@@ -118,6 +123,8 @@ export interface AuthState {
   // Multi-server
   servers: ServerProfile[];
   activeServerId: string | null;
+  /** Servers included in Library pages/search. Priority follows `servers` order. */
+  libraryBrowseServerIds: string[];
 
   // Music Network — multi-provider scrobble/enrichment framework state.
   musicNetworkAccounts: PersistedAccount[];
@@ -312,7 +319,13 @@ export interface AuthState {
   showLuckyMixMenu: boolean;
 
   /** Subsonic music folders for the active server (not persisted; refetched on login / server change). */
-  musicFolders: Array<{ id: string; name: string }>;
+  musicFolders: MusicFolder[];
+  /** Last successfully fetched music-folder list per saved server. */
+  musicFoldersByServer: Record<string, MusicFolder[]>;
+  /** Ordered folder selection per server for Library pages/search only. */
+  libraryBrowseSelectionByServer: Record<string, string[]>;
+  /** Invalidates only Library pages/search when their explicit scope changes. */
+  libraryBrowseScopeVersion: number;
   /**
    * Per server: `all` = no musicFolderId param; otherwise a single folder id.
    * Legacy single-select; kept in sync with `musicLibrarySelectionByServer` for old readers.
@@ -476,7 +489,11 @@ export interface AuthState {
   setMixMinRatingArtist: (v: number) => void;
   setRandomMixSize: (v: number) => void;
   setShowLuckyMixMenu: (v: boolean) => void;
-  setMusicFolders: (folders: Array<{ id: string; name: string }>) => void;
+  setMusicFolders: (folders: MusicFolder[]) => void;
+  setMusicFoldersForServer: (serverId: string, folders: MusicFolder[]) => void;
+  setLibraryBrowseServerExclusive: (serverId: string) => void;
+  setLibraryBrowseServerSelected: (serverId: string, selected: boolean) => void;
+  setLibraryBrowseSelectionForServer: (serverId: string, libraryIds: string[]) => void;
   setMusicLibraryFilter: (folderId: 'all' | string) => void;
   /** Ordered multi-library selection for the active server; array order is priority. */
   setMusicLibrarySelection: (libraryIds: string[]) => void;

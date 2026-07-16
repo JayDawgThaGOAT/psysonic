@@ -32,6 +32,7 @@ export const connection = {
   retry: 'Ponów',
   serverSettings: 'Ustawienia serwera',
   switchServerTitle: 'Przełącz serwer',
+  multiServer: 'Wiele serwerów',
   switchServerHint: 'Kliknij, aby wybrać inny zapisany serwer.',
   manageServers: 'Zarządzaj serwerami…',
   switchFailed: 'Nie udało się przełączyć — serwer nieosiągalny.',

@@ -93,3 +93,46 @@ describe('setMusicFolders', () => {
     expect(useAuthStore.getState().musicLibraryFilterByServer[serverId]).toBe('all');
   });
 });
+
+describe('Library browse scope', () => {
+  it('supports exclusive row selection separately from additive checkboxes', () => {
+    const a = useAuthStore.getState().addServer({
+      name: 'A', url: 'https://a.test', username: 'u', password: 'p',
+    });
+    const b = useAuthStore.getState().addServer({
+      name: 'B', url: 'https://b.test', username: 'u', password: 'p',
+    });
+    useAuthStore.getState().setLibraryBrowseServerSelected(b, true);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b]);
+
+    useAuthStore.getState().setLibraryBrowseServerExclusive(b);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([b]);
+  });
+
+  it('selects servers in saved server order and prevents an empty scope', () => {
+    const a = useAuthStore.getState().addServer({
+      name: 'A', url: 'https://a.test', username: 'u', password: 'p',
+    });
+    const b = useAuthStore.getState().addServer({
+      name: 'B', url: 'https://b.test', username: 'u', password: 'p',
+    });
+
+    useAuthStore.getState().setLibraryBrowseServerSelected(b, true);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b]);
+    useAuthStore.getState().setLibraryBrowseServerSelected(a, false);
+    useAuthStore.getState().setLibraryBrowseServerSelected(b, false);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([b]);
+  });
+
+  it('stores and collapses a full per-server folder selection', () => {
+    const serverId = setUpActiveServer();
+    useAuthStore.getState().setMusicFoldersForServer(serverId, [
+      { id: 'one', name: 'One' },
+      { id: 'two', name: 'Two' },
+    ]);
+    useAuthStore.getState().setLibraryBrowseSelectionForServer(serverId, ['two']);
+    expect(useAuthStore.getState().libraryBrowseSelectionByServer[serverId]).toEqual(['two']);
+    useAuthStore.getState().setLibraryBrowseSelectionForServer(serverId, ['two', 'one']);
+    expect(useAuthStore.getState().libraryBrowseSelectionByServer[serverId]).toEqual([]);
+  });
+});

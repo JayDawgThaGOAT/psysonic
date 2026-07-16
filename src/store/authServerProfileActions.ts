@@ -7,6 +7,18 @@ type SetState = (
   partial: Partial<AuthState> | ((state: AuthState) => Partial<AuthState>),
 ) => void;
 
+function selectedServerIdsInOrder(
+  servers: AuthState['servers'],
+  selectedIds: readonly string[],
+  fallbackId: string | null,
+): string[] {
+  const selected = new Set(selectedIds);
+  const ordered = servers.filter(server => selected.has(server.id)).map(server => server.id);
+  if (ordered.length > 0 || servers.length === 0) return ordered;
+  const fallback = servers.find(server => server.id === fallbackId) ?? servers[0];
+  return fallback ? [fallback.id] : [];
+}
+
 /**
  * Server profile + connection lifecycle. `removeServer` is the
  * non-trivial one: when the active server is the one being removed it
@@ -29,7 +41,10 @@ export function createServerProfileActions(set: SetState): Pick<
   return {
     addServer: (profile) => {
       const id = generateId();
-      set(s => ({ servers: [...s.servers, { ...profile, id }] }));
+      set(s => ({
+        servers: [...s.servers, { ...profile, id }],
+        ...(s.servers.length === 0 ? { libraryBrowseServerIds: [id] } : {}),
+      }));
       return id;
     },
 
@@ -57,10 +72,24 @@ export function createServerProfileActions(set: SetState): Pick<
         const { [id]: _pr, ...probeRest } = s.instantMixProbeByServer;
         const { [id]: _ppl, ...pluginProbeRest } = s.audiomusePluginProbeByServer;
         const { [id]: _ex, ...extRest } = s.openSubsonicExtensionsByServer;
+        const { [id]: _folders, ...foldersRest } = s.musicFoldersByServer;
+        const { [id]: _browseSelection, ...browseSelectionRest } = s.libraryBrowseSelectionByServer;
+        const activeServerId = switchedAway ? (newServers[0]?.id ?? null) : s.activeServerId;
         return {
           servers: newServers,
-          activeServerId: switchedAway ? (newServers[0]?.id ?? null) : s.activeServerId,
+          activeServerId,
           isLoggedIn: switchedAway ? false : s.isLoggedIn,
+          libraryBrowseServerIds: selectedServerIdsInOrder(
+            newServers,
+            s.libraryBrowseServerIds.filter(serverId => serverId !== id),
+            activeServerId,
+          ),
+          musicFolders: switchedAway && activeServerId
+            ? (foldersRest[activeServerId] ?? [])
+            : s.musicFolders,
+          musicFoldersByServer: foldersRest,
+          libraryBrowseSelectionByServer: browseSelectionRest,
+          libraryBrowseScopeVersion: s.libraryBrowseScopeVersion + 1,
           entityRatingSupportByServer: entityRatingRest,
           audiomuseNavidromeByServer: audiomuseRest,
           subsonicServerIdentityByServer: identityRest,
@@ -72,8 +101,25 @@ export function createServerProfileActions(set: SetState): Pick<
       });
     },
 
-    setServers: (servers) => set({ servers }),
-    setActiveServer: (id) => set({ activeServerId: id, musicFolders: [] }),
+    setServers: (servers) => set(s => ({
+      servers,
+      libraryBrowseServerIds: selectedServerIdsInOrder(
+        servers,
+        s.libraryBrowseServerIds,
+        s.activeServerId,
+      ),
+      libraryBrowseScopeVersion: s.libraryBrowseScopeVersion + 1,
+    })),
+    setActiveServer: (id) => set(s => ({
+      activeServerId: id,
+      musicFolders: s.musicFoldersByServer[id] ?? [],
+      ...(s.libraryBrowseServerIds.length <= 1
+        ? {
+            libraryBrowseServerIds: [id],
+            libraryBrowseScopeVersion: s.libraryBrowseScopeVersion + 1,
+          }
+        : {}),
+    })),
     setLoggedIn: (v) => set({ isLoggedIn: v }),
     setConnecting: (v) => set({ isConnecting: v }),
     setConnectionError: (e) => set({ connectionError: e }),

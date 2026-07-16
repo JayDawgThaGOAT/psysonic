@@ -31,6 +31,7 @@ export const connection = {
   retry: 'Reîncearcă',
   serverSettings: 'Setările serverului',
   switchServerTitle: 'Schimbă serverul',
+  multiServer: 'Mai multe servere',
   switchServerHint: 'Apasă pentru a alege alt server salvat.',
   manageServers: 'Gestionează serverele…',
   switchFailed: 'Nu s-a putut schimba — nu s-a putut ajunge la server.',

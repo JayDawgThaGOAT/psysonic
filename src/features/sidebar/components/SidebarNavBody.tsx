@@ -8,6 +8,7 @@ import { mainstageBrowseNavHandlers } from '@/features/sidebar/utils/mainstageBr
 import WhatsNewBanner from '@/features/whatsNew/components/WhatsNewBanner';
 import ThemeUpdateBanner from '@/features/settings/components/ThemeUpdateBanner';
 import SidebarLibraryPicker from '@/features/sidebar/components/SidebarLibraryPicker';
+import type { SidebarLibraryGroup } from '@/features/sidebar/components/SidebarLibraryPicker';
 import SidebarPlaylistsSection from '@/features/sidebar/components/SidebarPlaylistsSection';
 import SidebarActiveJobs from '@/features/sidebar/components/SidebarActiveJobs';
 
@@ -16,19 +17,16 @@ interface NavDndState {
   draggedId: string;
 }
 
-interface MusicFolder { id: string; name: string }
-
 interface Props {
   isCollapsed: boolean;
   showLibraryPicker: boolean;
-  selectedLibraryIds: string[];
+  libraryGroups: SidebarLibraryGroup[];
   selectionSummary: string | null;
   libraryDropdownOpen: boolean;
   setLibraryDropdownOpen: (open: boolean) => void;
   dropdownRect: { top: number; left: number; width: number };
   libraryTriggerRef: React.RefObject<HTMLButtonElement | null>;
-  musicFolders: MusicFolder[];
-  onLibrarySelectionChange: (libraryIds: string[]) => void;
+  onLibrarySelectionChange: (serverId: string, libraryIds: string[]) => void;
   visibleLibraryConfigs: SidebarItemConfig[];
   visibleSystemConfigs: SidebarItemConfig[];
   playlistsExpanded: boolean;
@@ -56,9 +54,9 @@ interface Props {
 
 export default function SidebarNavBody(props: Props) {
   const {
-    isCollapsed, showLibraryPicker, selectedLibraryIds, selectionSummary,
+    isCollapsed, showLibraryPicker, libraryGroups, selectionSummary,
     libraryDropdownOpen, setLibraryDropdownOpen, dropdownRect, libraryTriggerRef,
-    musicFolders, onLibrarySelectionChange,
+    onLibrarySelectionChange,
     visibleLibraryConfigs,
     visibleSystemConfigs,
     playlistsExpanded, setPlaylistsExpanded, playlists, playlistsLoading,
@@ -91,13 +89,12 @@ export default function SidebarNavBody(props: Props) {
         {nowPlayingAtTop && nowPlayingLink}
         {!isCollapsed && (showLibraryPicker ? (
           <SidebarLibraryPicker
-            selectedLibraryIds={selectedLibraryIds}
+            groups={libraryGroups}
             selectionSummary={selectionSummary}
             libraryDropdownOpen={libraryDropdownOpen}
             setLibraryDropdownOpen={setLibraryDropdownOpen}
             dropdownRect={dropdownRect}
             libraryTriggerRef={libraryTriggerRef}
-            musicFolders={musicFolders}
             onSelectionChange={onLibrarySelectionChange}
           />
         ) : (

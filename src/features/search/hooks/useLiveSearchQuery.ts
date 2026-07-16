@@ -27,6 +27,7 @@ import type { LiveSearchScope } from '@/store/liveSearchScopeStore';
 import { isLiveSearchDropdownBlocked } from '@/features/search/components/liveSearchScope';
 import type { useShareSearch } from '@/features/search/hooks/useShareSearch';
 import type { LiveSearchSource } from '@/features/search/components/LiveSearchDropdown';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 
 interface UseLiveSearchQueryParams {
   query: string;
@@ -60,6 +61,7 @@ export function useLiveSearchQuery({
   const { t } = useTranslation();
   const serverId = useAuthStore(s => s.activeServerId);
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
   const localReadyRef = useRef(false);
   const [indexIncomplete, setIndexIncomplete] = useState(false);
@@ -164,6 +166,18 @@ export function useLiveSearchQuery({
           const raceCtx = { epoch: gen, isStale, suppressLog: indexEnabled && !!serverId };
 
             if (indexEnabled && serverId) {
+              if (getLibraryBrowseScope().multiServer) {
+                const local = await runLocalLiveSearch(serverId, q, raceCtx);
+                if (isStale()) return;
+                if (local) {
+                  setResults(local);
+                  setSearchSource('local');
+                  setOpen(true);
+                  return;
+                }
+                showToast(t('search.liveSearchFailed'), 3200, 'error');
+                return;
+              }
               const winner = await raceLiveSearch(
                 () => runLocalLiveSearch(serverId, q, raceCtx),
                 () => runNetworkLiveSearch(q, abort.signal),
@@ -276,7 +290,7 @@ export function useLiveSearchQuery({
       liveSearchGenRef.current += 1;
     };
   }, [
-    query, scope, shareMatch, serverId, indexEnabled, musicLibraryFilterVersion, t,
+    query, scope, shareMatch, serverId, indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, t,
     liveSearchGenRef, setResults, setOpen, setLoading, setSearchSource, setActiveIndex,
   ]);
 

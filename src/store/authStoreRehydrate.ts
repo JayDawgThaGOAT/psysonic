@@ -258,9 +258,48 @@ export function computeAuthStoreRehydration(state: AuthState): Partial<AuthState
     }
   }
 
+  const serverIds = new Set(state.servers.map(server => server.id));
+  const rawBrowseServerIds = (state as { libraryBrowseServerIds?: unknown }).libraryBrowseServerIds;
+  const selectedBrowseIds = new Set(
+    Array.isArray(rawBrowseServerIds)
+      ? rawBrowseServerIds.filter((id): id is string => typeof id === 'string' && serverIds.has(id))
+      : [],
+  );
+  let libraryBrowseServerIds = state.servers
+    .filter(server => selectedBrowseIds.has(server.id))
+    .map(server => server.id);
+  if (libraryBrowseServerIds.length === 0 && state.servers.length > 0) {
+    const fallback = state.servers.find(server => server.id === state.activeServerId) ?? state.servers[0];
+    libraryBrowseServerIds = fallback ? [fallback.id] : [];
+  }
+  const rawFoldersByServer = (state as { musicFoldersByServer?: unknown }).musicFoldersByServer;
+  const musicFoldersByServer = Object.fromEntries(
+    Object.entries(rawFoldersByServer && typeof rawFoldersByServer === 'object' ? rawFoldersByServer : {})
+      .filter(([serverId, folders]) => serverIds.has(serverId) && Array.isArray(folders))
+      .map(([serverId, folders]) => [
+        serverId,
+        (folders as unknown[]).filter((folder): folder is { id: string; name: string } => {
+          if (!folder || typeof folder !== 'object') return false;
+          const value = folder as { id?: unknown; name?: unknown };
+          return typeof value.id === 'string' && typeof value.name === 'string';
+        }),
+      ]),
+  );
+  const rawBrowseSelections = (state as { libraryBrowseSelectionByServer?: unknown }).libraryBrowseSelectionByServer;
+  const libraryBrowseSelectionByServer = Object.fromEntries(
+    Object.entries(rawBrowseSelections && typeof rawBrowseSelections === 'object' ? rawBrowseSelections : {})
+      .filter(([serverId, selection]) => serverIds.has(serverId) && Array.isArray(selection))
+      .map(([serverId, selection]) => [serverId, [...new Set((selection as unknown[]).filter((id): id is string => typeof id === 'string'))]]),
+  );
+
   return {
     ...mediaDirMigrated,
     ...musicNetworkMigrated,
+    libraryBrowseServerIds,
+    musicFoldersByServer,
+    libraryBrowseSelectionByServer,
+    libraryBrowseScopeVersion: 0,
+    musicFolders: state.activeServerId ? (musicFoldersByServer[state.activeServerId] ?? []) : [],
     ...(state.startMinimizedToTray && state.showTrayIcon === false
       ? { startMinimizedToTray: false as const }
       : {}),

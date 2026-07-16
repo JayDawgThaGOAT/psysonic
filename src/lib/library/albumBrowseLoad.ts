@@ -33,6 +33,7 @@ import type {
 import { GENRE_ALBUM_FETCH_LIMIT } from './albumBrowseTypes';
 import { albumBrowseTimed, emitAlbumBrowseDebug } from './albumBrowseDebug';
 import { fetchGenreAlbumCountsDeduped } from './albumBrowseGenreCountsCache';
+import { getLibraryBrowseScope } from './libraryBrowseScope';
 
 /** Unfiltered browse: paint a small SQL page first, then grow the catalog buffer. */
 export function albumBrowseBootstrapEligible(query: AlbumBrowseQuery): boolean {
@@ -132,6 +133,7 @@ export async function fetchAlbumBrowsePage(
   pageSize: number,
   callbacks?: AlbumBrowseFetchCallbacks,
 ): Promise<AlbumBrowsePageResult> {
+  const multiServer = getLibraryBrowseScope().multiServer;
   if (query.losslessOnly && (!indexEnabled || !serverId)) {
     return { albums: [], hasMore: false };
   }
@@ -144,6 +146,8 @@ export async function fetchAlbumBrowsePage(
     const local = await runLocalAlbumBrowse(serverId, query, offset, pageSize);
     if (local != null) return local;
   }
+
+  if (multiServer) return { albums: [], hasMore: false };
 
   return fetchAlbumBrowseNetwork(query, offset, pageSize);
 }

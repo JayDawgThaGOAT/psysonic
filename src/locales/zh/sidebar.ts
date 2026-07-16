@@ -33,6 +33,7 @@ export const sidebar = {
   librarySelect: '包含 {{name}}',
   libraryDeselect: '排除 {{name}}',
   librarySelectionCount: '{{count}} 个资料库',
+  serverSelectionCount: '{{count}} 台服务器',
   expandPlaylists: '展开播放列表',
   collapsePlaylists: '收起播放列表',
   more: '更多',

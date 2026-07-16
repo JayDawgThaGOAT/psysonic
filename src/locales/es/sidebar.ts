@@ -34,6 +34,7 @@ export const sidebar = {
   librarySelect: 'Incluir {{name}}',
   libraryDeselect: 'Excluir {{name}}',
   librarySelectionCount: '{{count}} bibliotecas',
+  serverSelectionCount: '{{count}} servidores',
   expandPlaylists: 'Expandir listas',
   collapsePlaylists: 'Colapsar listas',
   more: 'Más',

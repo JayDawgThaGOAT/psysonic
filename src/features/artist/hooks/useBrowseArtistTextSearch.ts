@@ -16,6 +16,8 @@ import {
   artistBrowseTimed,
   emitArtistsBrowseDebug,
 } from '@/lib/library/artistBrowseDebug';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { useAuthStore } from '@/store/authStore';
 
 /**
  * Debounced artist/composer name search with local-vs-network race when the
@@ -32,6 +34,7 @@ export function useBrowseArtistTextSearch(
   starredOnly = false,
 ) {
   const offlineBrowseActive = useOfflineBrowseContext().active;
+  const libraryBrowseScopeVersion = useAuthStore(state => state.libraryBrowseScopeVersion);
   const [debouncedFilter, setDebouncedFilter] = useState('');
   const [textSearchArtists, setTextSearchArtists] = useState<SubsonicArtist[] | null>(null);
   const [textSearchLoading, setTextSearchLoading] = useState(false);
@@ -73,6 +76,14 @@ export function useBrowseArtistTextSearch(
         emitArtistsBrowseDebug('text_search_done', { source: 'offline', artistCount: artists?.length ?? 0 });
         return;
       }
+      if (getLibraryBrowseScope().multiServer) {
+        const artists = await runLocalBrowseArtists(serverId, q, creditMode);
+        if (isStale()) return;
+        setTextSearchArtists(artists ?? []);
+        setTextSearchLoading(false);
+        emitArtistsBrowseDebug('text_search_done', { source: 'local', artistCount: artists?.length ?? 0 });
+        return;
+      }
       const outcome = await artistBrowseTimed(
         'text_search_race',
         () => raceBrowseWithLocalFallback(
@@ -96,7 +107,7 @@ export function useBrowseArtistTextSearch(
         artistCount: outcome?.result?.length ?? 0,
       });
     })();
-  }, [creditMode, debouncedFilter, indexEnabled, offlineBrowseActive, serverId, starredOnly, surface]);
+  }, [creditMode, debouncedFilter, indexEnabled, offlineBrowseActive, serverId, starredOnly, surface, libraryBrowseScopeVersion]);
 
   const effectiveFilter = textSearchArtists != null ? '' : filter;
   return { textSearchArtists, textSearchLoading, effectiveFilter };

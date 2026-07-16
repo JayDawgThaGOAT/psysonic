@@ -38,6 +38,7 @@ describe('addServer / updateServer', () => {
     expect(s.servers).toHaveLength(1);
     expect(s.servers[0]?.id).toBe(id);
     expect(s.servers[0]?.name).toBe('Home');
+    expect(s.libraryBrowseServerIds).toEqual([id]);
   });
 
   it('updateServer patches the matching server only', () => {
@@ -71,6 +72,37 @@ describe('setActiveServer', () => {
     const s = useAuthStore.getState();
     expect(s.activeServerId).toBe(b);
     expect(s.musicFolders).toEqual([]);
+  });
+
+  it('restores the cached folder list without changing Library server membership', () => {
+    const { a, b } = addThree();
+    useAuthStore.setState({
+      activeServerId: a,
+      libraryBrowseServerIds: [a, b],
+      musicFoldersByServer: { [b]: [{ id: 'b-lib', name: 'B library' }] },
+    });
+
+    useAuthStore.getState().setActiveServer(b);
+    expect(useAuthStore.getState().musicFolders).toEqual([{ id: 'b-lib', name: 'B library' }]);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b]);
+  });
+
+  it('moves a singleton Library scope with the active server', () => {
+    const { a, b } = addThree();
+    useAuthStore.setState({ activeServerId: a, libraryBrowseServerIds: [a] });
+
+    useAuthStore.getState().setActiveServer(b);
+    expect(useAuthStore.getState().activeServerId).toBe(b);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([b]);
+  });
+
+  it('preserves an explicit multi-server Library scope when active server changes', () => {
+    const { a, b, c } = addThree();
+    useAuthStore.setState({ activeServerId: a, libraryBrowseServerIds: [a, b] });
+
+    useAuthStore.getState().setActiveServer(c);
+    expect(useAuthStore.getState().activeServerId).toBe(c);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b]);
   });
 });
 

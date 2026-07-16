@@ -22,6 +22,7 @@ import {
   useOfflineBrowseReloadToken,
 } from '@/features/offline';
 import { useOfflineLocalBrowseReloadKey } from '@/store/localPlaybackBrowseRevision';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 
 const PAGE_SIZE = 50;
 
@@ -59,6 +60,7 @@ type UseSongBrowseListArgs = {
 export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseSongBrowseListArgs) {
   const serverId = useAuthStore(s => s.activeServerId);
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const offlineBrowseReloadTs = useOfflineBrowseReloadToken();
@@ -116,6 +118,10 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
       }
 
       if (pageOffset === 0 && indexEnabled && serverId) {
+        if (getLibraryBrowseScope().multiServer) {
+          localSearchModeRef.current = true;
+          return (await runLocalBrowseSongPage(serverId, q, 0, PAGE_SIZE)) ?? [];
+        }
         const winner = await raceBrowseWithLocalFallback(
           isStale,
           () => runLocalBrowseSongPage(serverId, q, 0, PAGE_SIZE),
@@ -150,7 +156,7 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
     // loaders read the active genre/library filter state internally, so the
     // callback must refresh when that version bumps even though it is unused here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [indexEnabled, musicLibraryFilterVersion, offlineBrowseActive, serverId],
+    [indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseActive, serverId],
   );
 
   useEffect(() => {
@@ -198,7 +204,7 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, searchQuery, fetchSongPage, enabled, musicLibraryFilterVersion, offlineBrowseReloadTs, offlineLocalBrowseReloadKey]);
+  }, [debouncedQuery, searchQuery, fetchSongPage, enabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseReloadTs, offlineLocalBrowseReloadKey]);
 
   const loadMore = useCallback(async () => {
     if (!enabled || loading || !hasMore) return;

@@ -62,6 +62,10 @@ import { librarySelectionForServer } from '@/lib/api/subsonicClient';
 
 type SortType = AlbumBrowseSort;
 
+function albumEntityKey(album: { id: string; serverId?: string }): string {
+  return album.serverId ? `${album.serverId}:${album.id}` : album.id;
+}
+
 function sanitizeFilename(name: string): string {
   // eslint-disable-next-line no-control-regex -- intentional: strip control chars for safe download filenames
   return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'download';
@@ -71,6 +75,8 @@ export default function Albums() {
   const perfFlags = usePerfProbeFlags();
   const { t } = useTranslation();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const libraryBrowseVersion = musicLibraryFilterVersion + libraryBrowseScopeVersion;
   const auth = useAuthStore();
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
@@ -79,11 +85,11 @@ export default function Albums() {
     beginAlbumBrowseTrace({
       serverId,
       indexEnabled,
-      libraryFilterVersion: musicLibraryFilterVersion,
+      libraryFilterVersion: libraryBrowseVersion,
       libraryScopeCount: librarySelectionForServer(serverId).length,
     });
     return () => emitAlbumBrowseDebug('page_unmount');
-  }, [serverId, indexEnabled, musicLibraryFilterVersion]);
+  }, [serverId, indexEnabled, libraryBrowseVersion]);
 
   const downloadAlbum = useOfflineStore(s => s.downloadAlbum);
   const requestDownloadFolder = useDownloadModalStore(s => s.requestFolder);
@@ -128,7 +134,7 @@ export default function Albums() {
   const browseData = useAlbumBrowseData({
     serverId,
     indexEnabled,
-    musicLibraryFilterVersion,
+    musicLibraryFilterVersion: libraryBrowseVersion,
     sort,
     selectedGenres,
     yearFrom,
@@ -280,7 +286,7 @@ export default function Albums() {
     resetSelection();
   };
 
-  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(a.id));
+  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(albumEntityKey(a)));
   const enqueue = usePlayerStore(state => state.enqueue);
 
   const handleEnqueueSelected = async () => {
@@ -550,7 +556,7 @@ export default function Albums() {
                 <div ref={gridMeasureRef}>
                   <VirtualCardGrid
                     items={displayAlbums}
-                    itemKey={(a, _i) => a.id}
+                    itemKey={(a, _i) => albumEntityKey(a)}
                     rowVariant="album"
                     disableVirtualization={albumBrowsePlainLayout}
                     layoutSignal={displayAlbums.length}
@@ -566,8 +572,8 @@ export default function Albums() {
                         observeScrollRootId={ALBUMS_INPAGE_SCROLL_VIEWPORT_ID}
                         linkQuery={losslessOnly ? LOSSLESS_MODE_QUERY : undefined}
                         selectionMode={selectionMode}
-                        selected={selectedIds.has(a.id)}
-                        onToggleSelect={toggleSelect}
+                        selected={selectedIds.has(albumEntityKey(a))}
+                        onToggleSelect={(_id, opts) => toggleSelect(albumEntityKey(a), opts)}
                         selectedAlbums={selectedAlbums}
                       />
                     )}

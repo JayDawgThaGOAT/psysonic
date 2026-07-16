@@ -31,6 +31,7 @@ import { isLosslessSuffix } from './losslessFormats';
 import { albumIsCompilation } from './albumCompilation';
 import { OXIMEDIA_MOOD_SEARCH_ENABLED } from './trackEnrichment';
 import { trackToSong } from './trackDtoMapping';
+import { getLibraryBrowseScope } from './libraryBrowseScope';
 
 export { resolveTrackCoverArtId, trackToSong } from './trackDtoMapping';
 
@@ -137,8 +138,10 @@ function buildRequest(
   skipTotals = false,
 ): LibraryAdvancedSearchRequest {
   const q = opts.query.trim();
-  const libraryScope = libraryScopeForServer(serverId);
-  const libraryScopes = libraryScopePairsForServer(serverId);
+  const browseScope = getLibraryBrowseScope();
+  const useBrowseScope = browseScope.pairs.length > 0;
+  const libraryScope = useBrowseScope ? undefined : libraryScopeForServer(serverId);
+  const libraryScopes = useBrowseScope ? browseScope.pairs : libraryScopePairsForServer(serverId);
   return {
     serverId,
     libraryScope: libraryScope ?? undefined,
@@ -169,6 +172,7 @@ function mergeAlbumRawJson(base: SubsonicAlbum, raw: Partial<SubsonicAlbum>): Su
 export function albumToAlbum(a: LibraryAlbumDto): SubsonicAlbum {
   const raw = isObject(a.rawJson) ? a.rawJson : {};
   const base: SubsonicAlbum = {
+    serverId: a.serverId,
     id: a.id,
     name: a.name,
     artist: a.artist ?? '',
@@ -188,6 +192,7 @@ export function albumToAlbum(a: LibraryAlbumDto): SubsonicAlbum {
 export function artistToArtist(ar: LibraryArtistDto): SubsonicArtist {
   const raw = isObject(ar.rawJson) ? ar.rawJson : {};
   const base: SubsonicArtist = {
+    serverId: ar.serverId,
     id: ar.id,
     name: ar.name,
     nameSort: ar.nameSort ?? undefined,
@@ -328,10 +333,11 @@ export async function runLocalSongBrowse(
   if (!serverId) return null;
   if (!(await libraryIsReady(serverId))) return null;
   try {
+    const browseScope = getLibraryBrowseScope();
     const resp = await libraryAdvancedSearch({
       serverId,
-      libraryScope: libraryScopeForServer(serverId),
-      libraryScopes: libraryScopePairsForServer(serverId),
+      libraryScope: browseScope.pairs.length > 0 ? undefined : libraryScopeForServer(serverId),
+      libraryScopes: browseScope.pairs.length > 0 ? browseScope.pairs : libraryScopePairsForServer(serverId),
       query: undefined,
       entityTypes: ['track'],
       limit: pageSize,

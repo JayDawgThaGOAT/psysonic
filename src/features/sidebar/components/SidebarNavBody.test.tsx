@@ -8,16 +8,20 @@ import SidebarNavBody from '@/features/sidebar/components/SidebarNavBody';
 const baseProps = () => ({
   isCollapsed: false,
   showLibraryPicker: true,
-  selectedLibraryIds: [] as string[],
+  libraryGroups: [{
+    serverId: 'server-a',
+    serverLabel: 'Home',
+    folders: [
+      { id: 'lib-a', name: 'Rock' },
+      { id: 'lib-b', name: 'Jazz' },
+    ],
+    selectedLibraryIds: [] as string[],
+  }],
   selectionSummary: null as string | null,
   libraryDropdownOpen: false,
   setLibraryDropdownOpen: vi.fn(),
   dropdownRect: { top: 0, left: 0, width: 240 },
   libraryTriggerRef: createRef<HTMLButtonElement>(),
-  musicFolders: [
-    { id: 'lib-a', name: 'Rock' },
-    { id: 'lib-b', name: 'Jazz' },
-  ],
   onLibrarySelectionChange: vi.fn(),
   visibleLibraryConfigs: [],
   visibleSystemConfigs: [],
