@@ -149,7 +149,7 @@ describe('homeFeedLoader failure isolation', () => {
     });
     await vi.advanceTimersByTimeAsync(HOME_REQUEST_TIMEOUT_MS);
     const result = await resultPromise;
-    expect(result).toEqual({ status: 'timeout' });
+    expect(result).toEqual({ status: 'timeout', durationMs: HOME_REQUEST_TIMEOUT_MS });
     const patched = patchHomeChronologicalFeed(current, 'recent', result);
     expect(patched).toBe(current);
     expect(patched.recent.map(item => item.id)).toEqual(['prior']);
@@ -173,8 +173,111 @@ describe('homeFeedLoader failure isolation', () => {
       anchorServerId: 'a', scopes: [], feed: 'recentlyPlayed',
       deps: { libraryScopeListMainstageAlbums: vi.fn(async () => { throw new Error('failed'); }) },
     });
-    expect(success).toEqual({ status: 'success', albums: [], hasMore: false });
-    expect(error).toEqual({ status: 'error' });
+    expect(success).toMatchObject({ status: 'success', albums: [], hasMore: false });
+    expect(error).toMatchObject({ status: 'error' });
+    expect(success.durationMs).toBeGreaterThanOrEqual(0);
+    expect(error.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('does not request or process disabled sections', async () => {
+    const getAlbumListForServer = vi.fn(async () => []);
+    const getArtistsForServer = vi.fn(async () => []);
+    const getRandomSongsForServer = vi.fn(async () => []);
+    const runLocalRandomSongs = vi.fn(async () => null);
+    const filterAlbumsByMixRatingsAcrossServers = vi.fn(async albums => albums);
+    const onSectionResult = vi.fn();
+
+    const result = await loadHomeFeed({
+      serverIds: ['a', 'b'], scopeKey: 'scope', scopeVersion: 1, randomSize: 20,
+      anchorServerId: 'a', scopes: [], showArtists: true, showSongs: true, mixConfig,
+      enabledSections: {
+        starred: false,
+        mostPlayed: false,
+        hero: false,
+        discover: false,
+        discoverArtists: false,
+        discoverSongs: false,
+      },
+      onSectionResult,
+      deps: {
+        getAlbumListForServer: getAlbumListForServer as never,
+        getArtistsForServer,
+        getRandomSongsForServer,
+        runLocalRandomSongs,
+        filterAlbumsByMixRatingsAcrossServers,
+        shuffle: items => items,
+      },
+    });
+
+    expect(getAlbumListForServer).not.toHaveBeenCalled();
+    expect(getArtistsForServer).not.toHaveBeenCalled();
+    expect(runLocalRandomSongs).not.toHaveBeenCalled();
+    expect(getRandomSongsForServer).not.toHaveBeenCalled();
+    expect(filterAlbumsByMixRatingsAcrossServers).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      starred: [], heroAlbums: [], random: [], mostPlayed: [], randomArtists: [], discoverSongs: [],
+    });
+    expect(onSectionResult).toHaveBeenCalledTimes(6);
+    expect(onSectionResult.mock.calls).toEqual(expect.arrayContaining([
+      ['starred', { status: 'disabled', durationMs: 0, itemCount: 0 }],
+      ['mostPlayed', { status: 'disabled', durationMs: 0, itemCount: 0 }],
+      ['hero', { status: 'disabled', durationMs: 0, itemCount: 0 }],
+      ['discover', { status: 'disabled', durationMs: 0, itemCount: 0 }],
+      ['discoverArtists', { status: 'disabled', durationMs: 0, itemCount: 0 }],
+      ['discoverSongs', { status: 'disabled', durationMs: 0, itemCount: 0 }],
+    ]));
+  });
+
+  it('reports per-output timings while sharing one random fetch per server', async () => {
+    let now = 0;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => {
+      now += 5;
+      return now;
+    });
+    const getAlbumListForServer = vi.fn(async (
+      serverId: string,
+      type: string,
+      size: number,
+    ) => Array.from({ length: size }, (_, index) => album(serverId, `${type}-${index}`)));
+    const onSectionResult = vi.fn();
+
+    const result = await loadHomeFeed({
+      serverIds: ['a', 'b'], scopeKey: 'scope', scopeVersion: 1, randomSize: 20,
+      anchorServerId: 'a', scopes: [], showArtists: false, showSongs: false, mixConfig,
+      onSectionResult,
+      deps: {
+        getAlbumListForServer: getAlbumListForServer as never,
+        getArtistsForServer: vi.fn(async () => []),
+        getRandomSongsForServer: vi.fn(async () => []),
+        runLocalRandomSongs: vi.fn(async () => null),
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+        shuffle: items => items,
+      },
+    });
+    nowSpy.mockRestore();
+
+    expect(getAlbumListForServer.mock.calls.filter(call => call[1] === 'random')).toHaveLength(2);
+    expect(result.heroAlbums).toHaveLength(8);
+    expect(result.random).toHaveLength(12);
+    const reports = Object.fromEntries(onSectionResult.mock.calls) as Record<string, {
+      status: 'success' | 'disabled';
+      durationMs: number;
+      itemCount: number;
+      detail?: string;
+    }>;
+    expect(reports.starred).toMatchObject({ status: 'success', itemCount: 12 });
+    expect(reports.mostPlayed).toMatchObject({ status: 'success', itemCount: 12 });
+    expect(reports.hero).toMatchObject({
+      status: 'success', itemCount: 8,
+    });
+    expect(reports.discover).toMatchObject({
+      status: 'success', itemCount: 12,
+    });
+    expect(reports.hero.detail).toContain('shared random album fetch=');
+    expect(reports.discover.detail).toContain('shared random album fetch=');
+    for (const report of Object.values(reports).filter(value => value.status === 'success')) {
+      expect(report.durationMs).toBeGreaterThan(0);
+    }
   });
 
   it('uses per-server offsets, dedupes owner-qualified ids, and advances raw cursors', async () => {

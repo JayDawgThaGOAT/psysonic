@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} titres',
   mainstageEmptyTitle: 'Votre Scène principale est vide',
   mainstageEmptyBody: 'Toutes les sections sont désactivées. Réactivez des sections ou masquez la Scène principale de la barre latérale.',
-  mainstageEmptyCta: 'Ouvrir la Personnalisation'
+  mainstageEmptyCta: 'Ouvrir la Personnalisation',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: 'Activer {{section}}',
+    generationInfo: 'Informations de génération',
+    duration: 'Durée',
+    itemCount: 'Éléments',
+    status: 'État',
+    detail: 'Détail',
+    unavailable: 'N/D',
+    statuses: {
+      idle: 'Inactif', loading: 'Chargement', ready: 'Prêt', empty: 'Vide',
+      error: 'Erreur', timeout: 'Délai dépassé', disabled: 'Désactivé'
+    }
+  }
 };

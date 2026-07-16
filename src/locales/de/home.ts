@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} Titel',
   mainstageEmptyTitle: 'Deine Mainstage ist leer',
   mainstageEmptyBody: 'Alle Bereiche sind ausgeschaltet. Schalte Bereiche wieder ein oder blende die Mainstage aus der Seitenleiste aus.',
-  mainstageEmptyCta: 'Personalisierung öffnen'
+  mainstageEmptyCta: 'Personalisierung öffnen',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: '{{section}} aktivieren',
+    generationInfo: 'Generierungsinformationen',
+    duration: 'Dauer',
+    itemCount: 'Elemente',
+    status: 'Status',
+    detail: 'Detail',
+    unavailable: 'N/V',
+    statuses: {
+      idle: 'Bereit', loading: 'Wird geladen', ready: 'Fertig', empty: 'Leer',
+      error: 'Fehler', timeout: 'Zeitüberschreitung', disabled: 'Deaktiviert'
+    }
+  }
 };

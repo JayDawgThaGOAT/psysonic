@@ -58,7 +58,14 @@ describe('LosslessAlbumsRail multi-server scope', () => {
       };
     });
 
-    renderWithProviders(<LosslessAlbumsRail serverIds={['srv-a', 'srv-b', 'srv-c']} scopeVersion={4} />);
+    const onDiagnosticResult = vi.fn();
+    renderWithProviders(
+      <LosslessAlbumsRail
+        serverIds={['srv-a', 'srv-b', 'srv-c']}
+        scopeVersion={4}
+        onDiagnosticResult={onDiagnosticResult}
+      />,
+    );
 
     await waitFor(() => expect(screen.getByTestId('albums')).toHaveTextContent(
       'srv-a:a1|srv-b:b1|srv-a:a2|srv-b:b2|srv-a:a3|srv-b:b3|srv-a:a4|srv-b:b4|srv-a:a5|srv-b:b5|srv-a:a6|srv-b:b6|srv-a:a7|srv-b:b7',
@@ -77,6 +84,13 @@ describe('LosslessAlbumsRail multi-server scope', () => {
       songsPerPage: 100,
       maxPagesPerCall: 1,
     });
+    expect(onDiagnosticResult).toHaveBeenNthCalledWith(1, { status: 'loading' });
+    expect(onDiagnosticResult).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'ready',
+      itemCount: 14,
+      detail: expect.stringContaining('srv-a:local:'),
+      durationMs: expect.any(Number),
+    }));
   });
 
   it('preserves active-server behavior when the scope props are omitted', async () => {
@@ -87,5 +101,27 @@ describe('LosslessAlbumsRail multi-server scope', () => {
     await waitFor(() => expect(screen.getByTestId('albums')).toHaveTextContent('active:local'));
     expect(localMock).toHaveBeenCalledWith('active', 20, 0);
     expect(networkMock).not.toHaveBeenCalled();
+  });
+
+  it('reports timeout when every server misses the aggregate deadline', async () => {
+    vi.useFakeTimers();
+    localMock.mockResolvedValue(null);
+    networkMock.mockReturnValue(new Promise(() => undefined));
+    const onDiagnosticResult = vi.fn();
+
+    renderWithProviders(
+      <LosslessAlbumsRail serverIds={['srv-a']} onDiagnosticResult={onDiagnosticResult} />,
+    );
+    expect(onDiagnosticResult).toHaveBeenCalledWith({ status: 'loading' });
+
+    await vi.advanceTimersByTimeAsync(4000);
+
+    expect(onDiagnosticResult).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'timeout',
+      itemCount: 0,
+      detail: 'srv-a:network:4000ms/0',
+      durationMs: expect.any(Number),
+    }));
+    vi.useRealTimers();
   });
 });

@@ -20,6 +20,23 @@ export const HOME_DISCOVER_ARTISTS_SIZE = 16;
 export type HomeAlbumSection = keyof HomeFeedOffsets;
 export type PerServerHomeAlbumSection = Exclude<HomeAlbumSection, 'recent' | 'recentlyPlayed'>;
 
+export type HomeFeedLoadSection =
+  | 'starred'
+  | 'mostPlayed'
+  | 'hero'
+  | 'discover'
+  | 'discoverArtists'
+  | 'discoverSongs';
+
+export type HomeFeedEnabledSections = Record<HomeFeedLoadSection, boolean>;
+
+export interface HomeSectionResult {
+  status: 'success' | 'disabled';
+  durationMs: number;
+  itemCount: number;
+  detail?: string;
+}
+
 type OwnedAlbum = SubsonicAlbum & { serverId: string };
 type OwnedArtist = SubsonicArtist & { serverId: string };
 type OwnedSong = SubsonicSong & { serverId: string };
@@ -74,6 +91,8 @@ interface LoadHomeFeedOptions {
   randomSize: number;
   showArtists: boolean;
   showSongs: boolean;
+  enabledSections?: Partial<HomeFeedEnabledSections>;
+  onSectionResult?: (section: HomeFeedLoadSection, result: HomeSectionResult) => void;
   mixConfig: MixMinRatingsConfig;
   deps: Pick<HomeFeedLoaderDeps, 'filterAlbumsByMixRatingsAcrossServers'> & Partial<HomeFeedLoaderDeps>;
 }
@@ -96,18 +115,9 @@ interface LoadHomeChronologicalFeedOptions {
 }
 
 export type HomeChronologicalFeedResult =
-  | { status: 'success'; albums: SubsonicAlbum[]; hasMore: boolean }
-  | { status: 'error' }
-  | { status: 'timeout' };
-
-interface ServerBundle {
-  serverId: string;
-  starred: OwnedAlbum[];
-  random: OwnedAlbum[];
-  frequent: OwnedAlbum[];
-  artists: OwnedArtist[];
-  songs: OwnedSong[];
-}
+  | { status: 'success'; albums: SubsonicAlbum[]; hasMore: boolean; durationMs: number }
+  | { status: 'error'; durationMs: number; detail: string }
+  | { status: 'timeout'; durationMs: number };
 
 const albumTypes: Record<PerServerHomeAlbumSection, Parameters<typeof getAlbumListForServer>[1]> = {
   starred: 'starred',
@@ -191,6 +201,14 @@ function dedupeOwned<T extends { id: string; serverId?: string }>(items: T[]): T
   });
 }
 
+function nowMs(): number {
+  return typeof performance === 'undefined' ? Date.now() : performance.now();
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Math.round(nowMs() - startedAt));
+}
+
 async function isolated<T>(request: () => Promise<T>, fallback: T): Promise<T> {
   try {
     return await request();
@@ -217,6 +235,7 @@ export async function loadHomeChronologicalFeed(
   options: LoadHomeChronologicalFeedOptions,
 ): Promise<HomeChronologicalFeedResult> {
   const deps = { ...defaultDeps, ...options.deps };
+  const startedAt = nowMs();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const request = deps.libraryScopeListMainstageAlbums(options.anchorServerId, {
     scopes: options.scopes,
@@ -227,12 +246,20 @@ export async function loadHomeChronologicalFeed(
     status: 'success' as const,
     albums: response.albums.map(albumToAlbum),
     hasMore: response.hasMore,
-  })).catch(() => ({ status: 'error' as const }));
+    durationMs: elapsedMs(startedAt),
+  })).catch((error: unknown) => ({
+    status: 'error' as const,
+    durationMs: elapsedMs(startedAt),
+    detail: error instanceof Error ? error.message : String(error),
+  }));
   try {
     return await Promise.race([
       request,
       new Promise<HomeChronologicalFeedResult>(resolve => {
-        timer = setTimeout(() => resolve({ status: 'timeout' }), HOME_REQUEST_TIMEOUT_MS);
+        timer = setTimeout(() => resolve({
+          status: 'timeout',
+          durationMs: elapsedMs(startedAt),
+        }), HOME_REQUEST_TIMEOUT_MS);
       }),
     ]);
   } finally {
@@ -274,74 +301,196 @@ export function preserveHomeChronologicalFeeds(
   };
 }
 
-async function loadServerBundle(
-  serverId: string,
-  albumQuota: number,
-  randomQuota: number,
-  artistQuota: number,
-  songQuota: number,
-  showArtists: boolean,
-  showSongs: boolean,
-  deps: HomeFeedLoaderDeps,
-): Promise<ServerBundle> {
-  const albums = (type: Parameters<typeof getAlbumListForServer>[1], size: number) => (
-    size > 0
-      ? withinHomeDeadline(
-          isolated(() => deps.getAlbumListForServer(serverId, type, size, 0, {}, HOME_REQUEST_TIMEOUT_MS), []),
-          [] as SubsonicAlbum[],
-        )
-      : Promise.resolve<SubsonicAlbum[]>([])
-  );
-  const songs = showSongs && songQuota > 0
-    ? withinHomeDeadline(
-        isolated(async () => {
-          const local = await deps.runLocalRandomSongs(serverId, songQuota);
-          if (local != null) return local;
-          return deps.getRandomSongsForServer(serverId, songQuota, undefined, HOME_REQUEST_TIMEOUT_MS);
-        }, [] as SubsonicSong[]),
-        [] as SubsonicSong[],
-      )
-    : Promise.resolve<SubsonicSong[]>([]);
+type TimedServerItems<T> = {
+  items: T[];
+  durationMs: number;
+  outcome: 'rows' | 'empty' | 'timeout' | 'error';
+};
 
-  const [starred, random, frequent, artists, randomSongs] = await Promise.all([
-    albums('starred', albumQuota),
-    albums('random', randomQuota),
-    albums('frequent', albumQuota),
-    showArtists && artistQuota > 0
-      ? withinHomeDeadline(
-          isolated(() => deps.getArtistsForServer(serverId, HOME_REQUEST_TIMEOUT_MS), []),
-          [] as SubsonicArtist[],
-        )
-      : Promise.resolve<SubsonicArtist[]>([]),
-    songs,
+async function loadServerAlbums(
+  serverId: string,
+  type: Parameters<typeof getAlbumListForServer>[1],
+  size: number,
+  deps: HomeFeedLoaderDeps,
+): Promise<TimedServerItems<OwnedAlbum>> {
+  const startedAt = nowMs();
+  if (size <= 0) return { items: [], durationMs: 0, outcome: 'empty' };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const request = deps.getAlbumListForServer(serverId, type, size, 0, {}, HOME_REQUEST_TIMEOUT_MS)
+    .then(albums => ({ albums, outcome: albums.length > 0 ? 'rows' as const : 'empty' as const }))
+    .catch(() => ({ albums: [] as SubsonicAlbum[], outcome: 'error' as const }));
+  const result = await Promise.race([
+    request,
+    new Promise<{ albums: SubsonicAlbum[]; outcome: 'timeout' }>(resolve => {
+      timer = setTimeout(() => resolve({ albums: [], outcome: 'timeout' }), HOME_REQUEST_TIMEOUT_MS);
+    }),
   ]);
-  const stamp = <T extends { serverId?: string }>(items: T[]) => items.map(item => ({ ...item, serverId }));
+  if (timer) clearTimeout(timer);
   return {
-    serverId,
-    starred: stamp(starred),
-    random: stamp(random),
-    frequent: stamp(frequent),
-    artists: stamp(artists),
-    songs: stamp(randomSongs),
+    items: result.albums.map(album => ({ ...album, serverId })),
+    durationMs: elapsedMs(startedAt),
+    outcome: result.outcome,
   };
+}
+
+async function loadServerArtists(serverId: string, deps: HomeFeedLoaderDeps): Promise<OwnedArtist[]> {
+  const artists = await withinHomeDeadline(
+    isolated(() => deps.getArtistsForServer(serverId, HOME_REQUEST_TIMEOUT_MS), []),
+    [] as SubsonicArtist[],
+  );
+  return artists.map(artist => ({ ...artist, serverId }));
+}
+
+async function loadServerSongs(
+  serverId: string,
+  size: number,
+  deps: HomeFeedLoaderDeps,
+): Promise<OwnedSong[]> {
+  if (size <= 0) return [];
+  const songs = await withinHomeDeadline(
+    isolated(async () => {
+      const local = await deps.runLocalRandomSongs(serverId, size);
+      if (local != null) return local;
+      return deps.getRandomSongsForServer(serverId, size, undefined, HOME_REQUEST_TIMEOUT_MS);
+    }, [] as SubsonicSong[]),
+    [] as SubsonicSong[],
+  );
+  return songs.map(song => ({ ...song, serverId }));
+}
+
+function formatServerTimings<T>(
+  serverIds: readonly string[],
+  groups: readonly TimedServerItems<T>[],
+): string {
+  return serverIds.map((serverId, index) => {
+    const group = groups[index];
+    return `${serverId}: ${group?.durationMs ?? 0}ms/${group?.items.length ?? 0}/${group?.outcome ?? 'empty'}`;
+  }).join(', ');
 }
 
 export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFeedSnapshot> {
   const deps = { ...defaultDeps, ...options.deps };
+  const enabled: HomeFeedEnabledSections = {
+    starred: true,
+    mostPlayed: true,
+    hero: true,
+    discover: true,
+    discoverArtists: options.showArtists,
+    discoverSongs: options.showSongs,
+    ...options.enabledSections,
+  };
+  const report = (section: HomeFeedLoadSection, result: HomeSectionResult) => {
+    try {
+      options.onSectionResult?.(section, result);
+    } catch {
+      // Diagnostics must not prevent Home from loading.
+    }
+  };
+  for (const section of Object.keys(enabled) as HomeFeedLoadSection[]) {
+    if (!enabled[section]) report(section, { status: 'disabled', durationMs: 0, itemCount: 0 });
+  }
   const albumQuotas = allocateHomeQuotas(HOME_PAGE_SIZE, options.serverIds.length);
   const randomQuotas = allocateHomeQuotas(options.randomSize, options.serverIds.length);
   const artistQuotas = allocateHomeQuotas(HOME_DISCOVER_ARTISTS_SIZE, options.serverIds.length);
   const songQuotas = allocateHomeQuotas(HOME_DISCOVER_SONGS_SIZE, options.serverIds.length);
-  const bundles = await Promise.all(options.serverIds.map((serverId, index) => loadServerBundle(
-      serverId,
-      albumQuotas[index] ?? 0,
-      randomQuotas[index] ?? 0,
-      artistQuotas[index] ?? 0,
-      songQuotas[index] ?? 0,
-      options.showArtists,
-      options.showSongs,
-      deps,
-    )));
+  const emptyGroups = () => options.serverIds.map(() => [] as OwnedAlbum[]);
+  const loadAlbumGroups = (type: Parameters<typeof getAlbumListForServer>[1], quotas: number[]) => (
+    Promise.all(options.serverIds.map((serverId, index) => (
+      loadServerAlbums(serverId, type, quotas[index] ?? 0, deps)
+    )))
+  );
+
+  const starredStartedAt = nowMs();
+  const starredPromise = enabled.starred
+    ? loadAlbumGroups('starred', albumQuotas).then(groups => {
+        const items = dedupeOwned(stableRoundRobin(groups.map(group => group.items), HOME_PAGE_SIZE));
+        report('starred', {
+          status: 'success', durationMs: elapsedMs(starredStartedAt), itemCount: items.length,
+          detail: formatServerTimings(options.serverIds, groups),
+        });
+        return { groups: groups.map(group => group.items), items };
+      })
+    : Promise.resolve({ groups: emptyGroups(), items: [] as OwnedAlbum[] });
+
+  const mostPlayedStartedAt = nowMs();
+  const mostPlayedPromise = enabled.mostPlayed
+    ? loadAlbumGroups('frequent', albumQuotas).then(groups => {
+        const items = dedupeOwned(stableRoundRobin(groups.map(group => group.items), HOME_PAGE_SIZE));
+        report('mostPlayed', {
+          status: 'success', durationMs: elapsedMs(mostPlayedStartedAt), itemCount: items.length,
+          detail: formatServerTimings(options.serverIds, groups),
+        });
+        return { groups: groups.map(group => group.items), items };
+      })
+    : Promise.resolve({ groups: emptyGroups(), items: [] as OwnedAlbum[] });
+
+  const randomEnabled = enabled.hero || enabled.discover;
+  const randomStartedAt = nowMs();
+  const randomPromise = randomEnabled
+    ? loadAlbumGroups('random', randomQuotas).then(async groups => {
+        const fetchDurationMs = elapsedMs(randomStartedAt);
+        const raw = dedupeOwned(stableRoundRobin(groups.map(group => group.items), options.randomSize));
+        const filterStartedAt = nowMs();
+        const filtered = dedupeOwned(await deps.filterAlbumsByMixRatingsAcrossServers(raw, options.mixConfig));
+        const filterDurationMs = elapsedMs(filterStartedAt);
+        const heroAlbums = enabled.hero ? filtered.slice(0, HOME_HERO_COUNT) : [];
+        const discoverStart = enabled.hero ? HOME_HERO_COUNT : 0;
+        const random = enabled.discover ? filtered.slice(discoverStart, discoverStart + HOME_PAGE_SIZE) : [];
+        const durationMs = elapsedMs(randomStartedAt);
+        if (enabled.hero) report('hero', {
+          status: 'success', durationMs, itemCount: heroAlbums.length,
+          detail: [
+            `shared random album fetch=${fetchDurationMs}ms`,
+            `mix rating filter=${filterDurationMs}ms`,
+            formatServerTimings(options.serverIds, groups),
+          ].join('; '),
+        });
+        if (enabled.discover) report('discover', {
+          status: 'success', durationMs, itemCount: random.length,
+          detail: [
+            `shared random album fetch=${fetchDurationMs}ms`,
+            `mix rating filter=${filterDurationMs}ms`,
+            formatServerTimings(options.serverIds, groups),
+          ].join('; '),
+        });
+        return { groups: groups.map(group => group.items), heroAlbums, random };
+      })
+    : Promise.resolve({ groups: emptyGroups(), heroAlbums: [] as OwnedAlbum[], random: [] as OwnedAlbum[] });
+
+  const artistsStartedAt = nowMs();
+  const artistsPromise = enabled.discoverArtists
+    ? Promise.all(options.serverIds.map(serverId => loadServerArtists(serverId, deps))).then(groups => {
+        const items = dedupeOwned(stableRoundRobin(
+          groups.map((group, index) => deps.shuffle(group).slice(0, artistQuotas[index] ?? 0)),
+          HOME_DISCOVER_ARTISTS_SIZE,
+        ));
+        report('discoverArtists', {
+          status: 'success', durationMs: elapsedMs(artistsStartedAt), itemCount: items.length,
+        });
+        return items;
+      })
+    : Promise.resolve([] as OwnedArtist[]);
+
+  const songsStartedAt = nowMs();
+  const songsPromise = enabled.discoverSongs
+    ? Promise.all(options.serverIds.map((serverId, index) => (
+        loadServerSongs(serverId, songQuotas[index] ?? 0, deps)
+      ))).then(groups => {
+        const items = dedupeOwned(stableRoundRobin(groups, HOME_DISCOVER_SONGS_SIZE));
+        report('discoverSongs', {
+          status: 'success', durationMs: elapsedMs(songsStartedAt), itemCount: items.length,
+        });
+        return items;
+      })
+    : Promise.resolve([] as OwnedSong[]);
+
+  const [starredResult, mostPlayedResult, randomResult, artists, songs] = await Promise.all([
+    starredPromise,
+    mostPlayedPromise,
+    randomPromise,
+    artistsPromise,
+    songsPromise,
+  ]);
 
   let offsets = createOffsets(options.serverIds);
   const advanceInitial = (section: PerServerHomeAlbumSection, groups: OwnedAlbum[][]) => {
@@ -349,36 +498,23 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
       options.serverIds.map((serverId, index) => [serverId, groups[index]?.length ?? 0]),
     ));
   };
-  const starredGroups = bundles.map(bundle => bundle.starred);
-  const randomGroups = bundles.map(bundle => bundle.random);
-  const mostPlayedGroups = bundles.map(bundle => bundle.frequent);
-  advanceInitial('starred', starredGroups);
-  advanceInitial('random', randomGroups);
-  advanceInitial('mostPlayed', mostPlayedGroups);
-
-  const randomRaw = dedupeOwned(stableRoundRobin(randomGroups, options.randomSize));
-  const filteredRandom = dedupeOwned(await deps.filterAlbumsByMixRatingsAcrossServers(
-    randomRaw as OwnedAlbum[],
-    options.mixConfig,
-  ));
-  const artists = dedupeOwned(stableRoundRobin(
-    bundles.map((bundle, index) => deps.shuffle(bundle.artists).slice(0, artistQuotas[index] ?? 0)),
-    HOME_DISCOVER_ARTISTS_SIZE,
-  ));
+  advanceInitial('starred', starredResult.groups);
+  advanceInitial('random', randomResult.groups);
+  advanceInitial('mostPlayed', mostPlayedResult.groups);
 
   return {
     scopeKey: options.scopeKey,
     scopeVersion: options.scopeVersion,
     savedAt: Date.now(),
     offsets,
-    starred: dedupeOwned(stableRoundRobin(starredGroups, HOME_PAGE_SIZE)),
+    starred: starredResult.items,
     recent: [],
-    heroAlbums: filteredRandom.slice(0, HOME_HERO_COUNT),
-    random: filteredRandom.slice(HOME_HERO_COUNT, HOME_DISCOVER_SLICE),
-    mostPlayed: dedupeOwned(stableRoundRobin(mostPlayedGroups, HOME_PAGE_SIZE)),
+    heroAlbums: randomResult.heroAlbums,
+    random: randomResult.random,
+    mostPlayed: mostPlayedResult.items,
     recentlyPlayed: [],
     randomArtists: artists,
-    discoverSongs: dedupeOwned(stableRoundRobin(bundles.map(bundle => bundle.songs), HOME_DISCOVER_SONGS_SIZE)),
+    discoverSongs: songs,
   };
 }
 

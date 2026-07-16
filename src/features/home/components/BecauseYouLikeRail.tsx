@@ -4,7 +4,7 @@ import { resolveAlbum, resolveMediaServerId } from '@/features/offline';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { shuffleArray } from '@/lib/util/shuffleArray';
-import React, { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Play, ListPlus, Music } from 'lucide-react';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
@@ -53,6 +53,10 @@ const PICKS_HISTORY_SIZE = 30;
 /** `.because-card-cover-wrap` layout square (160×160). */
 const BECAUSE_CARD_COVER_CSS_PX = 160;
 const ROW_STAGGER_MS = 150;
+// Wide cards and the compact AlbumRow have different geometry. Keep a dead band
+// around their breakpoint so ResizeObserver cannot make them flip each other.
+const NARROW_ENTER_WIDTH = 680;
+const NARROW_EXIT_WIDTH = 712;
 
 // ── Module-level reserve: next batch pre-fetched in background after each display ──
 type BecauseReserve = {
@@ -122,6 +126,10 @@ type FetchBecauseResult = {
   nextPicksHistory: string[];
 };
 
+type FetchBecauseOutcome =
+  | { status: 'ready'; result: FetchBecauseResult }
+  | { status: 'empty' | 'error' };
+
 /**
  * Core fetch: rotate anchor, call Last.fm / Subsonic, return result + updated
  * rotation snapshots. Does NOT touch React state or localStorage — callers do that.
@@ -131,7 +139,7 @@ async function fetchBecauseYouLike(
   pool: BecauseYouLikeAnchor[],
   anchorHistKey: string | null,
   picksHistKey: string | null,
-): Promise<FetchBecauseResult | null> {
+): Promise<FetchBecauseOutcome> {
   const anchorHistory = readJsonArray(anchorHistKey);
   const picksHistory = readJsonArray(picksHistKey);
 
@@ -144,6 +152,7 @@ async function fetchBecauseYouLike(
 
   const tries = Math.min(ANCHOR_MAX_TRIES, candidates.length);
   const tryList = candidates.slice(0, tries);
+  let hadError = false;
 
   const buildResult = (candidate: BecauseYouLikeAnchor, picks: SubsonicAlbum[]): FetchBecauseResult => ({
     anchor: candidate,
@@ -163,25 +172,27 @@ async function fetchBecauseYouLike(
           const picks = await resolvePicks(candidate, recentPicks);
           return picks ? { candidate, picks } : null;
         } catch {
+          hadError = true;
           return null;
         }
       }),
     );
     const hit = raced.find((r): r is { candidate: BecauseYouLikeAnchor; picks: SubsonicAlbum[] } => r != null);
-    if (hit) return buildResult(hit.candidate, hit.picks);
+    if (hit) return { status: 'ready', result: buildResult(hit.candidate, hit.picks) };
   }
 
   for (const candidate of tryList) {
     try {
       const picks = await resolvePicks(candidate, recentPicks);
       if (!picks) continue;
-      return buildResult(candidate, picks);
+      return { status: 'ready', result: buildResult(candidate, picks) };
     } catch {
+      hadError = true;
       /* try next anchor */
     }
   }
 
-  return null;
+  return { status: hadError ? 'error' : 'empty' };
 }
 
 /**
@@ -201,8 +212,9 @@ async function fillBecauseReserve(
   if (_becauseReserveFilling) return;
   _becauseReserveFilling = true;
   try {
-    const result = await fetchBecauseYouLike(pool, anchorHistKey, picksHistKey);
-    if (result) {
+    const outcome = await fetchBecauseYouLike(pool, anchorHistKey, picksHistKey);
+    if (outcome.status === 'ready') {
+      const { result } = outcome;
       _becauseReserve = { scopeKey, scopeVersion, ...result };
       // Also refresh the session snapshot so a quick leave→return can pick up
       // newer cards even before the reserve is explicitly consumed.
@@ -296,7 +308,15 @@ interface Props {
   scopeKey: string;
   scopeVersion: number;
   disableArtwork?: boolean;
+  onDiagnosticResult?: (result: BecauseYouLikeDiagnosticResult) => void;
 }
+
+export type BecauseYouLikeDiagnosticResult = {
+  status: 'loading' | 'ready' | 'empty' | 'error' | 'timeout';
+  durationMs?: number;
+  itemCount?: number;
+  detail?: string;
+};
 
 /** Round-robin merge of multiple album sources, dedup by owner + artistId.
  *  Cycling sources (most-played, recently-played, starred) means the per-mount
@@ -354,6 +374,7 @@ export default function BecauseYouLikeRail({
   scopeKey,
   scopeVersion,
   disableArtwork = false,
+  onDiagnosticResult,
 }: Props) {
   const { t } = useTranslation();
   const pool = useMemo(
@@ -376,11 +397,15 @@ export default function BecauseYouLikeRail({
     return readBecauseYouLikeCache(scopeKey, scopeVersion)?.recs ?? [];
   });
   const containerRef = useRef<HTMLDivElement>(null);
+  const diagnosticGenerationRef = useRef(0);
   const [narrow, setNarrow] = useState(false);
   const [refreshing, setRefreshing] = useState(() => {
     if (hasValidReserve(scopeKey, scopeVersion)) return false;
     const snap = readBecauseYouLikeCache(scopeKey, scopeVersion);
     return !snap || snap.recs.length === 0;
+  });
+  const reportDiagnostic = useEffectEvent((result: BecauseYouLikeDiagnosticResult) => {
+    onDiagnosticResult?.(result);
   });
   const skeletonSlots = useBecauseRowSlotCount(refreshing, SHOW_COUNT);
   const contentReady = !refreshing && Boolean(anchor) && recs.length > 0;
@@ -417,10 +442,18 @@ export default function BecauseYouLikeRail({
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    setNarrow(el.getBoundingClientRect().width < 696);
+    const updateNarrow = (width: number) => {
+      setNarrow(current => {
+        const nextNarrow = current
+          ? width < NARROW_EXIT_WIDTH
+          : width < NARROW_ENTER_WIDTH;
+        return current === nextNarrow ? current : nextNarrow;
+      });
+    };
+    updateNarrow(el.getBoundingClientRect().width);
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) {
-        setNarrow(entry.contentRect.width < 696);
+        updateNarrow(entry.contentRect.width);
       }
     });
     ro.observe(el);
@@ -447,6 +480,22 @@ export default function BecauseYouLikeRail({
     const anchorHistKey = anchorHistoryKey(scopeKey);
     const picksHistKey = picksHistoryKey(scopeKey);
     const snap = readBecauseYouLikeCache(scopeKey, scopeVersion);
+    const startedAt = performance.now();
+    const generation = ++diagnosticGenerationRef.current;
+    const reportFinal = (
+      status: BecauseYouLikeDiagnosticResult['status'],
+      itemCount: number,
+      detail: string,
+    ) => {
+      if (cancelled) return;
+      reportDiagnostic({
+        status,
+        durationMs: performance.now() - startedAt,
+        itemCount,
+        detail: `generation ${generation}: ${detail}`,
+      });
+    };
+    reportDiagnostic({ status: 'loading', detail: `generation ${generation}: pool ${pool.length}` });
 
     // Consume module-level reserve (keyed by the complete library scope).
     const reserved = hasValidReserve(scopeKey, scopeVersion) ? _becauseReserve : null;
@@ -455,6 +504,7 @@ export default function BecauseYouLikeRail({
     (async () => {
       if (reserved) {
         // ── Reserve path: instant display, no network ──────────────────────
+        reportFinal('ready', reserved.recs.length, 'reserve');
         await primeAlbumCoversForDisplay(reserved.recs, BECAUSE_CARD_COVER_CSS_PX, {
           limit: SHOW_COUNT,
           disabled: disableArtwork,
@@ -483,6 +533,7 @@ export default function BecauseYouLikeRail({
       // session snapshot, leave it on screen and only prefetch the next batch
       // for the next mount instead of swapping cards mid-visit.
       if (snap && snap.recs.length > 0) {
+        reportFinal('ready', snap.recs.length, 'cache');
         setRefreshing(false);
         void fillBecauseReserve(pool, scopeKey, scopeVersion, anchorHistKey, picksHistKey);
         return;
@@ -498,10 +549,23 @@ export default function BecauseYouLikeRail({
         setRecs([]);
       }
 
-      const result = await fetchBecauseYouLike(pool, anchorHistKey, picksHistKey);
+      let outcome: FetchBecauseOutcome;
+      try {
+        outcome = await fetchBecauseYouLike(pool, anchorHistKey, picksHistKey);
+      } catch (error) {
+        reportFinal('error', 0, error instanceof Error ? error.message : 'network');
+        if (!cancelled) {
+          setAnchor(null);
+          setRecs([]);
+          setRefreshing(false);
+        }
+        return;
+      }
       if (cancelled) return;
 
-      if (result) {
+      if (outcome.status === 'ready') {
+        const { result } = outcome;
+        reportFinal('ready', result.recs.length, 'network');
         await primeAlbumCoversForDisplay(result.recs, BECAUSE_CARD_COVER_CSS_PX, {
           limit: SHOW_COUNT,
           disabled: disableArtwork,
@@ -523,6 +587,7 @@ export default function BecauseYouLikeRail({
         // Pre-fetch next batch so the next visit is instant.
         void fillBecauseReserve(pool, scopeKey, scopeVersion, anchorHistKey, picksHistKey);
       } else {
+        reportFinal(outcome.status, 0, 'network');
         // Network failed — restore session cache if available.
         if (snap) {
           await primeAlbumCoversForDisplay(snap.recs, BECAUSE_CARD_COVER_CSS_PX, {

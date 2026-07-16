@@ -8,6 +8,7 @@ use crate::search::{combined_scope_library_ids, library_scope_in_sql, library_sc
 use crate::store::LibraryStore;
 use rusqlite::types::Value as SqlValue;
 use serde_json::Value;
+use std::time::Instant;
 
 /// Push a sargable `library_id` filter (hot column, matching the rest of the
 /// migrated browse/search paths) for a single or multi-library scope. Empty
@@ -38,6 +39,7 @@ pub fn list_lossless_albums(
     store: &LibraryStore,
     req: &LibraryLosslessAlbumsRequest,
 ) -> Result<LibraryLosslessAlbumsResponse, String> {
+    let total_started_at = Instant::now();
     if !crate::dto::track_index_nonempty(store, &req.server_id)? {
         return Ok(empty_response());
     }
@@ -107,11 +109,19 @@ pub fn list_lossless_albums(
     params.push(SqlValue::Integer(limit as i64));
     params.push(SqlValue::Integer(offset as i64));
 
+    let read_lock_started_at = Instant::now();
     let albums = store.with_read_conn(|conn| {
+        let query_started_at = Instant::now();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(params.iter()), map_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        crate::app_deprintln!(
+            "[library-db][lossless] server={} lock_wait_ms={} query_ms={}",
+            req.server_id,
+            read_lock_started_at.elapsed().as_millis(),
+            query_started_at.elapsed().as_millis(),
+        );
         Ok(rows)
     })?;
 

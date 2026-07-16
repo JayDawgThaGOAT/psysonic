@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} 首',
   mainstageEmptyTitle: '你的主舞台是空的',
   mainstageEmptyBody: '所有板块均已关闭。重新开启板块，或在侧边栏中隐藏主舞台。',
-  mainstageEmptyCta: '打开个性化设置'
+  mainstageEmptyCta: '打开个性化设置',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: '启用{{section}}',
+    generationInfo: '生成信息',
+    duration: '耗时',
+    itemCount: '项目数',
+    status: '状态',
+    detail: '详情',
+    unavailable: '无',
+    statuses: {
+      idle: '空闲', loading: '加载中', ready: '就绪', empty: '空',
+      error: '错误', timeout: '超时', disabled: '已禁用'
+    }
+  }
 };

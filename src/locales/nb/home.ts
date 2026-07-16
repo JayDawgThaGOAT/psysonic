@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} spor',
   mainstageEmptyTitle: 'Hovedscenen din er tom',
   mainstageEmptyBody: 'Alle seksjoner er slått av. Slå på seksjoner igjen, eller skjul Hovedscene fra sidefeltet.',
-  mainstageEmptyCta: 'Åpne Tilpasning'
+  mainstageEmptyCta: 'Åpne Tilpasning',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: 'Aktiver {{section}}',
+    generationInfo: 'Genereringsinformasjon',
+    duration: 'Varighet',
+    itemCount: 'Elementer',
+    status: 'Status',
+    detail: 'Detalj',
+    unavailable: 'I/T',
+    statuses: {
+      idle: 'Inaktiv', loading: 'Laster', ready: 'Klar', empty: 'Tom',
+      error: 'Feil', timeout: 'Tidsavbrudd', disabled: 'Deaktivert'
+    }
+  }
 };

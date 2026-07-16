@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} 曲',
   mainstageEmptyTitle: 'Mainstage は空です',
   mainstageEmptyBody: 'すべてのセクションがオフになっています。セクションを再度オンにするか、サイドバーから Mainstage を非表示にしてください。',
-  mainstageEmptyCta: 'パーソナライズ設定を開く'
+  mainstageEmptyCta: 'パーソナライズ設定を開く',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: '{{section}}を有効にする',
+    generationInfo: '生成情報',
+    duration: '所要時間',
+    itemCount: '項目数',
+    status: '状態',
+    detail: '詳細',
+    unavailable: '該当なし',
+    statuses: {
+      idle: '待機中', loading: '読み込み中', ready: '完了', empty: '空',
+      error: 'エラー', timeout: 'タイムアウト', disabled: '無効'
+    }
+  }
 };

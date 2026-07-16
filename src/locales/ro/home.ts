@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} piese',
   mainstageEmptyTitle: 'Scena Principală este goală',
   mainstageEmptyBody: 'Toate secțiunile sunt dezactivate. Reactivează secțiuni sau ascunde Scena Principală din bara laterală.',
-  mainstageEmptyCta: 'Deschide Personalizare'
+  mainstageEmptyCta: 'Deschide Personalizare',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: 'Activează {{section}}',
+    generationInfo: 'Informații de generare',
+    duration: 'Durată',
+    itemCount: 'Elemente',
+    status: 'Stare',
+    detail: 'Detaliu',
+    unavailable: 'Indisponibil',
+    statuses: {
+      idle: 'Inactiv', loading: 'Se încarcă', ready: 'Gata', empty: 'Gol',
+      error: 'Eroare', timeout: 'Timp expirat', disabled: 'Dezactivat'
+    }
+  }
 };

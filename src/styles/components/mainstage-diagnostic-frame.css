@@ -1,0 +1,116 @@
+.mainstage-diagnostic-frame {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-card) 82%, transparent);
+}
+
+.mainstage-diagnostic-copy-all {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 8px;
+}
+
+.mainstage-diagnostic-copy-all .btn {
+  font-size: 12px;
+}
+
+.mainstage-diagnostic-frame__controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mainstage-diagnostic-frame__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.mainstage-diagnostic-frame__toggle input {
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.mainstage-diagnostic-frame__toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mainstage-diagnostic-frame__status {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--bg-main);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mainstage-diagnostic-frame__status[data-status='ready'] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--accent);
+}
+
+.mainstage-diagnostic-frame__status[data-status='error'],
+.mainstage-diagnostic-frame__status[data-status='timeout'] {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  color: var(--danger);
+}
+
+.mainstage-diagnostic-frame__info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  cursor: copy;
+}
+
+.mainstage-diagnostic-frame__info > div {
+  display: inline-flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mainstage-diagnostic-frame__info dt {
+  font-weight: 700;
+}
+
+.mainstage-diagnostic-frame__info dd {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.mainstage-diagnostic-frame__detail {
+  flex-basis: 100%;
+}
+
+.mainstage-diagnostic-frame__detail dd {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .mainstage-diagnostic-frame__controls {
+    align-items: flex-start;
+  }
+}

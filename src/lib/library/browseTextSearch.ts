@@ -441,9 +441,16 @@ export async function runLocalLosslessAlbums(
   serverId: string | null | undefined,
   limit: number,
   offset: number,
-): Promise<{ albums: SubsonicAlbum[]; hasMore: boolean } | null> {
+): Promise<{
+  albums: SubsonicAlbum[];
+  hasMore: boolean;
+  diagnostics?: { readyCheckMs: number; queryMs: number };
+} | null> {
+  const readyStartedAt = performance.now();
   if (!serverId || !(await libraryIsReady(serverId))) return null;
+  const readyCheckMs = Math.round(performance.now() - readyStartedAt);
   try {
+    const queryStartedAt = performance.now();
     const resp = await libraryListLosslessAlbums({
       serverId,
       libraryScope: libraryScopeForServer(serverId) ?? undefined,
@@ -455,6 +462,10 @@ export async function runLocalLosslessAlbums(
     return {
       albums: resp.albums.map(albumToAlbum),
       hasMore: resp.hasMore,
+      diagnostics: {
+        readyCheckMs,
+        queryMs: Math.round(performance.now() - queryStartedAt),
+      },
     };
   } catch {
     return null;

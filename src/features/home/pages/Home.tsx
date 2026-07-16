@@ -1,5 +1,6 @@
 import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import Hero from '@/features/home/components/Hero';
 import { AlbumRow } from '@/features/album';
 import SongRail from '@/features/home/components/SongRail';
@@ -48,6 +49,20 @@ import {
   homeDiscoverCoverPrefetchBucket,
   shouldOfferHomeLoadMore,
 } from '@/features/home/pages/homeCoverPrefetch';
+import MainstageDiagnosticFrame from '@/features/home/components/MainstageDiagnosticFrame';
+import {
+  MAINSTAGE_DIAGNOSTIC_SECTION_IDS,
+  useMainstageDiagnosticStore,
+  type MainstageDiagnosticFinish,
+  type MainstageDiagnosticStatus,
+} from '@/features/home/store/mainstageDiagnosticStore';
+import type { HomeSectionId } from '@/features/home/store/homeStore';
+import {
+  homeSnapshotForEnabledCoverWarm,
+  preserveDisabledHomeSections,
+  reportCachedHomeDiagnostics,
+  type MainstageEnabledSections,
+} from '@/features/home/pages/homeDiagnosticHelpers';
 
 /** Match Random Albums overshoot when mix filter uses album/artist axes so hero + discover row can still fill. */
 const HOME_RANDOM_FETCH = 100;
@@ -76,6 +91,20 @@ export default function Home() {
   const homeSongRailsDisabled = perfFlags.disableMainstageRails || perfFlags.disableHomeSongRails;
   const homeRailArtworkDisabled = perfFlags.disableMainstageRailArtwork || perfFlags.disableHomeRailArtwork;
   const homeSections = useHomeStore(s => s.sections);
+  const diagnosticEnabled = useMainstageDiagnosticStore(useShallow(state => ({
+    hero: state.sections.hero.enabled,
+    recent: state.sections.recent.enabled,
+    becauseYouLike: state.sections.becauseYouLike.enabled,
+    discover: state.sections.discover.enabled,
+    discoverSongs: state.sections.discoverSongs.enabled,
+    discoverArtists: state.sections.discoverArtists.enabled,
+    recentlyPlayed: state.sections.recentlyPlayed.enabled,
+    starred: state.sections.starred.enabled,
+    mostPlayed: state.sections.mostPlayed.enabled,
+    losslessAlbums: state.sections.losslessAlbums.enabled,
+  })));
+  const startDiagnostic = useMainstageDiagnosticStore(s => s.start);
+  const finishDiagnostic = useMainstageDiagnosticStore(s => s.finish);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const servers = useAuthStore(s => s.servers);
   const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
@@ -99,6 +128,10 @@ export default function Home() {
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const offlineBrowseReloadTs = useOfflineBrowseReloadToken();
   const isVisible = (id: string) => homeSections.find(s => s.id === id)?.visible ?? true;
+  const sectionEnabled = (id: HomeSectionId) => isVisible(id) && diagnosticEnabled[id];
+  const getEffectiveEnabledSections = (): MainstageEnabledSections => Object.fromEntries(
+    MAINSTAGE_DIAGNOSTIC_SECTION_IDS.map(id => [id, sectionEnabled(id)]),
+  ) as MainstageEnabledSections;
 
   const [initialFeed] = useState(getInitialHomeFeed);
   const [starred, setStarred] = useState<SubsonicAlbum[]>(initialFeed?.starred ?? []);
@@ -137,17 +170,25 @@ export default function Home() {
 
   useLibraryCoverPrefetch(
     groupHomeCoverPrefetchBuckets([
-      { albums: heroAlbums, priority: 'high' },
-      { albums: recent, priority: 'high' },
+      { albums: sectionEnabled('hero') ? heroAlbums : [], priority: 'high' },
+      { albums: sectionEnabled('recent') ? recent : [], priority: 'high' },
       {
-        albums: [...random, ...mostPlayed, ...recentlyPlayed, ...starred],
-        artists: randomArtists,
+        albums: [
+          ...(sectionEnabled('discover') ? random : []),
+          ...(sectionEnabled('mostPlayed') ? mostPlayed : []),
+          ...(sectionEnabled('recentlyPlayed') ? recentlyPlayed : []),
+          ...(sectionEnabled('starred') ? starred : []),
+        ],
+        artists: sectionEnabled('discoverArtists') ? randomArtists : [],
         limit: 24,
         priority: 'low',
       },
-      homeDiscoverCoverPrefetchBucket(discoverSongs),
+      homeDiscoverCoverPrefetchBucket(sectionEnabled('discoverSongs') ? discoverSongs : []),
     ]),
-    [heroAlbums, recent, random, mostPlayed, recentlyPlayed, starred, randomArtists, discoverSongs, servers],
+    [
+      heroAlbums, recent, random, mostPlayed, recentlyPlayed, starred, randomArtists,
+      discoverSongs, servers, diagnosticEnabled, homeSections,
+    ],
   );
 
   useEffect(() => {
@@ -167,23 +208,41 @@ export default function Home() {
         scopes,
         scopeVersion,
         randomSize,
-        showArtists: isVisible('discoverArtists'),
-        showSongs: isVisible('discoverSongs'),
+        showArtists: sectionEnabled('discoverArtists'),
+        showSongs: sectionEnabled('discoverSongs'),
+        enabledSections: {
+          hero: sectionEnabled('hero'),
+          discover: sectionEnabled('discover'),
+          discoverArtists: sectionEnabled('discoverArtists'),
+          discoverSongs: sectionEnabled('discoverSongs'),
+          starred: sectionEnabled('starred'),
+          mostPlayed: sectionEnabled('mostPlayed'),
+        },
+        onSectionResult: (section, result) => {
+          if (result.status === 'disabled' || !isCurrentLoad()) return;
+          finishDiagnostic(section, {
+            status: result.itemCount > 0 ? 'ready' : 'empty',
+            durationMs: result.durationMs,
+            itemCount: result.itemCount,
+            detail: result.detail,
+          });
+        },
         mixConfig: mixCfg,
         deps: { filterAlbumsByMixRatingsAcrossServers },
       });
+      for (const section of ['hero', 'discover', 'discoverArtists', 'discoverSongs', 'starred', 'mostPlayed'] as const) {
+        if (sectionEnabled(section)) startDiagnostic(section);
+      }
       const chronological = {
-        recent: loadHomeChronologicalFeed({
-          anchorServerId,
-          scopes,
-          feed: 'newReleases',
-        }),
-        recentlyPlayed: loadHomeChronologicalFeed({
-          anchorServerId,
-          scopes,
-          feed: 'recentlyPlayed',
-        }),
+        recent: sectionEnabled('recent')
+          ? loadHomeChronologicalFeed({ anchorServerId, scopes, feed: 'newReleases' })
+          : null,
+        recentlyPlayed: sectionEnabled('recentlyPlayed')
+          ? loadHomeChronologicalFeed({ anchorServerId, scopes, feed: 'recentlyPlayed' })
+          : null,
       };
+      if (chronological.recent) startDiagnostic('recent');
+      if (chronological.recentlyPlayed) startDiagnostic('recentlyPlayed');
       return { snapshot, chronological };
     };
     const applyChronologicalResult = (
@@ -198,24 +257,53 @@ export default function Home() {
       patchHomeFeedCache(scopeKey, scopeVersion, snapshot => (
         patchHomeChronologicalFeed(snapshot, section, result)
       ));
+      finishDiagnostic(section, {
+        status: result.albums.length > 0 ? 'ready' : 'empty',
+        durationMs: result.durationMs,
+        itemCount: result.albums.length,
+      });
     };
     const patchChronologicalFeeds = (chronological: ReturnType<typeof startFreshHomeFeed>['chronological']) => {
-      void chronological.recent.then(result => applyChronologicalResult('recent', result));
-      void chronological.recentlyPlayed.then(result => applyChronologicalResult('recentlyPlayed', result));
+      if (chronological.recent) {
+        void chronological.recent.then(result => {
+          if (result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recent', {
+            status: result.status,
+            durationMs: result.durationMs,
+            itemCount: 0,
+            detail: result.status === 'error' ? result.detail : undefined,
+          });
+          applyChronologicalResult('recent', result);
+        });
+      }
+      if (chronological.recentlyPlayed) {
+        void chronological.recentlyPlayed.then(result => {
+          if (result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recentlyPlayed', {
+            status: result.status,
+            durationMs: result.durationMs,
+            itemCount: 0,
+            detail: result.status === 'error' ? result.detail : undefined,
+          });
+          applyChronologicalResult('recentlyPlayed', result);
+        });
+      }
     };
 
     const cached = readHomeFeedCache(scopeKey, scopeVersion)
       ?? (offlineBrowseActive ? readHomeFeedCacheStale(scopeKey) : null);
     if (cached) {
       if (displayedSnapshotRef.current !== cached) applyFeedSnapshot(cached);
+      reportCachedHomeDiagnostics(cached, sectionEnabled, finishDiagnostic);
       // React Compiler set-state-in-effect rule: cache synchronization within this effect.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
-      void warmHomeMainstageCovers(cached);
+      const effectiveEnabled = getEffectiveEnabledSections();
+      void warmHomeMainstageCovers(homeSnapshotForEnabledCoverWarm(cached, effectiveEnabled));
       const becauseSnap = readBecauseYouLikeCache(scopeKey, scopeVersion);
-      void primeAlbumCoversForDisplay(becauseSnap?.recs ?? [], HOME_BECAUSE_CARD_COVER_CSS_PX, {
-        limit: 6,
-      });
+      if (effectiveEnabled.becauseYouLike) {
+        void primeAlbumCoversForDisplay(becauseSnap?.recs ?? [], HOME_BECAUSE_CARD_COVER_CSS_PX, {
+          limit: 6,
+        });
+      }
       // Keep cached content for first paint, then refresh this visit as soon as
       // the independent server bundle is ready.
       if (!offlineBrowseActive) {
@@ -224,12 +312,19 @@ export default function Home() {
             const freshLoad = startFreshHomeFeed();
             const loaded = await freshLoad.snapshot;
             if (!isCurrentLoad()) return;
-            const fresh = preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current);
+            const fresh = preserveDisabledHomeSections(
+              preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current),
+              displayedSnapshotRef.current,
+              getEffectiveEnabledSections(),
+            );
             if (isHomeFeedSnapshotEmpty(fresh)) return;
             writeHomeFeedCache(fresh);
             applyFeedSnapshot(fresh);
             patchChronologicalFeeds(freshLoad.chronological);
-            void warmHomeMainstageCovers(fresh);
+            void warmHomeMainstageCovers(homeSnapshotForEnabledCoverWarm(
+              fresh,
+              getEffectiveEnabledSections(),
+            ));
           } catch {
             /* ignore */
           }
@@ -253,17 +348,24 @@ export default function Home() {
         const freshLoad = startFreshHomeFeed();
         const loaded = await freshLoad.snapshot;
         if (!isCurrentLoad()) return;
-        const snap = preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current);
+        const snap = preserveDisabledHomeSections(
+          preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current),
+          displayedSnapshotRef.current,
+          getEffectiveEnabledSections(),
+        );
         if (offlineBrowseActive && isHomeFeedSnapshotEmpty(snap)) return;
         writeHomeFeedCache(snap);
         applyFeedSnapshot(snap);
         patchChronologicalFeeds(freshLoad.chronological);
         if (!cancelled) setLoading(false);
-        void warmHomeMainstageCovers(snap);
+        const effectiveEnabled = getEffectiveEnabledSections();
+        void warmHomeMainstageCovers(homeSnapshotForEnabledCoverWarm(snap, effectiveEnabled));
         const becauseSnap = readBecauseYouLikeCache(scopeKey, scopeVersion);
-        void primeAlbumCoversForDisplay(becauseSnap?.recs ?? [], HOME_BECAUSE_CARD_COVER_CSS_PX, {
-          limit: 6,
-        });
+        if (effectiveEnabled.becauseYouLike) {
+          void primeAlbumCoversForDisplay(becauseSnap?.recs ?? [], HOME_BECAUSE_CARD_COVER_CSS_PX, {
+            limit: 6,
+          });
+        }
       } catch {
         /* ignore */
       } finally {
@@ -278,6 +380,7 @@ export default function Home() {
     anchorServerId,
     scopes,
     homeSections,
+    diagnosticEnabled,
     offlineBrowseActive,
     offlineBrowseReloadTs,
   ]);
@@ -371,18 +474,71 @@ export default function Home() {
     isVisible('losslessAlbums') &&
     reserveArtworkRow();
 
+  const reportAutonomousDiagnostic = (
+    section: 'becauseYouLike' | 'losslessAlbums',
+    result: {
+      status: Exclude<MainstageDiagnosticStatus, 'idle' | 'disabled'>;
+      durationMs?: number;
+      itemCount?: number;
+      detail?: string;
+    },
+  ) => {
+    if (result.status === 'loading') {
+      startDiagnostic(section, result.detail);
+      return;
+    }
+    finishDiagnostic(section, result as MainstageDiagnosticFinish);
+  };
+
+  const copyAllMainstageDiagnostics = async () => {
+    const labels: Record<HomeSectionId, string> = {
+      hero: t('home.hero'),
+      recent: t('sidebar.newReleases'),
+      becauseYouLike: t('home.becauseYouLike'),
+      discover: t('home.discover'),
+      discoverSongs: t('home.discoverSongs'),
+      discoverArtists: t('home.discoverArtists'),
+      recentlyPlayed: t('home.recentlyPlayed'),
+      starred: t('home.starred'),
+      mostPlayed: t('home.mostPlayed'),
+      losslessAlbums: t('home.losslessAlbums'),
+    };
+    const sections = useMainstageDiagnosticStore.getState().sections;
+    const text = MAINSTAGE_DIAGNOSTIC_SECTION_IDS.map(id => {
+      const section = sections[id];
+      return [
+        `mainstage section: ${id} (${labels[id]})`,
+        `status: ${section.status}`,
+        `durationMs: ${section.durationMs ?? 'n/a'}`,
+        `itemCount: ${section.itemCount ?? 'n/a'}`,
+        `enabled: ${section.enabled}`,
+        `detail: ${section.detail ?? 'n/a'}`,
+      ].join('\n');
+    }).join('\n\n');
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
+
+  useEffect(() => {
+    if (loading || !sectionEnabled('becauseYouLike') || becauseYouLikeHasSeed) return;
+    finishDiagnostic('becauseYouLike', {
+      status: 'empty',
+      durationMs: 0,
+      itemCount: 0,
+      detail: 'no seed albums',
+    });
+    // sectionEnabled is derived from the explicit dependencies below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, becauseYouLikeHasSeed, diagnosticEnabled.becauseYouLike, homeSections, finishDiagnostic]);
+
   const homeLiteArtworkFx = perfFlags.disableHomeArtworkFx;
   const homeFlatArtworkClip = perfFlags.disableHomeArtworkClip;
   // Treat the library as empty when every album endpoint returned zero. The
   // song/artist rails can be empty for non-empty libraries (rare server quirks),
   // so they don't count toward this signal.
-  const libraryEmpty =
-    !loading &&
-    recent.length === 0 &&
-    random.length === 0 &&
-    mostPlayed.length === 0 &&
-    recentlyPlayed.length === 0 &&
-    starred.length === 0;
   // Every section toggled off in Settings → Personalisation → Mainstage. The
   // page would otherwise be entirely blank, so surface a guided empty state
   // pointing back at the toggles (or the option to hide Mainstage from the
@@ -395,14 +551,23 @@ export default function Home() {
         homeFlatArtworkClip ? 'home-flat-artwork-clip' : '',
       ].filter(Boolean).join(' ') || undefined}
     >
-      {!loading && !perfFlags.disableMainstageHero && isVisible('hero') && <Hero albums={heroAlbums} />}
+      <div className="mainstage-diagnostic-copy-all">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => void copyAllMainstageDiagnostics()}
+        >
+          {t('home.diagnostics.copyAll')}
+        </button>
+      </div>
+      {!perfFlags.disableMainstageHero && isVisible('hero') && (
+        <MainstageDiagnosticFrame sectionId="hero" label={t('home.hero')}>
+          {!loading && <Hero albums={heroAlbums} />}
+        </MainstageDiagnosticFrame>
+      )}
 
       <div className="content-body" style={{ display: 'flex', flexDirection: 'column', gap: '3rem' }}>
-        {loading ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: '4rem' }}>
-            <div className="spinner" />
-          </div>
-        ) : allSectionsHidden ? (
+        {allSectionsHidden ? (
           <div className="empty-state" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
             <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>
               {t('home.mainstageEmptyTitle')}
@@ -417,14 +582,11 @@ export default function Home() {
               {t('home.mainstageEmptyCta')}
             </button>
           </div>
-        ) : libraryEmpty ? (
-          <div className="empty-state" style={{ padding: '4rem 1rem', textAlign: 'center' }}>
-            {t('common.libraryEmpty')}
-          </div>
         ) : (
           <>
             {!homeAlbumRowsDisabled && isVisible('recent') && (
-              <AlbumRow
+              <MainstageDiagnosticFrame sectionId="recent" label={t('sidebar.newReleases')}>
+                <AlbumRow
                 title={t('sidebar.newReleases')}
                 titleLink="/new-releases"
                 albums={recent}
@@ -434,20 +596,25 @@ export default function Home() {
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
                 initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
-              />
+                />
+              </MainstageDiagnosticFrame>
             )}
-            {!homeAlbumRowsDisabled && isVisible('becauseYouLike') && becauseYouLikeHasSeed && (
-              <BecauseYouLikeRail
+            {!homeAlbumRowsDisabled && isVisible('becauseYouLike') && (
+              <MainstageDiagnosticFrame sectionId="becauseYouLike" label={t('home.becauseYouLike')}>
+                {becauseYouLikeHasSeed && <BecauseYouLikeRail
                 mostPlayed={mostPlayed}
                 recentlyPlayed={recentlyPlayed}
                 starred={starred}
                 scopeKey={scopeKey}
                 scopeVersion={scopeVersion}
-                disableArtwork={!becauseYouLikeArtworkEnabled}
-              />
+                  disableArtwork={!becauseYouLikeArtworkEnabled}
+                  onDiagnosticResult={result => reportAutonomousDiagnostic('becauseYouLike', result)}
+                />}
+              </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('discover') && (
-              <AlbumRow
+              <MainstageDiagnosticFrame sectionId="discover" label={t('home.discover')}>
+                <AlbumRow
                 title={t('home.discover')}
                 titleLink="/random/albums"
                 albums={random}
@@ -457,20 +624,24 @@ export default function Home() {
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
                 initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
-              />
+                />
+              </MainstageDiagnosticFrame>
             )}
-            {!homeSongRailsDisabled && isVisible('discoverSongs') && discoverSongs.length > 0 && (
-              <SongRail
+            {!homeSongRailsDisabled && isVisible('discoverSongs') && (
+              <MainstageDiagnosticFrame sectionId="discoverSongs" label={t('home.discoverSongs')}>
+                {discoverSongs.length > 0 && <SongRail
                 title={t('home.discoverSongs')}
                 songs={discoverSongs}
                 disableArtwork={!discoverSongsArtworkEnabled}
                 artworkSize={HOME_SONG_RAIL_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
                 initialArtworkBudget={HOME_SONG_RAIL_INITIAL_ARTWORK_BUDGET}
-              />
+                />}
+              </MainstageDiagnosticFrame>
             )}
-            {!perfFlags.disableMainstageGridCards && isVisible('discoverArtists') && randomArtists.length > 0 && (
-              <section className="album-row-section">
+            {!perfFlags.disableMainstageGridCards && isVisible('discoverArtists') && (
+              <MainstageDiagnosticFrame sectionId="discoverArtists" label={t('home.discoverArtists')}>
+                {randomArtists.length > 0 && <section className="album-row-section">
                 <div className="album-row-header">
                   <NavLink to="/artists" className="section-title-link" style={{ marginBottom: 0 }}>
                     {t('home.discoverArtists')}<ChevronRight size={18} className="section-title-chevron" />
@@ -494,10 +665,12 @@ export default function Home() {
                     {t('home.discoverArtistsMore')} →
                   </button>
                 </div>
-              </section>
+                </section>}
+              </MainstageDiagnosticFrame>
             )}
-            {!homeAlbumRowsDisabled && isVisible('recentlyPlayed') && recentlyPlayed.length > 0 && (
-              <AlbumRow
+            {!homeAlbumRowsDisabled && isVisible('recentlyPlayed') && (
+              <MainstageDiagnosticFrame sectionId="recentlyPlayed" label={t('home.recentlyPlayed')}>
+                <AlbumRow
                 title={t('home.recentlyPlayed')}
                 albums={recentlyPlayed}
                 onLoadMore={shouldOfferHomeLoadMore(recentlyPlayedHasMore)
@@ -508,10 +681,12 @@ export default function Home() {
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
                 initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
-              />
+                />
+              </MainstageDiagnosticFrame>
             )}
-            {!homeAlbumRowsDisabled && isVisible('starred') && starred.length > 0 && (
-              <AlbumRow
+            {!homeAlbumRowsDisabled && isVisible('starred') && (
+              <MainstageDiagnosticFrame sectionId="starred" label={t('home.starred')}>
+                <AlbumRow
                 title={t('home.starred')}
                 titleLink="/favorites"
                 albums={starred}
@@ -521,10 +696,12 @@ export default function Home() {
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
                 initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
-              />
+                />
+              </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('mostPlayed') && (
-              <AlbumRow
+              <MainstageDiagnosticFrame sectionId="mostPlayed" label={t('home.mostPlayed')}>
+                <AlbumRow
                 title={t('home.mostPlayed')}
                 titleLink="/most-played"
                 albums={mostPlayed}
@@ -534,17 +711,21 @@ export default function Home() {
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
                 initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
-              />
+                />
+              </MainstageDiagnosticFrame>
             )}
             {!homeAlbumRowsDisabled && isVisible('losslessAlbums') && (
-              <LosslessAlbumsRail
+              <MainstageDiagnosticFrame sectionId="losslessAlbums" label={t('home.losslessAlbums')}>
+                <LosslessAlbumsRail
                 serverIds={serverIds}
                 scopeVersion={scopeVersion}
                 disableArtwork={!losslessAlbumsArtworkEnabled}
                 artworkSize={HOME_ALBUM_ROW_ARTWORK_SIZE}
                 windowArtworkByViewport={HOME_ARTWORK_WINDOWING}
-                initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
-              />
+                  initialArtworkBudget={HOME_ALBUM_ROW_INITIAL_ARTWORK_BUDGET}
+                  onDiagnosticResult={result => reportAutonomousDiagnostic('losslessAlbums', result)}
+                />
+              </MainstageDiagnosticFrame>
             )}
           </>
         )}

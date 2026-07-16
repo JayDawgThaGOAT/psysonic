@@ -84,6 +84,13 @@ pub(crate) fn ensure_genre_tags_schema(conn: &Connection) -> rusqlite::Result<()
     conn.execute_batch(MIGRATION_012_TRACK_GENRE_LEGACY)
 }
 
+/// Repairs the rare partial-v19 state where the migration marker was recorded
+/// but its additive index did not survive. `CREATE INDEX IF NOT EXISTS` leaves
+/// healthy databases and all user library data untouched.
+pub(crate) fn ensure_mainstage_feed_indexes(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(MIGRATION_019_MAINSTAGE_FEED_INDEXES)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MigrationOutcome {
     /// Every missing migration was applied (or the DB was already at head).
@@ -663,6 +670,7 @@ fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> 
     maybe_reconcile_library_id_backfill(conn)?;
     maybe_reconcile_orphan_browse_rows(conn)?;
     ensure_genre_tags_schema(conn)?;
+    ensure_mainstage_feed_indexes(conn)?;
     checkpoint_wal_conn(conn, "open")?;
     Ok(())
 }

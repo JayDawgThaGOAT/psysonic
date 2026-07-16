@@ -1,5 +1,5 @@
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ndListLosslessAlbumsPageForServer } from '@/lib/api/navidromeBrowse';
 import AlbumRow from '@/features/album/components/AlbumRow';
@@ -17,19 +17,29 @@ interface Props {
   artworkSize?: number;
   windowArtworkByViewport?: boolean;
   initialArtworkBudget?: number;
+  onDiagnosticResult?: (result: LosslessAlbumsDiagnosticResult) => void;
 }
+
+export type LosslessAlbumsDiagnosticResult = {
+  status: 'loading' | 'ready' | 'empty' | 'error' | 'timeout';
+  durationMs?: number;
+  itemCount?: number;
+  detail?: string;
+};
 
 const TARGET_ALBUMS = 20;
 const NETWORK_SONGS_PER_SERVER = 100;
 const LOSSLESS_RAIL_DEADLINE_MS = 4000;
 
-async function withinDeadline<T>(request: Promise<T>, fallback: T): Promise<T> {
+async function withinDeadline<T>(request: Promise<T>): Promise<
+  { status: 'ready'; value: T } | { status: 'timeout' }
+> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      request,
-      new Promise<T>(resolve => {
-        timer = setTimeout(() => resolve(fallback), LOSSLESS_RAIL_DEADLINE_MS);
+      request.then(value => ({ status: 'ready' as const, value })),
+      new Promise<{ status: 'timeout' }>(resolve => {
+        timer = setTimeout(() => resolve({ status: 'timeout' }), LOSSLESS_RAIL_DEADLINE_MS);
       }),
     ]);
   } finally {
@@ -63,6 +73,7 @@ export default function LosslessAlbumsRail({
   artworkSize,
   windowArtworkByViewport,
   initialArtworkBudget,
+  onDiagnosticResult,
 }: Props) {
   const { t } = useTranslation();
   const activeServerId = useAuthStore(s => s.activeServerId);
@@ -72,43 +83,96 @@ export default function LosslessAlbumsRail({
     return [...new Set(requested.filter(Boolean))];
   }, [activeServerId, serverIds]);
   const [albums, setAlbums] = useState<SubsonicAlbum[]>([]);
+  const reportDiagnostic = useEffectEvent((result: LosslessAlbumsDiagnosticResult) => {
+    onDiagnosticResult?.(result);
+  });
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const startedAt = performance.now();
+      reportDiagnostic({ status: 'loading' });
       if (orderedServerIds.length === 0) {
         setAlbums([]);
+        reportDiagnostic({
+          status: 'empty',
+          durationMs: performance.now() - startedAt,
+          itemCount: 0,
+          detail: 'no-servers',
+        });
         return;
       }
 
       const quotas = allocateQuotas(orderedServerIds.length);
       const groups = await Promise.all(orderedServerIds.map(async (serverId, index) => {
+        const serverStartedAt = performance.now();
+        const finish = (
+          albums: SubsonicAlbum[],
+          status: 'ready' | 'empty' | 'error' | 'timeout',
+          source: 'local' | 'network',
+          detail?: string,
+        ) => ({
+          albums,
+          status,
+          detail: [
+            `${serverId}:${source}:${Math.round(performance.now() - serverStartedAt)}ms/${albums.length}`,
+            detail,
+          ].filter(Boolean).join(' '),
+        });
         const quota = quotas[index];
-        if (quota <= 0) return [];
+        if (quota <= 0) return finish([], 'empty', 'local');
 
         if (indexEnabled) {
-          const local = await runLocalLosslessAlbums(serverId, quota, 0);
-          if (local && local.albums.length > 0) {
-            return local.albums.slice(0, quota).map(album => ({ ...album, serverId }));
+          try {
+            const local = await runLocalLosslessAlbums(serverId, quota, 0);
+            if (local && local.albums.length > 0) {
+              return finish(
+                local.albums.slice(0, quota).map(album => ({ ...album, serverId })),
+                'ready',
+                'local',
+                local.diagnostics
+                  ? `ready=${local.diagnostics.readyCheckMs}ms query=${local.diagnostics.queryMs}ms`
+                  : undefined,
+              );
+            }
+          } catch {
+            // Fall through to the network path; aggregate status records failure if it also fails.
           }
         }
 
         try {
-          const page = await withinDeadline(
-            ndListLosslessAlbumsPageForServer(serverId, {
+          const result = await withinDeadline(ndListLosslessAlbumsPageForServer(serverId, {
               targetNewAlbums: quota,
               songsPerPage: NETWORK_SONGS_PER_SERVER,
               maxPagesPerCall: 1,
-            }),
-            { entries: [], done: false, nextSongOffset: 0 },
-          );
-          return page.entries.slice(0, quota).map(entry => entry.album);
+            }));
+          if (result.status === 'timeout') {
+            return finish([], 'timeout', 'network');
+          }
+          const networkAlbums = result.value.entries.slice(0, quota).map(entry => entry.album);
+          return finish(networkAlbums, networkAlbums.length > 0 ? 'ready' : 'empty', 'network');
         } catch {
-          return [];
+          return finish([], 'error', 'network');
         }
       }));
 
-      if (!cancelled) setAlbums(roundRobinAlbums(groups));
+      if (cancelled) return;
+      const nextAlbums = roundRobinAlbums(groups.map(group => group.albums));
+      setAlbums(nextAlbums);
+      const statuses = groups.map(group => group.status);
+      const status: LosslessAlbumsDiagnosticResult['status'] = nextAlbums.length > 0
+        ? 'ready'
+        : statuses.includes('timeout')
+          ? 'timeout'
+          : statuses.includes('error')
+            ? 'error'
+            : 'empty';
+      reportDiagnostic({
+        status,
+        durationMs: performance.now() - startedAt,
+        itemCount: nextAlbums.length,
+        detail: groups.map(group => group.detail).join(', '),
+      });
     })();
     return () => { cancelled = true; };
   }, [indexEnabled, orderedServerIds, scopeVersion]);
