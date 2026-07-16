@@ -162,6 +162,20 @@ export default function NowPlayingDropdown() {
     if (!ownUsername || entry.username !== ownUsername) return true;
     return entryServerId === playbackServerId && isPlaying;
   });
+  const visibleByServer = new Map<string, SubsonicNowPlaying[]>();
+  for (const entry of visible) {
+    const serverId = entry.serverId ?? '';
+    const rows = visibleByServer.get(serverId);
+    if (rows) rows.push(entry);
+    else visibleByServer.set(serverId, [entry]);
+  }
+  const visibleGroups = libraryBrowseServerIds
+    .map(serverId => ({
+      serverId,
+      serverLabel: serverLabelById.get(serverId) ?? serverId,
+      rows: visibleByServer.get(serverId) ?? [],
+    }))
+    .filter(group => group.rows.length > 0);
 
   return (
     <div className="now-playing-dropdown" ref={triggerWrapRef} style={{ position: 'relative' }}>
@@ -223,10 +237,16 @@ export default function NowPlayingDropdown() {
               {t('nowPlaying.nobody')}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {/* React Compiler refs rule: the row renderer reads a ref for latest presence state; intentional, not reactive render data. */}
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {/* React Compiler refs rule: nested row rendering reads fetchedAtRef for live position extrapolation. */}
               {/* eslint-disable-next-line react-hooks/refs */}
-              {visible.map((stream, idx) => {
+              {visibleGroups.map(group => (
+                <section key={group.serverId} className="nav-library-server-group" aria-label={group.serverLabel}>
+                  {multiServerScope ? (
+                    <div className="nav-library-server-group-heading">{group.serverLabel}</div>
+                  ) : null}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {group.rows.map((stream, idx) => {
                 const presence = nowPlayingPresence(stream);
                 const presenceLabel = t(`nowPlaying.presence.${presence}`);
                 return (
@@ -274,10 +294,7 @@ export default function NowPlayingDropdown() {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '2px', fontSize: '11px', color: 'var(--text-secondary)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
                         <User size={10} style={{ flexShrink: 0 }} />
-                        <span className="truncate">
-                          {stream.username} ({stream.playerName || 'Web'})
-                          {multiServerScope && stream.serverId ? ` · ${serverLabelById.get(stream.serverId) ?? stream.serverId}` : ''}
-                        </span>
+                        <span className="truncate">{stream.username} ({stream.playerName || 'Web'})</span>
                       </div>
                       {(() => {
                         const posSec = livePositionSec(stream);
@@ -312,6 +329,9 @@ export default function NowPlayingDropdown() {
                 </div>
                 );
               })}
+                  </div>
+                </section>
+              ))}
             </div>
           )}
         </div>,

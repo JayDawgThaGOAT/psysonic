@@ -65,16 +65,20 @@ beforeEach(() => {
 describe('NowPlayingDropdown multi-server scope', () => {
   it('renders listeners from every selected server with owner labels and cover scopes', async () => {
     getNowPlayingForServersMock.mockResolvedValue([
-      entry('a', 'one', 'alice'),
       entry('b', 'two', 'bob'),
+      entry('a', 'one', 'alice'),
     ]);
     renderWithProviders(<NowPlayingDropdown />);
 
     fireEvent.click(screen.getByRole('button', { name: /Live/i }));
     expect(await screen.findByText('Track one')).toBeInTheDocument();
     expect(screen.getByText('Track two')).toBeInTheDocument();
-    expect(screen.getByText(/alice \(Web\) · Alpha/)).toBeInTheDocument();
-    expect(screen.getByText(/bob \(Web\) · Beta/)).toBeInTheDocument();
+    expect(screen.getByText('alice (Web)')).toBeInTheDocument();
+    expect(screen.getByText('bob (Web)')).toBeInTheDocument();
+    const headings = screen.getAllByText(/Alpha|Beta/).filter(node =>
+      node.classList.contains('nav-library-server-group-heading'),
+    );
+    expect(headings.map(node => node.textContent)).toEqual(['Alpha', 'Beta']);
     expect(getNowPlayingForServersMock).toHaveBeenCalledWith(['a', 'b']);
     expect(coverScopes).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'server', serverId: 'a' }),
@@ -98,6 +102,16 @@ describe('NowPlayingDropdown multi-server scope', () => {
 
     useAuthStore.setState({ libraryBrowseServerIds: ['b'] });
     await waitFor(() => expect(getNowPlayingForServersMock).toHaveBeenCalledWith(['b']));
+  });
+
+  it('does not render a server heading for a single-server scope', async () => {
+    useAuthStore.setState({ libraryBrowseServerIds: ['b'] });
+    getNowPlayingForServersMock.mockResolvedValue([entry('b', 'two', 'bob')]);
+    renderWithProviders(<NowPlayingDropdown />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Live/i }));
+    expect(await screen.findByText('Track two')).toBeInTheDocument();
+    expect(document.querySelector('.nav-library-server-group-heading')).toBeNull();
   });
 
   it('drops stale own-account sessions from the previous playback server', async () => {

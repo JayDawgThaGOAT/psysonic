@@ -63,7 +63,10 @@ describe('ConnectionIndicator Library server selection', () => {
     expect(screen.getByText('2 servers')).toBeInTheDocument();
     expect(switchActiveServerMock).not.toHaveBeenCalled();
     expect(screen.getByRole('menuitem', { name: 'Home' }).querySelector('.nav-library-dropdown-check')).toBeNull();
-    expect(screen.getByRole('menuitem', { name: 'Home' }).closest('.nav-library-dropdown-item')).not.toHaveClass(
+    expect(screen.getByRole('menuitem', { name: 'Home' }).closest('.nav-library-dropdown-item')).toHaveClass(
+      'nav-library-dropdown-item--selected',
+    );
+    expect(screen.getByRole('menuitem', { name: 'Remote' }).closest('.nav-library-dropdown-item')).toHaveClass(
       'nav-library-dropdown-item--selected',
     );
   });

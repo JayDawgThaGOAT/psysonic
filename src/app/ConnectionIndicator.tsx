@@ -231,7 +231,7 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
                 <div
                   key={srv.id}
                   data-reorder-id={srv.id}
-                  className={`nav-library-dropdown-item connection-indicator-server-row${edge ? ` connection-indicator-server-row--drop-${edge}` : ''}`}
+                  className={`nav-library-dropdown-item connection-indicator-server-row${included ? ' nav-library-dropdown-item--selected' : ''}${edge ? ` connection-indicator-server-row--drop-${edge}` : ''}`}
                 >
                   <ReorderGripHandle id={srv.id} type="server_reorder" label={labelText} />
                   <button
