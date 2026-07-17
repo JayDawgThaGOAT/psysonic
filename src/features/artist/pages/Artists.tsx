@@ -41,7 +41,6 @@ import { readArtistBrowseRestore } from '@/lib/navigation/albumDetailNavigation'
 
 import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
-import { librarySelectionForServer } from '@/lib/api/subsonicClient';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import {
   beginArtistsBrowseTrace,
@@ -52,6 +51,7 @@ import {
 } from '@/lib/library/artistBrowseDebug';
 import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 
 function artistEntityKey(artist: { id: string; serverId?: string }): string {
   return artist.serverId ? `${artist.serverId}:${artist.id}` : artist.id;
@@ -100,11 +100,12 @@ export default function Artists() {
   } = useArtistsBrowseFilters(serverId, scrollSnapshotRef);
 
   useLayoutEffect(() => {
+    const libraryScopeCount = getLibraryBrowseScope().pairs.length;
     beginArtistsBrowseTrace({
       serverId,
       indexEnabled,
       libraryFilterVersion: libraryBrowseVersion,
-      libraryScopeCount: librarySelectionForServer(serverId).length,
+      libraryScopeCount,
       creditMode,
       letterFilter,
       viewMode,
@@ -390,7 +391,7 @@ export default function Artists() {
       route: '/artists',
       serverId,
       indexEnabled,
-      libraryScopeCount: librarySelectionForServer(serverId).length,
+      libraryScopeCount: getLibraryBrowseScope().pairs.length,
       creditMode,
       letterFilter,
       starredOnly,
