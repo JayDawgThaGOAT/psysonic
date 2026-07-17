@@ -1,6 +1,7 @@
 import React from 'react';
 import type { SubsonicArtist } from '@/lib/api/subsonicTypes';
 import { ArtistCoverArtImage } from '@/cover/ArtistCoverArtImage';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
 import {
   COVER_DENSE_ARTIST_LIST_CSS_PX,
   COVER_DENSE_GRID_MIN_CELL_CSS_PX,
@@ -26,6 +27,7 @@ export function ArtistCardAvatar({ artist, showImages }: AvatarProps) {
         <ArtistCoverArtImage
           artistId={artist.id}
           coverArt={artist.coverArt}
+          serverScope={coverServerScopeForServerId(artist.serverId)}
           displayCssPx={COVER_DENSE_GRID_MIN_CELL_CSS_PX}
           surface="dense"
           alt={artist.name}
@@ -53,6 +55,7 @@ export function ArtistRowAvatar({ artist, showImages }: AvatarProps) {
         <ArtistCoverArtImage
           artistId={artist.id}
           coverArt={artist.coverArt}
+          serverScope={coverServerScopeForServerId(artist.serverId)}
           displayCssPx={COVER_DENSE_ARTIST_LIST_CSS_PX}
           surface="dense"
           alt={artist.name}

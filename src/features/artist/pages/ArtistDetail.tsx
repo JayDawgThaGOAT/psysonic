@@ -39,6 +39,7 @@ import { VirtualCardGrid } from '@/ui/VirtualCardGrid';
 import { LOSSLESS_MODE_QUERY } from '@/lib/library/losslessMode';
 import { sortArtistAlbumsByYear } from '@/features/artist/utils/sortArtistAlbums';
 import { readDetailServerId } from '@/lib/navigation/detailServerScope';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
 
 
 export default function ArtistDetail() {
@@ -138,7 +139,11 @@ export default function ArtistDetail() {
 
   // Cover URLs — must run every render (before early returns) or hook order breaks.
   const coverId = artist ? (artist.coverArt || artist.id) : '';
-  const artistCoverRefResolved = useArtistCoverRef(artist?.id, artist?.coverArt, undefined, {
+  const artistCoverServerScope = useMemo(
+    () => coverServerScopeForServerId(artist?.serverId ?? activeServerId),
+    [artist?.serverId, activeServerId],
+  );
+  const artistCoverRefResolved = useArtistCoverRef(artist?.id, artist?.coverArt, artistCoverServerScope, {
     libraryResolve: true,
   });
   const artistCoverFallback = useCoverArt(artistCoverRefResolved, 80, { surface: 'sparse' });
