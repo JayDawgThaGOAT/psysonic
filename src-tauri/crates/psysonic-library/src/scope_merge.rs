@@ -706,9 +706,8 @@ pub(crate) fn list_index_artists_layer1_filtered(
         format!(
             "{cte}, \
              album_scoped AS ( \
-               SELECT t.album_id, \
-                      lower(trim(COALESCE(NULLIF(MAX(trim(t.album_artist)), ''), MIN(t.artist)))) \
-                        AS credit_name \
+                 SELECT t.album_id, \
+                        COALESCE(NULLIF(MAX(trim(t.album_artist)), ''), MIN(t.artist)) AS credit_name \
                {scoped_from} \
                WHERE t.deleted = 0 AND t.album_id IS NOT NULL AND t.album_id != '' \
                GROUP BY t.album_id \
@@ -716,8 +715,8 @@ pub(crate) fn list_index_artists_layer1_filtered(
              scoped_ids AS ( \
                SELECT DISTINCT ar.id \
                FROM album_scoped ac \
-               INNER JOIN artist ar ON ar.server_id = ? AND ar.album_count IS NOT NULL \
-                 AND lower(trim(coalesce(ar.name, ''))) = ac.credit_name \
+                INNER JOIN artist ar ON ar.server_id = ? AND ar.album_count IS NOT NULL \
+                  AND ar.name_fold = psysonic_lower_name(ac.credit_name) \
              )"
         )
     } else {
@@ -770,6 +769,78 @@ pub(crate) fn list_index_artists_layer1_filtered(
     binds.push(SqlValue::Integer(i64::from(limit)));
     binds.push(SqlValue::Integer(i64::from(offset)));
 
+    let artists = store.with_read_conn(|conn| {
+        let mut stmt = conn.prepare(&select_sql)?;
+        let rows = stmt
+            .query_map(params_from_iter(binds.iter()), map_artist_list_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().map(artist_row_to_dto).collect())
+    })?;
+    Ok((artists, total))
+}
+
+/// Multi-server Album artists browse. Album credits can differ from every track
+/// performer, so derive them from `album_artist` and resolve the matching indexed
+/// artist row by its persisted Unicode fold before priority-deduplicating names.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn list_index_artists_multi_scope_album_filtered(
+    store: &LibraryStore,
+    scopes: &[LibraryScopePair],
+    extra_where: &str,
+    extra_params: &[SqlValue],
+    order_sql: &str,
+    limit: u32,
+    offset: u32,
+    skip_totals: bool,
+) -> Result<(Vec<LibraryArtistDto>, u32), String> {
+    let scopes = non_empty_scopes(scopes)?;
+    let (cte, scope_binds) = scope_cte_sql(scopes);
+    let artist_where = if extra_where.trim().is_empty() {
+        "ar.album_count IS NOT NULL".to_string()
+    } else {
+        format!("ar.album_count IS NOT NULL AND {extra_where}")
+    };
+    let credits_cte = format!(
+        "{cte}, \
+         album_credits AS ( \
+           SELECT t.server_id, t.album_id, s.pr, \
+                  COALESCE(NULLIF(MAX(trim(t.album_artist)), ''), MIN(t.artist)) AS credit_name \
+           FROM scope s \
+           CROSS JOIN track t ON t.server_id = s.server_id AND t.library_id = s.library_id \
+           WHERE t.deleted = 0 AND t.album_id IS NOT NULL AND t.album_id != '' \
+           GROUP BY t.server_id, t.album_id, s.pr \
+         ), \
+         matched AS ( \
+           SELECT ar.server_id, ar.id AS artist_id, ar.name AS artist, ar.name_fold, \
+                  ac.album_id, ac.pr, ar.synced_at \
+           FROM album_credits ac \
+           INNER JOIN artist ar ON ar.server_id = ac.server_id \
+             AND ar.name_fold = psysonic_lower_name(ac.credit_name) \
+           WHERE {artist_where} \
+         ), \
+         deduped AS ( \
+           SELECT server_id, artist_id, artist, synced_at, \
+                  COUNT(DISTINCT server_id || ':' || album_id) AS album_count, \
+                  MIN(printf('%08d|%s|%s', pr, server_id, artist_id)) AS _pick \
+           FROM matched GROUP BY name_fold \
+         )"
+    );
+    let count_sql = format!("{credits_cte} SELECT COUNT(*) FROM deduped");
+    let select_sql = format!(
+        "{credits_cte} SELECT server_id, artist_id, artist, album_count, synced_at \
+         FROM deduped {order_sql} LIMIT ? OFFSET ?"
+    );
+    let mut binds = merge_binds(scope_binds, extra_params);
+    let total = if skip_totals {
+        0
+    } else {
+        store.with_read_conn(|conn| {
+            let count: i64 = conn.query_row(&count_sql, params_from_iter(binds.iter()), |row| row.get(0))?;
+            Ok(count.max(0) as u32)
+        })?
+    };
+    binds.push(SqlValue::Integer(i64::from(limit)));
+    binds.push(SqlValue::Integer(i64::from(offset)));
     let artists = store.with_read_conn(|conn| {
         let mut stmt = conn.prepare(&select_sql)?;
         let rows = stmt
@@ -2370,6 +2441,26 @@ mod tests {
         let artists = list_artists(&store, &req).unwrap();
         assert_eq!(artists.len(), 1);
         assert_eq!(artists[0].name, "Shared");
+    }
+
+    #[test]
+    fn album_credit_lookup_uses_name_fold_index() {
+        let store = LibraryStore::open_in_memory();
+        let plan: Vec<String> = store
+            .with_read_conn(|conn| {
+                let mut stmt = conn.prepare(
+                    "EXPLAIN QUERY PLAN \
+                     SELECT ar.id FROM artist ar \
+                     WHERE ar.server_id = 's1' AND ar.name_fold = psysonic_lower_name('Кино')",
+                )?;
+                let rows = stmt.query_map([], |row| row.get(3))?;
+                rows.collect()
+            })
+            .unwrap();
+        assert!(
+            plan.iter().any(|detail| detail.contains("idx_artist_name_fold")),
+            "expected name-fold index lookup, got: {plan:?}"
+        );
     }
 
     /// Manual perf probe:

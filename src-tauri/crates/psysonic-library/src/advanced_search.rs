@@ -578,6 +578,38 @@ fn build_multi_scope_artist(
     skip_totals: bool,
     applied: &mut BTreeSet<String>,
 ) -> Result<(Vec<LibraryArtistDto>, u32), String> {
+    if album_artist_credit_mode(req) && !scalar_requires_track_derived_entities(scalar) {
+        applied.insert("library_scope".to_string());
+        applied.insert("artist_credit_mode".to_string());
+        let mut filter = WhereBuilder::new();
+        if let Some(bucket) = req.artist_letter_bucket.as_deref() {
+            push_artist_letter_bucket(&mut filter, bucket, applied);
+        }
+        if let Some(query) = text {
+            filter.push_param(
+                "ar.name_fold LIKE ? ESCAPE '\\'",
+                SqlValue::Text(like_contains_folded(query)),
+            );
+            applied.insert("text".to_string());
+        }
+        for clause in scalar {
+            if let Some(fragment) = resolve_clause(clause, EntityKind::Artist)? {
+                applied.insert(clause.field.clone());
+                filter.push(fragment);
+            }
+        }
+        let order = deduped_artist_order_sql(&req.sort);
+        return scope_merge::list_index_artists_multi_scope_album_filtered(
+            store,
+            scopes,
+            &filter.where_sql(),
+            filter.params(),
+            &order,
+            limit,
+            offset,
+            skip_totals,
+        );
+    }
     let (extra_where, extra_params) = multi_scope_track_filter_sql(
         store,
         req,
@@ -2387,9 +2419,19 @@ mod tests {
         store
             .with_conn("misc", |c| {
                 c.execute(
-                    "INSERT INTO artist (server_id, id, name, album_count, synced_at, raw_json) \
-                     VALUES (?1, ?2, ?3, ?4, 1, '{}')",
-                    rusqlite::params![server, id, name, album_count],
+                    "INSERT INTO artist (server_id, id, name, name_sort, name_fold, album_count, synced_at, raw_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, '{}')",
+                    rusqlite::params![
+                        server,
+                        id,
+                        name,
+                        crate::artist_sort::sort_key_for_display_name(
+                            name,
+                            crate::artist_sort::DEFAULT_IGNORED_ARTICLES,
+                        ),
+                        name.trim().to_lowercase(),
+                        album_count,
+                    ],
                 )
             })
             .unwrap();
@@ -3815,6 +3857,61 @@ mod tests {
         assert_eq!(
             resp.artists.iter().map(|artist| artist.id.as_str()).collect::<Vec<_>>(),
             vec!["ar_kino", "ar_kinoproby"],
+        );
+    }
+
+    #[test]
+    fn layer1_album_artist_search_matches_cyrillic_credit_case_variants() {
+        let store = LibraryStore::open_in_memory();
+        insert_artist_with_album_count(&store, "s1", "ar_kino", "Кино", Some(1));
+        insert_artist_with_album_count(&store, "s1", "ar_kinoproby", "КИНО-пробы", Some(1));
+        let mut kino = scoped_track(
+            "s1", "t-kino", "Song", "Кино", "Album", "alb-kino", "lib-a", None, None, None,
+        );
+        kino.artist_id = Some("ar_kino".into());
+        let mut kinoproby = scoped_track(
+            "s1", "t-kinoproby", "Song", "Кино-пробы", "Album", "alb-kinoproby", "lib-b", None, None, None,
+        );
+        kinoproby.artist_id = Some("ar_kinoproby".into());
+        TrackRepository::new(&store).upsert_batch(&[kino, kinoproby]).unwrap();
+        let mut r = req("s1", &[EntityKind::Artist]);
+        r.library_scopes = Some(vec![scope_pair("s1", "lib-a"), scope_pair("s1", "lib-b")]);
+        r.artist_credit_mode = Some(ArtistCreditMode::Album);
+        r.query = Some("Кино".into());
+        let resp = run_advanced_search(&store, &r).unwrap();
+
+        assert_eq!(
+            resp.artists.iter().map(|artist| artist.id.as_str()).collect::<Vec<_>>(),
+            vec!["ar_kino", "ar_kinoproby"],
+        );
+    }
+
+    #[test]
+    fn multi_server_album_artist_search_uses_album_credit_not_track_performer() {
+        let store = LibraryStore::open_in_memory();
+        insert_artist_with_album_count(&store, "s1", "ar-kino", "КИНО-пробы", Some(1));
+        insert_artist_with_album_count(&store, "s2", "ar-other", "Other", Some(1));
+        let mut sampler_track = scoped_track(
+            "s1", "t-sampler", "Song", "Guest Performer", "Tribute", "alb-tribute", "lib-a", None, None, None,
+        );
+        sampler_track.artist_id = Some("ar-guest".into());
+        sampler_track.album_artist = Some("Кино-пробы".into());
+        let mut other_track = scoped_track(
+            "s2", "t-other", "Song", "Other", "Other Album", "alb-other", "lib-b", None, None, None,
+        );
+        other_track.artist_id = Some("ar-other".into());
+        TrackRepository::new(&store)
+            .upsert_batch(&[sampler_track, other_track])
+            .unwrap();
+        let mut r = req("s1", &[EntityKind::Artist]);
+        r.library_scopes = Some(vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")]);
+        r.artist_credit_mode = Some(ArtistCreditMode::Album);
+        r.query = Some("Кино".into());
+        let resp = run_advanced_search(&store, &r).unwrap();
+
+        assert_eq!(
+            resp.artists.iter().map(|artist| artist.id.as_str()).collect::<Vec<_>>(),
+            vec!["ar-kino"],
         );
     }
 

@@ -148,14 +148,15 @@ fn upsert_artist_row(
     synced_at: i64,
 ) -> rusqlite::Result<()> {
     tx.execute(
-        "INSERT INTO artist (server_id, id, name, name_sort, album_count, synced_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+        "INSERT INTO artist (server_id, id, name, name_sort, name_fold, album_count, synced_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(server_id, id) DO UPDATE SET \
-           name = excluded.name, \
-           name_sort = excluded.name_sort, \
-           album_count = COALESCE(excluded.album_count, artist.album_count), \
-           synced_at = excluded.synced_at",
-        params![server_id, id, name, name_sort, album_count, synced_at],
+            name = excluded.name, \
+            name_sort = excluded.name_sort, \
+            name_fold = excluded.name_fold, \
+            album_count = COALESCE(excluded.album_count, artist.album_count), \
+            synced_at = excluded.synced_at",
+        params![server_id, id, name, name_sort, name.trim().to_lowercase(), album_count, synced_at],
     )?;
     Ok(())
 }

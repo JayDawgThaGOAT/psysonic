@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{functions::FunctionFlags, params, Connection, OpenFlags, OptionalExtension};
 use tauri::Manager;
 
 /// Current head of the embedded migrations. Bump each time a new
@@ -12,10 +12,11 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 21;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 22;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
+pub(crate) const ARTIST_NAME_FOLD_RECONCILE_ID: &str = "artist_name_fold_reconcile_v1";
 
 /// One-time backfill after migration 015 (`track.replay_gain_peak`).
 pub(crate) const REPLAY_GAIN_PEAK_RECONCILE_ID: &str = "replay_gain_peak_reconcile_v1";
@@ -69,6 +70,8 @@ pub(crate) const MIGRATION_020_SCOPE_BROWSE_PROJECTION: &str =
 /// Version 21: title keyset index for candidate-first scoped track browse.
 pub(crate) const MIGRATION_021_SCOPE_BROWSE_TRACKS: &str =
     include_str!("../migrations/021_scope_browse_tracks.sql");
+pub(crate) const MIGRATION_022_ARTIST_NAME_FOLD: &str =
+    include_str!("../migrations/022_artist_name_fold.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -84,6 +87,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (19, MIGRATION_019_MAINSTAGE_FEED_INDEXES),
     (20, MIGRATION_020_SCOPE_BROWSE_PROJECTION),
     (21, MIGRATION_021_SCOPE_BROWSE_TRACKS),
+    (22, MIGRATION_022_ARTIST_NAME_FOLD),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -630,6 +634,7 @@ fn remove_db_with_sidecars(path: &Path) -> Result<(), String> {
 }
 
 fn configure_write_connection(conn: &Connection) -> rusqlite::Result<()> {
+    register_sql_functions(conn)?;
     conn.busy_timeout(Duration::from_secs(30))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -639,11 +644,26 @@ fn configure_write_connection(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 fn configure_read_connection(conn: &Connection) -> rusqlite::Result<()> {
+    register_sql_functions(conn)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // Search / browse hot path on large libraries (read-only handle).
     conn.pragma_update(None, "cache_size", -64_000)?;
     Ok(())
+}
+
+/// Unicode lowercase is applied only to the grouped album credit. The persisted
+/// `artist.name_fold` remains the indexed join side, avoiding a full artist scan.
+fn register_sql_functions(conn: &Connection) -> rusqlite::Result<()> {
+    conn.create_scalar_function(
+        "psysonic_lower_name",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let name: String = ctx.get(0)?;
+            Ok(name.trim().to_lowercase())
+        },
+    )
 }
 
 fn checkpoint_wal_conn(conn: &Connection, op: &str) -> rusqlite::Result<()> {
@@ -685,6 +705,7 @@ fn open_database_connections(db_path: &Path) -> rusqlite::Result<(Connection, Co
 fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> {
     run_migrations(conn)?;
     maybe_reconcile_artist_name_sort(conn)?;
+    maybe_reconcile_artist_name_fold(conn)?;
     maybe_reconcile_replay_gain_peak(conn)?;
     maybe_reconcile_library_id_backfill(conn)?;
     maybe_reconcile_orphan_browse_rows(conn)?;
@@ -700,6 +721,17 @@ fn artist_name_sort_column_exists(conn: &Connection) -> rusqlite::Result<bool> {
     let column_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('artist') WHERE name = 'name_sort'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(column_exists > 0)
+}
+
+fn artist_name_fold_column_exists(conn: &Connection) -> rusqlite::Result<bool> {
+    let column_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('artist') WHERE name = 'name_fold'",
             [],
             |row| row.get(0),
         )
@@ -821,6 +853,49 @@ fn repair_artist_name_sort_keys(conn: &Connection) -> rusqlite::Result<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+fn artist_name_fold_reconcile_completed(conn: &Connection) -> rusqlite::Result<bool> {
+    let completed: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT completed_at FROM library_data_migration WHERE id = ?1",
+            params![ARTIST_NAME_FOLD_RECONCILE_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(completed.flatten().is_some())
+}
+
+fn maybe_reconcile_artist_name_fold(conn: &Connection) -> rusqlite::Result<()> {
+    if !artist_name_fold_column_exists(conn)? || artist_name_fold_reconcile_completed(conn)? {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare("SELECT server_id, id, name, name_fold FROM artist")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let server_id: String = row.get(0)?;
+            let id: String = row.get(1)?;
+            let name: String = row.get(2)?;
+            let current: Option<String> = row.get(3)?;
+            let expected = name.trim().to_lowercase();
+            if current.as_deref() == Some(&expected) {
+                continue;
+            }
+            tx.execute(
+                "UPDATE artist SET name_fold = ?1 WHERE server_id = ?2 AND id = ?3",
+                params![expected, server_id, id],
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO library_data_migration (id, cursor_rowid, started_at, completed_at) \
+         VALUES (?1, 0, strftime('%s','now'), strftime('%s','now')) \
+         ON CONFLICT(id) DO UPDATE SET completed_at = excluded.completed_at",
+        params![ARTIST_NAME_FOLD_RECONCILE_ID],
+    )?;
+    tx.commit()
 }
 
 fn replay_gain_peak_column_exists(conn: &Connection) -> rusqlite::Result<bool> {
@@ -1146,6 +1221,35 @@ mod tests {
             MIGRATIONS.len() as i64,
             "one schema_migrations row per embedded migration, no duplicates"
         );
+    }
+
+    #[test]
+    fn migration_022_backfills_unicode_artist_name_fold() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn("test", |conn| {
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, name_fold, synced_at) \
+                     VALUES ('s1', 'ar-kino', 'КИНО-пробы', NULL, 1)",
+                    [],
+                )?;
+                conn.execute(
+                    "DELETE FROM library_data_migration WHERE id = ?1",
+                    params![ARTIST_NAME_FOLD_RECONCILE_ID],
+                )?;
+                maybe_reconcile_artist_name_fold(conn)
+            })
+            .unwrap();
+        let name_fold: String = store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT name_fold FROM artist WHERE server_id = 's1' AND id = 'ar-kino'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(name_fold, "кино-пробы");
     }
 
     #[test]
