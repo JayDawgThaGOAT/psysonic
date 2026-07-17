@@ -293,6 +293,25 @@ export const PERF_PROBE_TOGGLE_TREE: PerfToggleGroup[] = [
         ],
       },
       {
+        id: 'mainstage-tracks',
+        label: 'Tracks (`/tracks`)',
+        children: [
+          {
+            id: 'tracks-debug-traces',
+            label: 'Debug traces',
+            children: [
+              {
+                id: 'tracksBrowseTrace',
+                label: 'Browse perf trace',
+                description:
+                  'Copy mount → local browse → list paint timings from Tracks. Enable PsyLab → Logs → Debug for correlated `tracks-browse` logs.',
+                trace: 'tracksBrowse',
+              },
+            ],
+          },
+        ],
+      },
+      {
         id: 'mainstage-albums',
         label: 'Albums (`/albums`)',
         children: [

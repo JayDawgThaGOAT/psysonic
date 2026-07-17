@@ -210,6 +210,7 @@ describe('albumDetailNavigation', () => {
       localMode: false,
       songsServerOffset: 0,
       songsHasMore: false,
+      songsBrowseCursor: null,
       genreNote: false,
       basicSearchMode: false,
       tracksBrowseMode: true,

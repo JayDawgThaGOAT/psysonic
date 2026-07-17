@@ -4,14 +4,16 @@
 //! This module serves ordinary catalogue pages from materialized/indexed rows.
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     LibraryAlbumDto, LibraryScopeBrowseEntity, LibraryScopeBrowseRequest,
-    LibraryScopeBrowseResponse, LibraryScopePair, LibrarySortClause,
+    LibraryScopeBrowseResponse, LibraryScopePair, LibrarySortClause, LibraryTrackDto,
 };
+use crate::repos::{row_to_track_row, TrackRow};
 use crate::store::LibraryStore;
 
 const CANDIDATE_PAGE_SIZE: usize = 64;
@@ -55,6 +57,26 @@ struct AlbumCandidate {
     cover_art_id: Option<String>,
     starred_at: Option<i64>,
     synced_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrackCursor {
+    scope_key: String,
+    positions: Vec<Option<TrackCursorPosition>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrackCursorPosition {
+    title: String,
+    track_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct TrackCandidate {
+    priority: usize,
+    library_id: String,
+    track: TrackRow,
+    identity_key: Option<String>,
 }
 
 fn album_sort(sort: &[LibrarySortClause]) -> Result<AlbumSort, String> {
@@ -366,6 +388,238 @@ fn browse_albums(
     })
 }
 
+fn parse_track_cursor(
+    cursor: Option<&str>,
+    scopes: &[LibraryScopePair],
+) -> Result<Option<TrackCursor>, String> {
+    let Some(raw) = cursor else {
+        return Ok(None);
+    };
+    let parsed: TrackCursor = serde_json::from_str(raw).map_err(|_| "invalid scope browse cursor")?;
+    if parsed.scope_key != scope_key(scopes) || parsed.positions.len() != scopes.len() {
+        return Err("scope browse cursor does not match the current scope".into());
+    }
+    Ok(Some(parsed))
+}
+
+fn track_cursor_position(candidate: &TrackCandidate) -> TrackCursorPosition {
+    TrackCursorPosition {
+        title: candidate.track.title.clone(),
+        track_id: candidate.track.id.clone(),
+    }
+}
+
+fn query_track_scope_candidates(
+    store: &LibraryStore,
+    pair: &LibraryScopePair,
+    priority: usize,
+    cursor_position: Option<&TrackCursorPosition>,
+    limit: usize,
+) -> Result<Vec<TrackCandidate>, String> {
+    let (seek, mut binds) = match cursor_position {
+        Some(position) => (
+            "AND (t.title COLLATE NOCASE > ? OR (t.title COLLATE NOCASE = ? AND t.id > ?))",
+            vec![
+                SqlValue::Text(position.title.clone()),
+                SqlValue::Text(position.title.clone()),
+                SqlValue::Text(position.track_id.clone()),
+            ],
+        ),
+        None => ("", Vec::new()),
+    };
+    let columns = crate::search::aliased_track_columns("t");
+    let sql = format!(
+        "SELECT {columns}, CASE WHEN ck.cluster_key IS NOT NULL \
+         THEN ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT) END \
+         FROM track t \
+         LEFT JOIN cluster.track_cluster_key ck ON ck.server_id = t.server_id AND ck.track_id = t.id \
+         WHERE t.server_id = ? AND t.library_id = ? AND t.deleted = 0 {seek} \
+         ORDER BY t.title COLLATE NOCASE ASC, t.id ASC LIMIT ?",
+    );
+    binds.splice(
+        0..0,
+        [
+            SqlValue::Text(pair.server_id.clone()),
+            SqlValue::Text(pair.library_id.clone()),
+        ],
+    );
+    binds.push(SqlValue::Integer(limit as i64));
+    store
+        .with_read_conn(|conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(binds.iter()), |row| {
+                Ok(TrackCandidate {
+                    priority,
+                    library_id: pair.library_id.clone(),
+                    track: row_to_track_row(row)?,
+                    identity_key: row.get(crate::search::track_projection_column_count())?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn track_candidate_cmp(a: &TrackCandidate, b: &TrackCandidate) -> Ordering {
+    a.track.title.to_lowercase().cmp(&b.track.title.to_lowercase())
+        .then_with(|| a.priority.cmp(&b.priority))
+        .then_with(|| a.track.server_id.cmp(&b.track.server_id))
+        .then_with(|| a.library_id.cmp(&b.library_id))
+        .then_with(|| a.track.id.cmp(&b.track.id))
+}
+
+/// Resolve the highest-priority selected scope for every identity represented
+/// in the candidate streams. This keeps cursor pages correct when the winner
+/// was consumed on an earlier page, without doing an `EXISTS` query per row.
+fn track_identity_priorities(
+    store: &LibraryStore,
+    scopes: &[LibraryScopePair],
+    candidates: &[Vec<TrackCandidate>],
+) -> Result<HashMap<String, usize>, String> {
+    let identities = candidates
+        .iter()
+        .flatten()
+        .filter_map(|candidate| candidate.identity_key.clone())
+        .collect::<HashSet<_>>();
+    if identities.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let scope_values = scopes
+        .iter()
+        .enumerate()
+        .map(|(priority, _)| format!("(?, ?, {priority})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let placeholders = (0..identities.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let identity_sql = "ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT)";
+    let sql = format!(
+        "WITH scope(server_id, library_id, priority) AS (VALUES {scope_values}) \
+         SELECT {identity_sql}, MIN(scope.priority) \
+         FROM scope \
+         INNER JOIN cluster.track_cluster_key ck \
+           ON ck.server_id = scope.server_id AND ck.library_id = scope.library_id \
+         INNER JOIN track t ON t.server_id = ck.server_id AND t.id = ck.track_id \
+         WHERE t.deleted = 0 AND {identity_sql} IN ({placeholders}) \
+         GROUP BY {identity_sql}",
+    );
+    let mut binds = Vec::with_capacity(scopes.len() * 2 + identities.len());
+    for scope in scopes {
+        binds.push(SqlValue::Text(scope.server_id.clone()));
+        binds.push(SqlValue::Text(scope.library_id.clone()));
+    }
+    binds.extend(identities.into_iter().map(SqlValue::Text));
+    store
+        .with_read_conn(|conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(binds.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })?;
+            rows.collect::<rusqlite::Result<HashMap<_, _>>>()
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn browse_tracks(
+    store: &LibraryStore,
+    request: &LibraryScopeBrowseRequest,
+) -> Result<LibraryScopeBrowseResponse, String> {
+    if !request.sort.is_empty() && request.sort.iter().any(|clause| clause.field != "title") {
+        return Err("unsupported scope browse track sort".into());
+    }
+    let cursor = parse_track_cursor(request.cursor.as_deref(), &request.scopes)?;
+    // Initial browse ensures a newly synced scope has identity rows. Cursor
+    // pages reuse that prepared snapshot and must stay read-only hot paths.
+    if cursor.is_none() {
+        crate::scope_merge::ensure_cluster_keys_for_scopes(store, &request.scopes)?;
+    }
+    let limit = request.limit.clamp(1, 200) as usize;
+    let candidate_limit = CANDIDATE_PAGE_SIZE.max(limit.saturating_add(1));
+    let mut candidates = Vec::with_capacity(request.scopes.len());
+    let mut stream_exhausted = Vec::with_capacity(request.scopes.len());
+    for (priority, scope) in request.scopes.iter().enumerate() {
+        let stream = query_track_scope_candidates(
+            store,
+            scope,
+            priority,
+            cursor.as_ref().and_then(|cursor| cursor.positions.get(priority)).and_then(Option::as_ref),
+            candidate_limit,
+        )?;
+        stream_exhausted.push(stream.len() < candidate_limit);
+        candidates.push(stream);
+    }
+    let mut identity_priorities = track_identity_priorities(store, &request.scopes, &candidates)?;
+
+    let mut tracks = Vec::with_capacity(limit);
+    let mut offsets = vec![0usize; candidates.len()];
+    let mut positions = cursor
+        .map(|cursor| cursor.positions)
+        .unwrap_or_else(|| vec![None; request.scopes.len()]);
+    while tracks.len() < limit {
+        for scope_index in 0..candidates.len() {
+            if offsets[scope_index] < candidates[scope_index].len() || stream_exhausted[scope_index] {
+                continue;
+            }
+            let stream = query_track_scope_candidates(
+                store,
+                &request.scopes[scope_index],
+                scope_index,
+                positions[scope_index].as_ref(),
+                candidate_limit,
+            )?;
+            stream_exhausted[scope_index] = stream.len() < candidate_limit;
+            candidates[scope_index] = stream;
+            offsets[scope_index] = 0;
+            identity_priorities = track_identity_priorities(store, &request.scopes, &candidates)?;
+        }
+        let next_scope = candidates
+            .iter()
+            .enumerate()
+            .filter(|(index, stream)| offsets[*index] < stream.len())
+            .min_by(|(left_index, left_stream), (right_index, right_stream)| {
+                track_candidate_cmp(
+                    &left_stream[offsets[*left_index]],
+                    &right_stream[offsets[*right_index]],
+                )
+            })
+            .map(|(index, _)| index);
+        let Some(scope_index) = next_scope else { break; };
+        let candidate = &candidates[scope_index][offsets[scope_index]];
+        offsets[scope_index] += 1;
+        positions[scope_index] = Some(track_cursor_position(candidate));
+        if let Some(identity_key) = candidate.identity_key.as_deref() {
+            if identity_priorities
+                .get(identity_key)
+                .is_some_and(|priority| *priority < candidate.priority)
+            {
+                continue;
+            }
+        }
+        tracks.push(LibraryTrackDto::from_row(&candidate.track));
+    }
+    let has_more = candidates
+        .iter()
+        .enumerate()
+        .any(|(index, stream)| offsets[index] < stream.len() || !stream_exhausted[index]);
+    let next_cursor = has_more.then(|| {
+        serde_json::to_string(&TrackCursor {
+            scope_key: scope_key(&request.scopes),
+            positions,
+        })
+        .expect("scope browse cursor serializes")
+    });
+    Ok(LibraryScopeBrowseResponse {
+        albums: Vec::new(),
+        artists: Vec::new(),
+        tracks,
+        next_cursor,
+        has_more,
+        source: "local".into(),
+    })
+}
+
 pub fn browse(
     store: &LibraryStore,
     request: &LibraryScopeBrowseRequest,
@@ -373,12 +627,15 @@ pub fn browse(
     if request.scopes.is_empty() {
         return Err("scope browse requires at least one library scope".into());
     }
-    if !crate::browse_projection::is_ready(store)? {
-        return Err("scope browse projection is not ready".into());
-    }
     match request.entity {
-        LibraryScopeBrowseEntity::Album => browse_albums(store, request),
-        _ => Err("scope browse entity is not implemented yet".into()),
+        LibraryScopeBrowseEntity::Album => {
+            if !crate::browse_projection::is_ready(store)? {
+                return Err("scope browse projection is not ready".into());
+            }
+            browse_albums(store, request)
+        }
+        LibraryScopeBrowseEntity::Track => browse_tracks(store, request),
+        LibraryScopeBrowseEntity::Artist => Err("scope browse entity is not implemented yet".into()),
     }
 }
 
@@ -397,6 +654,42 @@ mod tests {
             limit,
             cursor,
         }
+    }
+
+    fn track_request(scopes: Vec<LibraryScopePair>, limit: u32, cursor: Option<String>) -> LibraryScopeBrowseRequest {
+        LibraryScopeBrowseRequest {
+            entity: LibraryScopeBrowseEntity::Track,
+            scopes,
+            sort: vec![LibrarySortClause { field: "title".into(), dir: crate::dto::SortDir::Asc }],
+            limit,
+            cursor,
+        }
+    }
+
+    fn insert_track(
+        store: &LibraryStore,
+        server_id: &str,
+        library_id: &str,
+        track_id: &str,
+        title: &str,
+        cluster_key: Option<&str>,
+    ) {
+        store.with_conn_mut("test.scope_browse.track_seed", |conn| {
+            conn.execute(
+                "INSERT INTO track (server_id, id, title, artist, album, library_id, synced_at, raw_json) \
+                 VALUES (?1, ?2, ?3, 'Artist', 'Album', ?4, 1, '{}')",
+                rusqlite::params![server_id, track_id, title, library_id],
+            )?;
+            if let Some(cluster_key) = cluster_key {
+                conn.execute(
+                    "INSERT INTO cluster.track_cluster_key \
+                     (server_id, library_id, track_id, cluster_key, duration_sec) \
+                     VALUES (?1, ?2, ?3, ?4, 100)",
+                    rusqlite::params![server_id, library_id, track_id, cluster_key],
+                )?;
+            }
+            Ok(())
+        }).unwrap();
     }
 
     fn insert_projection(
@@ -464,5 +757,69 @@ mod tests {
             second.albums.iter().map(|album| album.name.as_str()).collect::<Vec<_>>(),
             vec!["Charlie", "Delta"],
         );
+    }
+
+    #[test]
+    fn track_priority_scope_wins_even_when_its_duplicate_sorts_later() {
+        let store = LibraryStore::open_in_memory();
+        insert_track(&store, "high", "lib", "high-dup", "Same", Some("same"));
+        insert_track(&store, "low", "lib", "low-dup", "Same", Some("same"));
+        insert_track(&store, "low", "lib", "low-unique", "Bravo", Some("other"));
+        let response = browse(&store, &track_request(vec![
+            LibraryScopePair { server_id: "high".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "low".into(), library_id: "lib".into() },
+        ], 10, None)).unwrap();
+
+        assert_eq!(
+            response.tracks.iter().map(|track| track.id.as_str()).collect::<Vec<_>>(),
+            vec!["low-unique", "high-dup"],
+        );
+    }
+
+    #[test]
+    fn track_cursor_keeps_each_scope_position_without_skipping_tied_global_order() {
+        let store = LibraryStore::open_in_memory();
+        insert_track(&store, "a", "lib", "a-bravo", "Bravo", None);
+        insert_track(&store, "a", "lib", "a-delta", "Delta", None);
+        insert_track(&store, "b", "lib", "b-alpha", "Alpha", None);
+        insert_track(&store, "b", "lib", "b-charlie", "Charlie", None);
+        let scopes = vec![
+            LibraryScopePair { server_id: "a".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "b".into(), library_id: "lib".into() },
+        ];
+
+        let first = browse(&store, &track_request(scopes.clone(), 2, None)).unwrap();
+        assert_eq!(
+            first.tracks.iter().map(|track| track.title.as_str()).collect::<Vec<_>>(),
+            vec!["Alpha", "Bravo"],
+        );
+        let second = browse(&store, &track_request(scopes, 2, first.next_cursor)).unwrap();
+        assert_eq!(
+            second.tracks.iter().map(|track| track.title.as_str()).collect::<Vec<_>>(),
+            vec!["Charlie", "Delta"],
+        );
+    }
+
+    #[test]
+    fn track_priority_dedup_holds_across_cursor_pages() {
+        let store = LibraryStore::open_in_memory();
+        insert_track(&store, "high", "lib", "high-dup", "Same", Some("same"));
+        insert_track(&store, "low", "lib", "low-dup", "Same", Some("same"));
+        let scopes = vec![
+            LibraryScopePair { server_id: "high".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "low".into(), library_id: "lib".into() },
+        ];
+
+        let candidates = vec![
+            query_track_scope_candidates(&store, &scopes[0], 0, None, 10).unwrap(),
+            query_track_scope_candidates(&store, &scopes[1], 1, None, 10).unwrap(),
+        ];
+        assert_eq!(track_identity_priorities(&store, &scopes, &candidates).unwrap().get("same:20"), Some(&0));
+
+        let first = browse(&store, &track_request(scopes.clone(), 1, None)).unwrap();
+        assert_eq!(first.tracks.iter().map(|track| track.id.as_str()).collect::<Vec<_>>(), vec!["high-dup"]);
+        let second = browse(&store, &track_request(scopes, 1, first.next_cursor)).unwrap();
+        assert!(second.tracks.is_empty());
+        assert!(!second.has_more);
     }
 }

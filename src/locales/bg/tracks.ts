@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'Намерете песен по заглавие, изпълнител или албум…',
   count_one: '{{count}} песен',
   count_other: '{{count}} песни',
+  copyDiagnostics: 'Копиране на отчет за времето',
 };

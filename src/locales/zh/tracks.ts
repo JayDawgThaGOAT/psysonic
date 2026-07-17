@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: '按标题、艺人或专辑搜索…',
   count_one: '{{count}} 首曲目',
   count_other: '{{count}} 首曲目',
+  copyDiagnostics: '复制耗时报告',
 };

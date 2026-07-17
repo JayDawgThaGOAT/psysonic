@@ -5,6 +5,7 @@ import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useSongBrowseList } from '@/features/search/hooks/useSongBrowseList';
 import { useAuthStore } from '@/store/authStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
+import { runLocalSongScopeBrowse } from '@/lib/library/advancedSearchLocal';
 
 vi.mock('@/lib/api/subsonicSearch', () => ({
   searchSongsPaged: vi.fn(async () => []),
@@ -16,6 +17,7 @@ vi.mock('@/lib/api/navidromeBrowse', () => ({
 
 vi.mock('@/lib/library/advancedSearchLocal', () => ({
   runLocalSongBrowse: vi.fn(async () => []),
+  runLocalSongScopeBrowse: vi.fn(async () => null),
 }));
 
 // Only the reload-token hook was stubbed pre-move (its own module); mock that
@@ -53,6 +55,7 @@ describe('useSongBrowseList restore hold', () => {
           songs: [stashedSong],
           offset: 1,
           hasMore: false,
+          browseCursor: null,
           localSearchMode: true,
           browseUnsupported: false,
           hasSearched: true,
@@ -72,5 +75,35 @@ describe('useSongBrowseList restore hold', () => {
     await waitFor(() => {
       expect(result.current.songs[0]?.id).toBe('fresh');
     }, { timeout: 500 });
+  });
+});
+
+describe('useSongBrowseList scoped browse', () => {
+  beforeEach(() => {
+    useAuthStore.setState({ activeServerId: 'srv-1' });
+    useLibraryIndexStore.setState({ masterEnabled: true });
+    vi.mocked(runLocalSongScopeBrowse).mockReset();
+  });
+
+  it('continues the ordinary Tracks catalogue with its opaque scoped cursor', async () => {
+    vi.mocked(runLocalSongScopeBrowse)
+      .mockResolvedValueOnce({
+        songs: [{ id: 'one', title: 'One', artist: 'A', duration: 60 } as SubsonicSong],
+        hasMore: true,
+        nextCursor: 'cursor-1',
+      })
+      .mockResolvedValueOnce({
+        songs: [{ id: 'two', title: 'Two', artist: 'A', duration: 60 } as SubsonicSong],
+        hasMore: false,
+        nextCursor: null,
+      });
+    const { result } = renderHook(() => useSongBrowseList({ enabled: true, searchQuery: '' }));
+
+    await waitFor(() => expect(result.current.songs.map(song => song.id)).toEqual(['one']));
+    void result.current.loadMore();
+    await waitFor(() => expect(result.current.songs.map(song => song.id)).toEqual(['one', 'two']));
+    expect(runLocalSongScopeBrowse).toHaveBeenNthCalledWith(1, 'srv-1', 50, null);
+    expect(runLocalSongScopeBrowse).toHaveBeenNthCalledWith(2, 'srv-1', 50, 'cursor-1');
+    expect(result.current.hasMore).toBe(false);
   });
 });

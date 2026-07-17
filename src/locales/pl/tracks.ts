@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'Znajdź utwór po tytule, wykonawcy lub albumie…',
   count_one: '{{count}} utwór',
   count_other: '{{count}} utwory',
+  copyDiagnostics: 'Kopiuj raport czasu',
 };

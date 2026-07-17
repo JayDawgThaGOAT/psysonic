@@ -13,6 +13,7 @@
  */
 import {
   libraryAdvancedSearch,
+  libraryScopeBrowse,
   type LibraryAdvancedSearchRequest,
   type LibraryAlbumDto,
   type LibraryArtistDto,
@@ -32,6 +33,7 @@ import { albumIsCompilation } from './albumCompilation';
 import { OXIMEDIA_MOOD_SEARCH_ENABLED } from './trackEnrichment';
 import { trackToSong } from './trackDtoMapping';
 import { getLibraryBrowseScope } from './libraryBrowseScope';
+import { trackBrowseTimed } from './trackBrowseDebug';
 
 export { resolveTrackCoverArtId, trackToSong } from './trackDtoMapping';
 
@@ -352,6 +354,44 @@ export async function runLocalSongBrowse(
     });
     if (resp.source !== 'local') return null;
     return resp.tracks.map(trackToSong);
+  } catch {
+    return null;
+  }
+}
+
+/** Indexed candidate-first page for the ordinary unfiltered Tracks catalogue. */
+export async function runLocalSongScopeBrowse(
+  serverId: string | null | undefined,
+  pageSize: number,
+  cursor?: string | null,
+): Promise<{ songs: SubsonicSong[]; hasMore: boolean; nextCursor?: string | null } | null> {
+  if (!serverId) return null;
+  const ready = await trackBrowseTimed(
+    'library_is_ready',
+    () => libraryIsReady(serverId),
+    { serverId },
+  );
+  if (!ready) return null;
+  const scope = getLibraryBrowseScope();
+  if (scope.pairs.length === 0) return null;
+  try {
+    const response = await trackBrowseTimed(
+      'scope_browse',
+      () => libraryScopeBrowse(serverId, {
+        entity: 'track',
+        scopes: scope.pairs,
+        sort: [{ field: 'title', dir: 'asc' }],
+        limit: pageSize,
+        cursor,
+      }),
+      { scopeCount: scope.pairs.length, limit: pageSize, cursor: cursor != null },
+    );
+    if (response.source !== 'local') return null;
+    return {
+      songs: response.tracks.map(trackToSong),
+      hasMore: response.hasMore,
+      nextCursor: response.nextCursor,
+    };
   } catch {
     return null;
   }

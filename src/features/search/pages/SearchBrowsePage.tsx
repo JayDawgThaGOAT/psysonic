@@ -1,7 +1,7 @@
 import { getGenres } from '@/lib/api/subsonicGenres';
 import type { SubsonicGenre } from '@/lib/api/subsonicTypes';
 import type { ResultType, SearchOpts, Results } from '@/features/search/searchBrowseTypes';
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom';
 import { SlidersVertical, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +45,15 @@ import {
   useScopedBrowseSearchQuery,
 } from '@/store/liveSearchScopeStore';
 import { useOfflineBrowseContext } from '@/features/offline';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import {
+  beginTrackBrowseTrace,
+  emitTrackBrowseDebug,
+  formatTrackBrowseTraceReport,
+  getTrackBrowseTraceSnapshot,
+  subscribeTrackBrowseTrace,
+} from '@/lib/library/trackBrowseDebug';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 
 const MOOD_UI_ENABLED = OXIMEDIA_MOOD_SEARCH_ENABLED;
 
@@ -59,6 +68,12 @@ function peekAdvancedSearchRestoreStash(
 /** Shared shell for `/search`, `/search/advanced`, and `/tracks` (pathname picks chrome). */
 export default function SearchBrowsePage() {
   const perfFlags = usePerfProbeFlags();
+  const tracksBrowseDiagnosticsEnabled = usePsyLabDebugTraces().tracksBrowse;
+  const trackTraceEntries = useSyncExternalStore(
+    subscribeTrackBrowseTrace,
+    getTrackBrowseTraceSnapshot,
+    getTrackBrowseTraceSnapshot,
+  );
   const { t } = useTranslation();
   const navigationType = useNavigationType();
   const location = useLocation();
@@ -105,6 +120,7 @@ export default function SearchBrowsePage() {
     () => restoreStash?.basicSearchMode ?? (!showAdvancedPanel && !showTracksChrome),
   );
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const serverId = useAuthStore(s => s.activeServerId);
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
   const offlineBrowseActive = useOfflineBrowseContext().active;
@@ -120,6 +136,7 @@ export default function SearchBrowsePage() {
           songs: restoreStash.results?.songs ?? [],
           offset: restoreStash.songsServerOffset,
           hasMore: restoreStash.songsHasMore,
+          browseCursor: restoreStash.songsBrowseCursor,
           localSearchMode: restoreStash.localMode,
           browseUnsupported: restoreStash.tracksBrowseUnsupported ?? false,
           hasSearched: restoreStash.hasSearched,
@@ -146,6 +163,57 @@ export default function SearchBrowsePage() {
     searchQuery: tracksSearchQuery,
     initialRestore: songBrowseInitialRestore,
   });
+  const trackListPaintedCountRef = useRef(0);
+
+  useLayoutEffect(() => {
+    if (!showTracksChrome) return;
+    beginTrackBrowseTrace({
+      serverId,
+      indexEnabled,
+      libraryScopeCount: getLibraryBrowseScope().pairs.length,
+      offlineBrowseActive,
+    });
+    return () => emitTrackBrowseDebug('page_unmount');
+  }, [showTracksChrome, serverId, indexEnabled, offlineBrowseActive, musicLibraryFilterVersion, libraryBrowseScopeVersion]);
+
+  useLayoutEffect(() => {
+    if (!showTracksChrome) return;
+    if (songBrowse.songs.length === 0) {
+      trackListPaintedCountRef.current = 0;
+      return;
+    }
+    if (songBrowse.loading) return;
+    const previousCount = trackListPaintedCountRef.current;
+    emitTrackBrowseDebug(previousCount === 0 ? 'list_first_paint' : 'list_expanded', {
+      songCount: songBrowse.songs.length,
+      previousCount,
+      searchActive: tracksSearchActive,
+    });
+    trackListPaintedCountRef.current = songBrowse.songs.length;
+  }, [showTracksChrome, songBrowse.songs.length, songBrowse.loading, tracksSearchActive]);
+
+  const copyTrackBrowseDiagnostics = async () => {
+    const text = formatTrackBrowseTraceReport({
+      route: '/tracks',
+      serverId,
+      indexEnabled,
+      libraryScopeCount: getLibraryBrowseScope().pairs.length,
+      offlineBrowseActive,
+      searchActive: tracksSearchActive,
+      loading: songBrowse.loading,
+      hasMore: songBrowse.hasMore,
+      localSearchMode: songBrowse.localSearchMode,
+      songCount: songBrowse.songs.length,
+      offset: songBrowse.offset,
+      cursor: songBrowse.browseCursor != null,
+      traceEntryCount: trackTraceEntries.length,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
 
   const restoringSession =
     shouldRestoreAdvancedSearchSession(navigationType, location.state) || restoreStash != null;
@@ -227,6 +295,7 @@ export default function SearchBrowsePage() {
     localMode: false,
     songsServerOffset: 0,
     songsHasMore: false,
+    songsBrowseCursor: null,
     genreNote: false,
     basicSearchMode: false,
     tracksBrowseMode: false,
@@ -253,6 +322,7 @@ export default function SearchBrowsePage() {
     localMode: showTracksChrome ? songBrowse.localSearchMode : localMode,
     songsServerOffset: showTracksChrome ? songBrowse.offset : songsServerOffset,
     songsHasMore: showTracksChrome ? songBrowse.hasMore : songsHasMore,
+    songsBrowseCursor: showTracksChrome ? songBrowse.browseCursor : null,
     genreNote,
     basicSearchMode: showTracksChrome ? false : basicSearchMode,
     tracksBrowseMode: showTracksChrome,
@@ -500,6 +570,17 @@ export default function SearchBrowsePage() {
       <div className={showTracksChrome ? 'tracks-hub-stack' : undefined}>
       {showTracksChrome ? (
         <>
+          {tracksBrowseDiagnosticsEnabled && (
+            <div className="mainstage-diagnostic-copy-all">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void copyTrackBrowseDiagnostics()}
+              >
+                {t('tracks.copyDiagnostics')}
+              </button>
+            </div>
+          )}
           <TracksPageChrome
             hideDiscoveryChrome={tracksDiscoveryHidden}
             onLayoutReady={

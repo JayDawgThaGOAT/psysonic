@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'タイトル、アーティスト、アルバムでトラックを検索…',
   count_one: '{{count}} 曲',
   count_other: '{{count}} 曲',
+  copyDiagnostics: '時間レポートをコピー',
 };

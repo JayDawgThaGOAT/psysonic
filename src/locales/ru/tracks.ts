@@ -15,4 +15,5 @@ export const tracks = {
   count_few: '{{count}} трека',
   count_many: '{{count}} треков',
   count_other: '{{count}} треков',
+  copyDiagnostics: 'Копировать отчёт времени',
 };

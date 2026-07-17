@@ -7,6 +7,7 @@ import {
   resolveTrackCoverArtId,
   runLocalAdvancedSearch,
   runLocalSongBrowse,
+  runLocalSongScopeBrowse,
   runNetworkAdvancedYearAlbums,
   trackToSong,
   tryRunLocalAdvancedSearch,
@@ -324,6 +325,31 @@ describe('runLocalSongBrowse', () => {
       throw new Error('boom');
     });
     expect(await runLocalSongBrowse('s1', 0, 50)).toBeNull();
+  });
+
+  it('uses the scoped cursor reader for an ordinary selected-library browse', async () => {
+    useAuthStore.setState({
+      servers: [{ id: 's1', name: 'Server', url: '', username: '', password: '' }],
+      libraryBrowseServerIds: ['s1'],
+      musicFoldersByServer: { s1: [{ id: 'lib1', name: 'Library' }] },
+      libraryBrowseSelectionByServer: {},
+    });
+    ready();
+    let captured: unknown;
+    onInvoke('library_scope_browse', args => {
+      captured = args;
+      return {
+        albums: [], artists: [],
+        tracks: [{ serverId: 's1', id: 't1', title: 'Song', album: 'Album', durationSec: 100, syncedAt: 1, rawJson: {} }],
+        hasMore: true, nextCursor: 'next', source: 'local',
+      };
+    });
+    const page = await runLocalSongScopeBrowse('s1', 50);
+    expect(page?.songs).toHaveLength(1);
+    expect(page?.nextCursor).toBe('next');
+    expect(captured).toEqual(expect.objectContaining({
+      request: expect.objectContaining({ entity: 'track', limit: 50 }),
+    }));
   });
 });
 

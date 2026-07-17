@@ -33,6 +33,8 @@ export type AdvancedSearchSessionStash = AdvancedSearchFormStash & {
   localMode: boolean;
   songsServerOffset: number;
   songsHasMore: boolean;
+  /** Opaque local Tracks browse cursor; absent for search and network pages. */
+  songsBrowseCursor?: string | null;
   genreNote: boolean;
   /** `/search?q=` quick results (no advanced filter panel). */
   basicSearchMode: boolean;

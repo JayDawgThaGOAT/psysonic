@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 20;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 21;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -66,6 +66,9 @@ pub(crate) const MIGRATION_019_MAINSTAGE_FEED_INDEXES: &str =
 /// Version 20: materialized per-library album rows for keyset scope browse.
 pub(crate) const MIGRATION_020_SCOPE_BROWSE_PROJECTION: &str =
     include_str!("../migrations/020_scope_browse_projection.sql");
+/// Version 21: title keyset index for candidate-first scoped track browse.
+pub(crate) const MIGRATION_021_SCOPE_BROWSE_TRACKS: &str =
+    include_str!("../migrations/021_scope_browse_tracks.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -80,6 +83,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (18, MIGRATION_018_ARTIST_SYNCED_INDEX),
     (19, MIGRATION_019_MAINSTAGE_FEED_INDEXES),
     (20, MIGRATION_020_SCOPE_BROWSE_PROJECTION),
+    (21, MIGRATION_021_SCOPE_BROWSE_TRACKS),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so

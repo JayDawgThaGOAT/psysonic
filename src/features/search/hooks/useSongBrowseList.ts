@@ -2,7 +2,7 @@ import { searchSongsPaged } from '@/lib/api/subsonicSearch';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ndListSongs } from '@/lib/api/navidromeBrowse';
-import { runLocalSongBrowse } from '@/lib/library/advancedSearchLocal';
+import { runLocalSongBrowse, runLocalSongScopeBrowse } from '@/lib/library/advancedSearchLocal';
 import {
   BROWSE_TEXT_DEBOUNCE_NETWORK_MS,
   BROWSE_TEXT_DEBOUNCE_RACE_MS,
@@ -23,20 +23,62 @@ import {
 } from '@/features/offline';
 import { useOfflineLocalBrowseReloadKey } from '@/store/localPlaybackBrowseRevision';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { emitTrackBrowseDebug, trackBrowseTimed } from '@/lib/library/trackBrowseDebug';
 
 const PAGE_SIZE = 50;
+
+type BrowseAllPage = {
+  songs: SubsonicSong[];
+  hasMore: boolean;
+  local: boolean;
+  nextCursor?: string | null;
+};
+
+const browseAllPageInflight = new Map<string, Promise<BrowseAllPage>>();
 
 async function fetchBrowseAllPage(
   serverId: string | null | undefined,
   offset: number,
-): Promise<SubsonicSong[]> {
-  const local = await runLocalSongBrowse(serverId, offset, PAGE_SIZE);
-  if (local) return local;
-  try {
-    return await ndListSongs(offset, offset + PAGE_SIZE, 'title', 'ASC');
-  } catch {
-    return searchSongsPaged('', PAGE_SIZE, offset);
-  }
+  cursor?: string | null,
+): Promise<BrowseAllPage> {
+  const scopeFingerprint = getLibraryBrowseScope().fingerprint;
+  const key = `${serverId ?? ''}\u0001${scopeFingerprint}\u0001${offset}\u0001${cursor ?? ''}`;
+  const existing = browseAllPageInflight.get(key);
+  if (existing) return existing;
+  const request = (async (): Promise<BrowseAllPage> => {
+    const scoped = await trackBrowseTimed(
+      'local_scope_page',
+      () => runLocalSongScopeBrowse(serverId, PAGE_SIZE, cursor),
+      { offset, cursor: cursor != null },
+    );
+    if (scoped) return { ...scoped, local: true };
+    const local = await trackBrowseTimed(
+      'local_advanced_page',
+      () => runLocalSongBrowse(serverId, offset, PAGE_SIZE),
+      { offset },
+    );
+    if (local) return { songs: local, hasMore: local.length === PAGE_SIZE, local: true };
+    try {
+      const songs = await trackBrowseTimed(
+        'network_navidrome_page',
+        () => ndListSongs(offset, offset + PAGE_SIZE, 'title', 'ASC'),
+        { offset },
+      );
+      return { songs, hasMore: songs.length === PAGE_SIZE, local: false };
+    } catch {
+      const songs = await trackBrowseTimed(
+        'network_search_page',
+        () => searchSongsPaged('', PAGE_SIZE, offset),
+        { offset },
+      );
+      return { songs, hasMore: songs.length === PAGE_SIZE, local: false };
+    }
+  })();
+  browseAllPageInflight.set(key, request);
+  void request.finally(() => {
+    if (browseAllPageInflight.get(key) === request) browseAllPageInflight.delete(key);
+  });
+  return request;
 }
 
 export type SongBrowseListRestore = {
@@ -44,6 +86,7 @@ export type SongBrowseListRestore = {
   songs: SubsonicSong[];
   offset: number;
   hasMore: boolean;
+  browseCursor?: string | null;
   localSearchMode: boolean;
   browseUnsupported: boolean;
   hasSearched: boolean;
@@ -76,6 +119,9 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
   const [offset, setOffset] = useState(() => initialRestore?.offset ?? 0);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(() => initialRestore?.hasMore ?? true);
+  const [browseCursor, setBrowseCursor] = useState<string | null>(
+    () => initialRestore?.browseCursor ?? null,
+  );
   const [browseUnsupported, setBrowseUnsupported] = useState(
     () => initialRestore?.browseUnsupported ?? false,
   );
@@ -83,6 +129,8 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
 
   const requestSeqRef = useRef(0);
   const localSearchModeRef = useRef(initialRestore?.localSearchMode ?? false);
+  const browseCursorRef = useRef<string | null>(initialRestore?.browseCursor ?? null);
+  const browsePageMetaRef = useRef<{ hasMore: boolean; local: boolean }>({ hasMore: true, local: false });
   /** Keep stashed songs until the user edits the scoped query (survives fetchSongPage identity changes). */
   const holdRestoredListRef = useRef(initialRestore != null);
   const heldRestoredQueryRef = useRef(initialRestore?.query.trim() ?? '');
@@ -114,7 +162,12 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
       }
 
       if (q === '') {
-        return fetchBrowseAllPage(serverId, pageOffset);
+        const page = await fetchBrowseAllPage(serverId, pageOffset, browseCursorRef.current);
+        browseCursorRef.current = page.nextCursor ?? null;
+        setBrowseCursor(browseCursorRef.current);
+        browsePageMetaRef.current = { hasMore: page.hasMore, local: page.local };
+        localSearchModeRef.current = page.local;
+        return page.songs;
       }
 
       if (pageOffset === 0 && indexEnabled && serverId) {
@@ -177,10 +230,19 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
     setHasMore(true);
     setBrowseUnsupported(false);
     localSearchModeRef.current = false;
+    browseCursorRef.current = null;
+    setBrowseCursor(null);
+    browsePageMetaRef.current = { hasMore: true, local: false };
 
     const seq = ++requestSeqRef.current;
     const isStale = () => cancelled || seq !== requestSeqRef.current;
     setLoading(true);
+    emitTrackBrowseDebug('load_effect_start', {
+      queryActive: debouncedQuery !== '',
+      serverId,
+      indexEnabled,
+      offset: 0,
+    });
     void (async () => {
       try {
         const page = await fetchSongPage(debouncedQuery, 0, isStale);
@@ -191,10 +253,21 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
         } else {
           setSongs(page);
           setOffset(page.length);
-          if (page.length < PAGE_SIZE) setHasMore(false);
+          if (debouncedQuery === '') {
+            setHasMore(browsePageMetaRef.current.hasMore);
+          } else if (page.length < PAGE_SIZE) {
+            setHasMore(false);
+          }
         }
         setHasSearched(true);
+        emitTrackBrowseDebug('load_effect_done', {
+          queryActive: debouncedQuery !== '',
+          songCount: page.length,
+          hasMore: debouncedQuery === '' ? browsePageMetaRef.current.hasMore : page.length === PAGE_SIZE,
+          local: localSearchModeRef.current,
+        });
       } catch {
+        emitTrackBrowseDebug('load_effect_error', { queryActive: debouncedQuery !== '' });
         if (!isStale()) setHasMore(false);
       } finally {
         if (!isStale()) setLoading(false);
@@ -204,13 +277,18 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, searchQuery, fetchSongPage, enabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseReloadTs, offlineLocalBrowseReloadKey]);
+  }, [debouncedQuery, searchQuery, fetchSongPage, enabled, indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseReloadTs, offlineLocalBrowseReloadKey, serverId]);
 
   const loadMore = useCallback(async () => {
     if (!enabled || loading || !hasMore) return;
     setLoading(true);
     const seq = ++requestSeqRef.current;
     const isStale = () => seq !== requestSeqRef.current;
+    emitTrackBrowseDebug('load_more_start', {
+      queryActive: debouncedQuery !== '',
+      offset,
+      cursor: browseCursorRef.current != null,
+    });
     try {
       const page = await fetchSongPage(debouncedQuery, offset, isStale);
       if (isStale()) return;
@@ -224,9 +302,20 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
           return merged;
         });
         setOffset(o => o + page.length);
-        if (page.length < PAGE_SIZE) setHasMore(false);
+        if (debouncedQuery === '') {
+          setHasMore(browsePageMetaRef.current.hasMore);
+        } else if (page.length < PAGE_SIZE) {
+          setHasMore(false);
+        }
+        emitTrackBrowseDebug('load_more_done', {
+          queryActive: debouncedQuery !== '',
+          pageSongCount: page.length,
+          hasMore: debouncedQuery === '' ? browsePageMetaRef.current.hasMore : page.length === PAGE_SIZE,
+          local: localSearchModeRef.current,
+        });
       }
     } catch {
+      emitTrackBrowseDebug('load_more_error', { queryActive: debouncedQuery !== '' });
       setHasMore(false);
     } finally {
       if (!isStale()) setLoading(false);
@@ -238,6 +327,7 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
   return {
     songs,
     offset,
+    browseCursor,
     loading,
     hasMore,
     browseUnsupported,

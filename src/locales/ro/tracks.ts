@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'Găsește o piesă după titlu, artist sau album…',
   count_one: '{{count}} piesă',
   count_other: '{{count}} piese',
+  copyDiagnostics: 'Copiază raportul de timp',
 };
