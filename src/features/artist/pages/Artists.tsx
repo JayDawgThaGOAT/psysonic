@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useLayoutEffect } from 'react';
+import { useEffect, useState, useCallback, useRef, useLayoutEffect, useSyncExternalStore } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { LayoutGrid, List, Images } from 'lucide-react';
 import SelectionToggleButton from '@/ui/SelectionToggleButton';
@@ -46,8 +46,12 @@ import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import {
   beginArtistsBrowseTrace,
   emitArtistsBrowseDebug,
+  formatArtistBrowseTraceReport,
+  getArtistBrowseTraceSnapshot,
+  subscribeArtistBrowseTrace,
 } from '@/lib/library/artistBrowseDebug';
 import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 
 function artistEntityKey(artist: { id: string; serverId?: string }): string {
   return artist.serverId ? `${artist.serverId}:${artist.id}` : artist.id;
@@ -55,6 +59,12 @@ function artistEntityKey(artist: { id: string; serverId?: string }): string {
 
 export default function Artists() {
   const perfFlags = usePerfProbeFlags();
+  const artistsBrowseDiagnosticsEnabled = usePsyLabDebugTraces().artistsBrowse;
+  const artistTraceEntries = useSyncExternalStore(
+    subscribeArtistBrowseTrace,
+    getArtistBrowseTraceSnapshot,
+    getArtistBrowseTraceSnapshot,
+  );
   const { t } = useTranslation();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
@@ -375,6 +385,30 @@ export default function Artists() {
     textSearchArtists?.[0]?.id ?? '',
   ].join('\0');
 
+  const copyArtistBrowseDiagnostics = async () => {
+    const text = formatArtistBrowseTraceReport({
+      route: '/artists',
+      serverId,
+      indexEnabled,
+      libraryScopeCount: librarySelectionForServer(serverId).length,
+      creditMode,
+      letterFilter,
+      starredOnly,
+      viewMode,
+      loading,
+      browseMode,
+      catalogArtistCount: catalogArtists.length,
+      visibleArtistCount: visible.length,
+      catalogHasMore,
+      traceEntryCount: artistTraceEntries.length,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
+
   useArtistsBrowseScrollReset({
     scrollSnapshotRef,
     getScrollRoot: getArtistsScrollRoot,
@@ -389,6 +423,17 @@ export default function Artists() {
     <div
       className={`content-body animate-fade-in mainstage-inpage-split${mainstageHeaderTight ? ' mainstage-inpage--header-tight' : ''}`}
     >
+      {artistsBrowseDiagnosticsEnabled && (
+        <div className="mainstage-diagnostic-copy-all">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void copyArtistBrowseDiagnostics()}
+          >
+            {t('albums.copyDiagnostics')}
+          </button>
+        </div>
+      )}
       <div className="mainstage-inpage-toolbar">
         <div className="page-sticky-header">
           <div className="mainstage-inpage-toolbar-row">
