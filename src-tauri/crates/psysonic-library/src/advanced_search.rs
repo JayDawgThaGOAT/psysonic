@@ -718,10 +718,28 @@ fn multi_scope_track_filter_sql(
     if let Some(t) = text {
         match text_entity {
             Some(EntityKind::Artist) => {
-                w.push_param(
-                    "t.artist LIKE ? ESCAPE '\\'",
-                    SqlValue::Text(like_contains_folded(t)),
-                );
+                if let Some(fts) = fts_column_prefix_query("artist", t) {
+                    let pool = fts_candidate_pool_size(req.limit, req.offset);
+                    let rowids = store.with_read_conn(|conn| {
+                        collect_scope_fts_rowids(conn, &fts, scopes, pool)
+                    })?;
+                    if rowids.is_empty() {
+                        w.push_raw("1 = 0");
+                    } else {
+                        let placeholders = std::iter::repeat_n("?", rowids.len())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        w.push_params(
+                            &format!("t.rowid IN ({placeholders})"),
+                            rowids.into_iter().map(SqlValue::Integer).collect(),
+                        );
+                    }
+                } else {
+                    w.push_param(
+                        "t.artist LIKE ? ESCAPE '\\'",
+                        SqlValue::Text(like_contains_folded(t)),
+                    );
+                }
                 applied.insert("text".to_string());
             }
             Some(EntityKind::Album) | None => {
@@ -3748,6 +3766,56 @@ mod tests {
         r.artist_credit_mode = Some(ArtistCreditMode::Album);
         let resp = run_advanced_search(&store, &r).unwrap();
         assert_eq!(resp.artists.len(), 2);
+    }
+
+    #[test]
+    fn multi_scope_album_artist_search_matches_cyrillic_prefixes() {
+        let store = LibraryStore::open_in_memory();
+        insert_artist_with_album_count(&store, "s1", "ar_kino", "Кино", Some(1));
+        insert_artist_with_album_count(&store, "s2", "ar_kinoproby", "Кинопробы", Some(1));
+        let mut kino = scoped_track(
+            "s1", "t-kino", "Song", "Кино", "Album", "alb-kino", "lib-a", None, None, None,
+        );
+        kino.artist_id = Some("ar_kino".into());
+        let mut kinoproby = scoped_track(
+            "s2", "t-kinoproby", "Song", "Кинопробы", "Album", "alb-kinoproby", "lib-b", None, None, None,
+        );
+        kinoproby.artist_id = Some("ar_kinoproby".into());
+        TrackRepository::new(&store).upsert_batch(&[kino, kinoproby]).unwrap();
+        let mut r = req("s1", &[EntityKind::Artist]);
+        r.library_scopes = Some(vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")]);
+        r.artist_credit_mode = Some(ArtistCreditMode::Album);
+        r.query = Some("Кино".into());
+        let resp = run_advanced_search(&store, &r).unwrap();
+
+        assert_eq!(
+            resp.artists.iter().map(|artist| artist.id.as_str()).collect::<Vec<_>>(),
+            vec!["ar_kino", "ar_kinoproby"],
+        );
+    }
+
+    #[test]
+    fn multi_scope_track_artist_search_matches_cyrillic_prefixes() {
+        let store = LibraryStore::open_in_memory();
+        let mut kino = scoped_track(
+            "s1", "t-kino", "Song", "Кино", "Album", "alb-kino", "lib-a", None, None, None,
+        );
+        kino.artist_id = Some("ar_kino".into());
+        let mut kinoproby = scoped_track(
+            "s2", "t-kinoproby", "Song", "Кинопробы", "Album", "alb-kinoproby", "lib-b", None, None, None,
+        );
+        kinoproby.artist_id = Some("ar_kinoproby".into());
+        TrackRepository::new(&store).upsert_batch(&[kino, kinoproby]).unwrap();
+        let mut r = req("s1", &[EntityKind::Artist]);
+        r.library_scopes = Some(vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")]);
+        r.artist_credit_mode = Some(ArtistCreditMode::Track);
+        r.query = Some("Кино".into());
+        let resp = run_advanced_search(&store, &r).unwrap();
+
+        assert_eq!(
+            resp.artists.iter().map(|artist| artist.id.as_str()).collect::<Vec<_>>(),
+            vec!["ar_kino", "ar_kinoproby"],
+        );
     }
 
     #[test]
