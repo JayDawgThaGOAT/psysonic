@@ -17,6 +17,7 @@ export type AlbumBrowseQuery = {
 export type AlbumBrowsePageResult = {
   albums: SubsonicAlbum[];
   hasMore: boolean;
+  nextCursor?: string | null;
 };
 
 export type AlbumBrowseFetchCallbacks = {

@@ -247,6 +247,7 @@ export function useAlbumBrowseData({
   const loadGenerationRef = useRef(0);
   const pageRef = useRef(0);
   const catalogOffsetRef = useRef(0);
+  const catalogCursorRef = useRef<string | null>(null);
   const catalogLoadingRef = useRef(false);
   const loadingRef = useRef(false);
   const loadPendingRef = useRef(false);
@@ -295,6 +296,7 @@ export function useAlbumBrowseData({
         offset,
         CATALOG_CHUNK_SIZE,
         starredOverrides,
+        append ? catalogCursorRef.current : undefined,
       );
       if (generation !== loadGenerationRef.current || chunk == null) return;
       setAlbums(prev => {
@@ -303,6 +305,7 @@ export function useAlbumBrowseData({
         return next;
       });
       setCatalogHasMore(chunk.hasMore);
+      catalogCursorRef.current = chunk.nextCursor ?? null;
     } finally {
       catalogLoadingRef.current = false;
       if (generation === loadGenerationRef.current) {
@@ -383,7 +386,8 @@ export function useAlbumBrowseData({
     const cached = readAlbumBrowseCatalogCache(catalogLoadKey);
     if (!cached) return;
     pageRef.current = 0;
-    catalogOffsetRef.current = cached.albums.length;
+      catalogOffsetRef.current = cached.albums.length;
+      catalogCursorRef.current = cached.nextCursor ?? null;
     loadPendingRef.current = false;
     catalogLoadingRef.current = false;
     // React Compiler set-state-in-effect rule: local state synced from the catalog cache before paint.
@@ -419,6 +423,7 @@ export function useAlbumBrowseData({
     if (!joinInflight) {
       pageRef.current = 0;
       catalogOffsetRef.current = 0;
+      catalogCursorRef.current = null;
       loadPendingRef.current = false;
       catalogLoadingRef.current = false;
       // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
@@ -512,6 +517,7 @@ export function useAlbumBrowseData({
               setBrowseMode('slice');
               setAlbums(preview.albums);
               catalogOffsetRef.current = preview.albums.length;
+              catalogCursorRef.current = preview.nextCursor ?? null;
               const needsTail =
                 preview.hasMore && preview.albums.length < CATALOG_CHUNK_SIZE;
               setCatalogHasMore(needsTail || preview.hasMore);
@@ -541,8 +547,9 @@ export function useAlbumBrowseData({
                             serverId,
                             indexEnabled,
                             browseQuery,
-                            tailOffset,
-                            tailSize,
+                          tailOffset,
+                          tailSize,
+                          preview.nextCursor,
                           ),
                           { offset: tailOffset, chunkSize: tailSize },
                         ),
@@ -558,10 +565,12 @@ export function useAlbumBrowseData({
                         storeAlbumBrowseCatalogCache(loadKey, {
                           albums: merged,
                           hasMore: tail.hasMore,
+                          nextCursor: tail.nextCursor,
                         });
                         return merged;
                       });
-                      setCatalogHasMore(tail.hasMore);
+                        setCatalogHasMore(tail.hasMore);
+                        catalogCursorRef.current = tail.nextCursor ?? null;
                       emitAlbumBrowseDebug('catalog_tail_done', {
                         albumCount: tail.albums.length,
                         totalOffset: tailOffset + tail.albums.length,
@@ -595,8 +604,9 @@ export function useAlbumBrowseData({
           if (cancelled || generation !== loadGenerationRef.current) return;
           if (first != null) {
             setBrowseMode('slice');
-            setAlbums(first.albums);
-            catalogOffsetRef.current = first.albums.length;
+              setAlbums(first.albums);
+              catalogOffsetRef.current = first.albums.length;
+              catalogCursorRef.current = first.nextCursor ?? null;
             setCatalogHasMore(first.hasMore);
             setLoading(false);
             emitAlbumBrowseDebug('loading_false', { source: 'slice', albumCount: first.albums.length });

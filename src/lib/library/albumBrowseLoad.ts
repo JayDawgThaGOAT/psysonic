@@ -16,10 +16,10 @@ export {
   filterAlbumsByCompilation,
   filterAlbumsByStarred,
 } from './albumBrowseFilters';
-export { runLocalAlbumBrowse } from './albumBrowseLocal';
+export { runLocalAlbumBrowse, runLocalAlbumScopeBrowse } from './albumBrowseLocal';
 
 import { albumBrowseHasServerFilters, countGenresFromAlbums, filterAlbumsByCompilation } from './albumBrowseFilters';
-import { runLocalAlbumBrowse } from './albumBrowseLocal';
+import { runLocalAlbumBrowse, runLocalAlbumScopeBrowse } from './albumBrowseLocal';
 import { fetchAlbumBrowseNetwork } from './albumBrowseNetwork';
 import { fetchStarredAlbumBrowse } from './albumBrowseStarredFetch';
 import { librarySelectionForServer } from '@/lib/api/subsonicClient';
@@ -47,6 +47,7 @@ export async function fetchLocalAlbumCatalogChunk(
   query: AlbumBrowseQuery,
   offset: number,
   chunkSize: number,
+  cursor?: string | null,
 ): Promise<AlbumBrowsePageResult | null> {
   if (query.starredOnly) {
     return fetchAlbumBrowsePage(serverId, indexEnabled, query, offset, chunkSize);
@@ -60,6 +61,10 @@ export async function fetchLocalAlbumCatalogChunk(
     : query.genres.length > 0 && offset === 0
       ? GENRE_ALBUM_FETCH_LIMIT
       : chunkSize;
+  if (albumBrowseBootstrapEligible(query)) {
+    const scoped = await runLocalAlbumScopeBrowse(serverId, query.sort, limit, cursor);
+    if (scoped) return scoped;
+  }
   return runLocalAlbumBrowse(serverId, query, offset, limit);
 }
 

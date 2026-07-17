@@ -8,6 +8,7 @@ import { fetchLocalAlbumCatalogChunk } from '@/lib/library/albumBrowseLoad';
 export type AlbumCatalogChunk = {
   albums: SubsonicAlbum[];
   hasMore: boolean;
+  nextCursor?: string | null;
 };
 
 export function mergeAlbumCatalogChunk(
@@ -30,6 +31,7 @@ export async function fetchAlbumBrowseCatalogChunk(
   offset: number,
   chunkSize: number,
   starredOverrides: Record<string, boolean>,
+  cursor?: string | null,
 ): Promise<AlbumCatalogChunk | null> {
   if (isOfflineBrowseActive()) {
     return loadOfflineAlbumCatalogChunk(
@@ -40,5 +42,5 @@ export async function fetchAlbumBrowseCatalogChunk(
       starredOverrides,
     );
   }
-  return fetchLocalAlbumCatalogChunk(serverId, indexEnabled, query, offset, chunkSize);
+  return fetchLocalAlbumCatalogChunk(serverId, indexEnabled, query, offset, chunkSize, cursor);
 }
