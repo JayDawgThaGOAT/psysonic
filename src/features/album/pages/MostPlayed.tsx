@@ -1,28 +1,33 @@
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
+import { fetchMostPlayedAlbums } from '@/lib/api/subsonicStatistics';
+import type {
+  LibraryScopeMostPlayedAlbum,
+  LibraryScopeMostPlayedArtist,
+} from '@/lib/api/library/scopeReads';
 import { resolveAlbum } from '@/features/offline';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpDown, ArrowDown, ArrowUp, TrendingUp, UsersRound, Play, ListPlus } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
-import { AlbumCoverArtImage } from '@/cover/AlbumCoverArtImage';
-import { ArtistCoverArtImage } from '@/cover/ArtistCoverArtImage';
+import { CoverArtImage } from '@/cover/CoverArtImage';
+import { useAlbumCoverRef, useArtistCoverRef } from '@/cover/useLibraryCoverRef';
 import { playAlbum, playAlbumShuffled } from '@/features/playback/utils/playback/playAlbum';
 import { useLongPressAction } from '@/lib/hooks/useLongPressAction';
 import { LongPressWaveOverlay } from '@/ui/LongPressWaveOverlay';
 import { useTranslation } from 'react-i18next';
 import { albumArtistDisplayName } from '@/features/album/utils/deriveAlbumHeaderArtistRefs';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { coverServerScopeForOwnerServerId } from '@/cover/serverScope';
+import { wakeCoverBackfillForMissingMetadata } from '@/cover/wakeCoverBackfillForMissingMetadata';
 
 const PAGE_SIZE = 50;
 
-interface ArtistEntry {
-  id: string;
-  name: string;
-  coverArt?: string;
-  totalPlays: number;
-}
+type MostPlayedAlbum = Omit<SubsonicAlbum, 'serverId'> & {
+  serverId: string;
+  libraryId: string;
+};
 
 const COMPILATION_NAMES = new Set([
   'various artists', 'various', 'va', 'v.a.', 'v.a',
@@ -36,35 +41,97 @@ function isCompilation(name: string): boolean {
   return COMPILATION_NAMES.has(name.toLowerCase().trim());
 }
 
-function deriveTopArtists(albums: SubsonicAlbum[], filterCompilations: boolean): ArtistEntry[] {
-  const map = new Map<string, ArtistEntry>();
-  for (const a of albums) {
-    const plays = a.playCount ?? 0;
-    if (plays === 0) continue;
-    if (filterCompilations && isCompilation(a.artist ?? '')) continue;
-    const entry = map.get(a.artistId);
-    if (entry) {
-      entry.totalPlays += plays;
-      if (!entry.coverArt && a.coverArt) entry.coverArt = a.coverArt;
-    } else {
-      map.set(a.artistId, { id: a.artistId, name: a.artist, coverArt: a.coverArt, totalPlays: plays });
-    }
-  }
-  return [...map.values()].sort((a, b) => b.totalPlays - a.totalPlays);
+function mapMostPlayedAlbum(album: LibraryScopeMostPlayedAlbum): MostPlayedAlbum {
+  return {
+    id: album.id,
+    name: album.name,
+    artist: album.artist,
+    artistId: album.artistId ?? '',
+    coverArt: album.coverArtId ?? undefined,
+    songCount: 0,
+    duration: 0,
+    playCount: album.playCount,
+    year: album.year ?? undefined,
+    serverId: album.serverId,
+    libraryId: album.libraryId,
+  };
 }
 
 function formatPlays(n: number, t: ReturnType<typeof import('react-i18next').useTranslation>['t']): string {
   return t('mostPlayed.plays', { n: n.toLocaleString() }) as string;
 }
 
+function detailPath(kind: 'album' | 'artist', id: string, serverId: string): string {
+  const query = appendServerQuery(undefined, serverId);
+  return `/${kind}/${id}${query ? `?${query}` : ''}`;
+}
+
 /** Most-played list row cover layout px. */
 const MOST_PLAYED_COVER_CSS_PX = 80;
 
-function MostPlayedPlayButton({ albumId }: { albumId: string }) {
+function MostPlayedAlbumCover({ album }: { album: MostPlayedAlbum }) {
+  const serverScope = useMemo(
+    () => coverServerScopeForOwnerServerId(album.serverId),
+    [album.serverId],
+  );
+  const coverRef = useAlbumCoverRef(
+    album.id,
+    album.coverArt,
+    serverScope,
+    { libraryResolve: true },
+  );
+
+  useEffect(() => {
+    if (!album.coverArt?.trim()) {
+      wakeCoverBackfillForMissingMetadata(album.serverId);
+    }
+  }, [album.coverArt, album.serverId]);
+
+  return (
+    <CoverArtImage
+      coverRef={coverRef}
+      displayCssPx={MOST_PLAYED_COVER_CSS_PX}
+      surface="dense"
+      alt=""
+      className="mp-album-cover"
+    />
+  );
+}
+
+function MostPlayedArtistCover({ artist }: { artist: LibraryScopeMostPlayedArtist }) {
+  const serverScope = useMemo(
+    () => coverServerScopeForOwnerServerId(artist.serverId),
+    [artist.serverId],
+  );
+  const coverRef = useArtistCoverRef(
+    artist.id,
+    artist.coverArtId,
+    serverScope,
+    { libraryResolve: true },
+  );
+
+  useEffect(() => {
+    if (!artist.coverArtId?.trim()) {
+      wakeCoverBackfillForMissingMetadata(artist.serverId);
+    }
+  }, [artist.coverArtId, artist.serverId]);
+
+  return (
+    <CoverArtImage
+      coverRef={coverRef}
+      displayCssPx={MOST_PLAYED_COVER_CSS_PX}
+      surface="dense"
+      alt=""
+      className="mp-artist-avatar"
+    />
+  );
+}
+
+function MostPlayedPlayButton({ albumId, serverId }: { albumId: string; serverId: string }) {
   const { t } = useTranslation();
   const { isHolding, pressBind } = useLongPressAction({
-    onShortPress: () => playAlbum(albumId),
-    onLongPress: () => playAlbumShuffled(albumId),
+    onShortPress: () => playAlbum(albumId, { serverId }),
+    onLongPress: () => playAlbumShuffled(albumId, { serverId }),
   });
 
   return (
@@ -89,45 +156,48 @@ export default function MostPlayed() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
-  const activeServerId = useAuthStore(s => s.activeServerId);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
   const enqueue = usePlayerStore(s => s.enqueue);
 
-  const handleEnqueueAlbum = useCallback(async (albumId: string) => {
-    if (!activeServerId) return;
+  const handleEnqueueAlbum = useCallback(async (albumId: string, ownerServerId: string) => {
     try {
-      const data = await resolveAlbum(activeServerId, albumId);
+      const data = await resolveAlbum(ownerServerId, albumId);
       if (!data) return;
       enqueue(data.songs.map(songToTrack));
     } catch {
       // Network failure — silent (toast would be too noisy for a hover action).
     }
-  }, [activeServerId, enqueue]);
+  }, [enqueue]);
 
-  const [albums, setAlbums] = useState<SubsonicAlbum[]>([]);
+  const [albums, setAlbums] = useState<MostPlayedAlbum[]>([]);
+  const [artists, setArtists] = useState<LibraryScopeMostPlayedArtist[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [sortAsc, setSortAsc] = useState(false); // false = most plays first
   const [filterCompilations, setFilterCompilations] = useState(false);
 
-  const topArtists = deriveTopArtists(albums, filterCompilations).slice(0, 10);
+  const topArtists = artists
+    .filter(artist => !filterCompilations || !isCompilation(artist.name))
+    .slice(0, 10);
 
   const load = useCallback(async () => {
     setLoading(true);
     setAlbums([]);
+    setArtists([]);
     setHasMore(true);
     try {
-      const result = await getAlbumList('frequent', PAGE_SIZE, 0);
-      setAlbums(result);
-      setHasMore(result.length === PAGE_SIZE);
+      const result = await fetchMostPlayedAlbums(PAGE_SIZE, 0);
+      setAlbums(result.albums.map(mapMostPlayedAlbum));
+      setArtists(result.artists);
+      setHasMore(result.hasMore);
     } catch { /* ignore: best-effort */ }
     setLoading(false);
-    // musicLibraryFilterVersion is an intentional re-create trigger: getAlbumList
-    // reads the active library filter internally, so `load` must refresh (and the
-    // mount effect re-run) when that version bumps even though it is unused here.
+    // Scope state is read by the local-index API layer; retain both versions as
+    // explicit reload triggers when users change selected servers or folders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [musicLibraryFilterVersion]);
+  }, [libraryBrowseScopeVersion, musicLibraryFilterVersion]);
 
   // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -137,9 +207,9 @@ export default function MostPlayed() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      const result = await getAlbumList('frequent', PAGE_SIZE, albums.length);
-      setAlbums(prev => [...prev, ...result]);
-      setHasMore(result.length === PAGE_SIZE);
+      const result = await fetchMostPlayedAlbums(PAGE_SIZE, albums.length);
+      setAlbums(prev => [...prev, ...result.albums.map(mapMostPlayedAlbum)]);
+      setHasMore(result.hasMore);
     } catch { /* ignore: best-effort */ }
     setLoadingMore(false);
   };
@@ -188,30 +258,19 @@ export default function MostPlayed() {
           <div className="mp-artist-grid">
             {topArtists.map((artist, i) => (
               <button
-                key={artist.id}
+                key={`${artist.serverId}\u0000${artist.id}`}
                 className="mp-artist-card"
-                onClick={() => navigate(`/artist/${artist.id}`)}
+                onClick={() => navigate(detailPath('artist', artist.id, artist.serverId))}
                 onContextMenu={e => {
                   e.preventDefault();
                   openContextMenu(e.clientX, e.clientY, artist, 'artist');
                 }}
               >
                 <span className="mp-rank">{i + 1}</span>
-                {artist.coverArt ? (
-                  <ArtistCoverArtImage
-                    artistId={artist.id}
-                    coverArt={artist.coverArt}
-                    displayCssPx={MOST_PLAYED_COVER_CSS_PX}
-                    surface="dense"
-                    alt=""
-                    className="mp-artist-avatar"
-                  />
-                ) : (
-                  <div className="mp-artist-avatar mp-artist-avatar--placeholder" />
-                )}
+                <MostPlayedArtistCover artist={artist} />
                 <div className="mp-artist-info">
                   <span className="mp-artist-name truncate">{artist.name}</span>
-                  <span className="mp-artist-plays">{formatPlays(artist.totalPlays, t)}</span>
+                  <span className="mp-artist-plays">{formatPlays(artist.playCount, t)}</span>
                 </div>
               </button>
             ))}
@@ -232,27 +291,16 @@ export default function MostPlayed() {
             <div className="mp-album-list">
               {withPlays.map((album, i) => (
                 <div
-                  key={album.id}
+                  key={`${album.serverId}\u0000${album.libraryId}\u0000${album.id}`}
                   className="mp-album-row"
-                  onClick={() => navigate(`/album/${album.id}`)}
+                  onClick={() => navigate(detailPath('album', album.id, album.serverId))}
                   onContextMenu={e => {
                     e.preventDefault();
                     openContextMenu(e.clientX, e.clientY, album, 'album');
                   }}
                 >
                   <span className="mp-album-rank">{sortAsc ? withPlays.length - i : i + 1}</span>
-                  {album.coverArt ? (
-                    <AlbumCoverArtImage
-                      albumId={album.id}
-                      coverArt={album.coverArt}
-                      displayCssPx={MOST_PLAYED_COVER_CSS_PX}
-                      surface="dense"
-                      alt=""
-                      className="mp-album-cover"
-                    />
-                  ) : (
-                    <div className="mp-album-cover mp-album-cover--placeholder" />
-                  )}
+                  <MostPlayedAlbumCover album={album} />
                   <div className="mp-album-meta">
                     <div className="mp-album-name-row">
                       <span className="mp-album-name truncate">{album.name}</span>
@@ -263,16 +311,19 @@ export default function MostPlayed() {
                     </div>
                     <span
                       className="mp-album-artist truncate track-artist-link"
-                      onClick={e => { e.stopPropagation(); navigate(`/artist/${album.artistId}`); }}
+                      onClick={e => {
+                        e.stopPropagation();
+                        navigate(detailPath('artist', album.artistId, album.serverId));
+                      }}
                     >
                       {albumArtistDisplayName(album)}
                     </span>
                   </div>
                   <div className="mp-album-actions">
-                    <MostPlayedPlayButton albumId={album.id} />
+                    <MostPlayedPlayButton albumId={album.id} serverId={album.serverId} />
                     <button
                       className="mp-album-action-btn"
-                      onClick={e => { e.stopPropagation(); void handleEnqueueAlbum(album.id); }}
+                      onClick={e => { e.stopPropagation(); void handleEnqueueAlbum(album.id, album.serverId); }}
                       data-tooltip={t('contextMenu.enqueueAlbum')}
                       data-tooltip-pos="top"
                       aria-label={t('contextMenu.enqueueAlbum')}

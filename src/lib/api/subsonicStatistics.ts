@@ -3,6 +3,8 @@ import { getAlbumListForServer } from '@/lib/api/subsonicLibrary';
 import { libraryScopeCacheKeyForServer } from '@/lib/api/subsonicClient';
 import {
   libraryScopeStatistics,
+  libraryScopeMostPlayed,
+  type LibraryScopeMostPlayedResponse,
   type LibraryStatisticsScope,
 } from '@/lib/api/library/scopeReads';
 import type {
@@ -22,7 +24,7 @@ export function statisticsPageCacheKey(prefix: string): string | null {
   return `${prefix}:${activeServerId}:${libraryScopeCacheKeyForServer(activeServerId)}`;
 }
 
-function statisticsIndexScopes(): LibraryStatisticsScope[] {
+export function statisticsIndexScopes(): LibraryStatisticsScope[] {
   const state = useAuthStore.getState();
   const selectedServerIds = state.libraryBrowseServerIds.length > 0
     ? state.libraryBrowseServerIds
@@ -31,6 +33,18 @@ function statisticsIndexScopes(): LibraryStatisticsScope[] {
     serverId,
     libraryIds: state.libraryBrowseSelectionByServer[serverId] ?? [],
   }));
+}
+
+/** Ranked local-index albums for the same selected server/folder scope as Statistics. */
+export function fetchMostPlayedAlbums(
+  limit: number,
+  offset: number,
+): Promise<LibraryScopeMostPlayedResponse> {
+  return libraryScopeMostPlayed({
+    scopes: statisticsIndexScopes(),
+    limit,
+    offset,
+  });
 }
 
 function statisticsAggregateCacheKey(scopes: LibraryStatisticsScope[]): string | null {

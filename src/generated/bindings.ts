@@ -29,6 +29,8 @@ export const commands = {
 	 *  Deliberately does not merge equivalent albums/artists between scopes.
 	 */
 	libraryScopeStatistics: (request: LibraryStatisticsRequest) => typedError<LibraryStatisticsDto, string>(__TAURI_INVOKE("library_scope_statistics", { request })),
+	/**  Ranked local-index albums and album artists for selected servers/folders. */
+	libraryScopeMostPlayed: (request: LibraryMostPlayedRequest) => typedError<LibraryMostPlayedResponse, string>(__TAURI_INVOKE("library_scope_most_played", { request })),
 	libraryGetArtifact: (serverId: string, trackId: string, artifactKind: string, sourceKind: string | null, sourceId: string | null, format: string | null) => typedError<{
 	serverId: string,
 	trackId: string,
@@ -1057,6 +1059,42 @@ export type LibraryCoverProgressDto = {
 	totalDistinct: number,
 	pending: number,
 	done: number,
+};
+
+/**
+ *  Ranked album row over the selected Statistics-style server/library scopes.
+ *  Equivalent albums remain distinct across folders and servers.
+ */
+export type LibraryMostPlayedAlbumDto = {
+	serverId: string,
+	libraryId: string,
+	id: string,
+	name: string,
+	artist: string,
+	artistId: string | null,
+	year: number | null,
+	coverArtId: string | null,
+	playCount: number,
+};
+
+export type LibraryMostPlayedArtistDto = {
+	serverId: string,
+	id: string,
+	name: string,
+	coverArtId: string | null,
+	playCount: number,
+};
+
+export type LibraryMostPlayedRequest = {
+	scopes: LibraryStatisticsScope[],
+	limit?: number | null,
+	offset?: number | null,
+};
+
+export type LibraryMostPlayedResponse = {
+	albums: LibraryMostPlayedAlbumDto[],
+	artists: LibraryMostPlayedArtistDto[],
+	hasMore: boolean,
 };
 
 export type LibraryServerKeyMigrationDto = {

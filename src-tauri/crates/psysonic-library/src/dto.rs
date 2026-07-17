@@ -762,6 +762,50 @@ pub struct LibraryStatisticsDto {
     pub formats: Vec<LibraryStatisticsFormatDto>,
 }
 
+/// Ranked album row over the selected Statistics-style server/library scopes.
+/// Equivalent albums remain distinct across folders and servers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedAlbumDto {
+    pub server_id: String,
+    pub library_id: String,
+    pub id: String,
+    pub name: String,
+    pub artist: String,
+    pub artist_id: Option<String>,
+    pub year: Option<i64>,
+    pub cover_art_id: Option<String>,
+    pub play_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedArtistDto {
+    pub server_id: String,
+    pub id: String,
+    pub name: String,
+    pub cover_art_id: Option<String>,
+    pub play_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedRequest {
+    pub scopes: Vec<LibraryStatisticsScope>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedResponse {
+    pub albums: Vec<LibraryMostPlayedAlbumDto>,
+    pub artists: Vec<LibraryMostPlayedArtistDto>,
+    pub has_more: bool,
+}
+
 /// Entity surface served by the cursor-based scoped browse engine.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

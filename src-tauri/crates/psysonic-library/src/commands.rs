@@ -25,6 +25,7 @@ use crate::dto::{
     LibraryAdvancedSearchResponse,
     LibraryCrossServerSearchResponse, LibraryLiveSearchRequest, LibraryLiveSearchResponse,
     LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse,
+    LibraryMostPlayedRequest, LibraryMostPlayedResponse,
     LibraryScopeAlbumDetailRequest, LibraryScopeAlbumDetailResponse, LibraryScopeArtistDetailRequest,
     LibraryScopeArtistDetailResponse, LibraryScopeBrowseRequest, LibraryScopeBrowseResponse,
     LibraryScopeListRequest, LibraryScopeSearchRequest, LibraryStatisticsDto, LibraryStatisticsRequest,
@@ -192,6 +193,17 @@ pub async fn library_scope_statistics(
 ) -> Result<LibraryStatisticsDto, String> {
     let store = Arc::clone(&runtime.store);
     library_spawn_blocking(move || crate::statistics::query_statistics(&store, &request)).await
+}
+
+/// Ranked local-index albums and album artists for selected servers/folders.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_scope_most_played(
+    runtime: State<'_, LibraryRuntime>,
+    request: LibraryMostPlayedRequest,
+) -> Result<LibraryMostPlayedResponse, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::most_played::query_most_played(&store, &request)).await
 }
 
 #[tauri::command]

@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAuthStore } from '@/store/authStore';
-import { fetchStatisticsLibraryAggregates, fetchStatisticsOverview, statisticsPageCacheKey } from '@/lib/api/subsonicStatistics';
+import {
+  fetchMostPlayedAlbums,
+  fetchStatisticsLibraryAggregates,
+  fetchStatisticsOverview,
+  statisticsPageCacheKey,
+} from '@/lib/api/subsonicStatistics';
 import { getArtistsAcrossLibraries } from '@/lib/api/subsonicArtists';
 
 const apiMock = vi.fn();
 const indexStatisticsMock = vi.fn();
+const indexMostPlayedMock = vi.fn();
 const getAlbumListForServerMock = vi.fn();
 
 vi.mock('@/lib/api/subsonicLibrary', () => ({
@@ -25,6 +31,7 @@ vi.mock('@/lib/api/library/scopeReads', async importOriginal => {
   return {
     ...actual,
     libraryScopeStatistics: (...args: unknown[]) => indexStatisticsMock(...args),
+    libraryScopeMostPlayed: (...args: unknown[]) => indexMostPlayedMock(...args),
   };
 });
 
@@ -138,5 +145,31 @@ describe('fetchStatisticsOverview', () => {
     expect(getAlbumListForServerMock).toHaveBeenCalledWith('stats-b', 'frequent', 12);
     expect(overview.recent.map(album => album.serverId)).toEqual(['stats-a', 'stats-b']);
     expect(overview.frequent.map(album => album.serverId)).toEqual(['stats-a', 'stats-b']);
+  });
+});
+
+describe('fetchMostPlayedAlbums', () => {
+  beforeEach(() => {
+    indexMostPlayedMock.mockReset();
+    useAuthStore.setState({
+      activeServerId: 'stats-a',
+      libraryBrowseServerIds: ['stats-a', 'stats-b'],
+      libraryBrowseSelectionByServer: { 'stats-a': ['rock'], 'stats-b': [] },
+    });
+  });
+
+  it('uses every selected server and library scope', async () => {
+    indexMostPlayedMock.mockResolvedValue({ albums: [], artists: [], hasMore: false });
+
+    await expect(fetchMostPlayedAlbums(50, 100)).resolves.toEqual({ albums: [], artists: [], hasMore: false });
+
+    expect(indexMostPlayedMock).toHaveBeenCalledWith({
+      scopes: [
+        { serverId: 'stats-a', libraryIds: ['rock'] },
+        { serverId: 'stats-b', libraryIds: [] },
+      ],
+      limit: 50,
+      offset: 100,
+    });
   });
 });

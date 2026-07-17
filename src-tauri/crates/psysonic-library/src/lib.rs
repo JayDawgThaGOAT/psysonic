@@ -33,6 +33,7 @@ pub mod genre_tags;
 pub mod genre_tags_backfill;
 pub mod identity;
 pub mod mood_groups;
+pub mod most_played;
 pub mod live_search;
 pub mod mainstage_browse;
 pub mod orphan_cleanup;

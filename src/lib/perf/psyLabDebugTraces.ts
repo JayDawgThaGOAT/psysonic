@@ -56,7 +56,8 @@ function safeParseTraces(raw: string | null): Partial<PsyLabDebugTraces> {
   }
 }
 
-function initTraces(): void {
+/** Restore persisted traces and synchronize native trace flags before React mounts. */
+export function initializePsyLabDebugTraces(): void {
   if (typeof window === 'undefined') return;
   const fromStorage = safeParseTraces(window.localStorage.getItem(STORAGE_KEY));
   traces = { ...DEFAULT_TRACES, ...fromStorage };
@@ -64,8 +65,6 @@ function initTraces(): void {
     syncTraceToBackend(id, traces[id]);
   }
 }
-
-initTraces();
 
 export function getPsyLabDebugTraces(): PsyLabDebugTraces {
   return traces;

@@ -6,6 +6,7 @@ import {
   libraryScopeListAlbums,
   libraryScopeListArtists,
   libraryScopeListMainstageAlbums,
+  libraryScopeMostPlayed,
   libraryScopeSearchTracks,
   libraryScopeStatistics,
   type LibraryScopePair,
@@ -99,6 +100,45 @@ describe('libraryScopeStatistics', () => {
         ],
       },
     });
+  });
+});
+
+describe('libraryScopeMostPlayed', () => {
+  it('maps all selected profile scopes and returned album owners', async () => {
+    let captured: unknown;
+    onInvoke('library_scope_most_played', (args) => {
+      captured = args;
+      return {
+        albums: [{
+          serverId: 's2.example', libraryId: 'lib-b', id: 'album-b', name: 'B',
+          artist: 'Artist B', artistId: 'artist-b', playCount: 12,
+        }],
+        artists: [{ serverId: 's2.example', id: 'artist-b', name: 'Artist B', playCount: 12 }],
+        hasMore: false,
+      };
+    });
+
+    const response = await libraryScopeMostPlayed({
+      scopes: [
+        { serverId: 'profile-s1', libraryIds: ['lib-a'] },
+        { serverId: 'profile-s2', libraryIds: [] },
+      ],
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(captured).toEqual({
+      request: {
+        scopes: [
+          { serverId: 's1.example', libraryIds: ['lib-a'] },
+          { serverId: 's2.example', libraryIds: [] },
+        ],
+        limit: 50,
+        offset: 0,
+      },
+    });
+    expect(response.albums[0]?.serverId).toBe('profile-s2');
+    expect(response.artists[0]?.serverId).toBe('profile-s2');
   });
 });
 

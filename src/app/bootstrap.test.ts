@@ -127,10 +127,14 @@ describe('pushLoggingModeToBackend', () => {
 });
 
 describe('runPreReactBootstrap', () => {
-  it('runs all steps in order: warm window-kind cache, push UA, push logging mode, install hotkey', () => {
+  it('runs all steps in order: warm window-kind cache, push UA, push logging mode, sync traces, install hotkey', () => {
     localStorage.setItem(
       'psysonic-auth',
       JSON.stringify({ state: { loggingMode: 'normal' } }),
+    );
+    localStorage.setItem(
+      'psysonic_psylab_debug_traces_v1',
+      JSON.stringify({ albumsBrowse: true, artistsBrowse: false }),
     );
 
     runPreReactBootstrap();
@@ -138,6 +142,8 @@ describe('runPreReactBootstrap', () => {
     expect(getWindowKind).toHaveBeenCalled();
     expect(invoke).toHaveBeenCalledWith('set_subsonic_wire_user_agent', expect.any(Object));
     expect(invoke).toHaveBeenCalledWith('set_logging_mode', { mode: 'normal' });
+    expect(invoke).toHaveBeenCalledWith('set_psylab_albums_browse_trace', { enabled: true });
+    expect(invoke).toHaveBeenCalledWith('set_psylab_artists_browse_trace', { enabled: false });
     expect(installQueueUndoHotkey).toHaveBeenCalledTimes(1);
   });
 

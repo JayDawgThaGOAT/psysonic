@@ -1,8 +1,14 @@
 /**
  * Multi-library scope merge read commands (WO-4 backend, WO-5 wrappers).
- * Hand-typed IPC — not in specta `bindings.ts`.
+ * Raw-JSON browse envelopes remain hand-typed; typeable commands use Specta.
  */
 import { invoke } from '@tauri-apps/api/core';
+import {
+  commands,
+  type LibraryMostPlayedAlbumDto as LibraryScopeMostPlayedAlbum,
+  type LibraryMostPlayedArtistDto as LibraryScopeMostPlayedArtist,
+  type LibraryMostPlayedResponse as LibraryScopeMostPlayedResponse,
+} from '@/generated/bindings';
 import { librarySelectionForServer } from '@/lib/api/subsonicClient';
 import {
   mapServerIdFromIndexKey,
@@ -42,6 +48,18 @@ export interface LibraryScopeStatisticsResponse {
   genres: GenreAlbumCountRow[];
   formats: { value: string; songCount: number }[];
 }
+
+export interface LibraryScopeMostPlayedRequest {
+  scopes: LibraryStatisticsScope[];
+  limit: number;
+  offset: number;
+}
+
+export type {
+  LibraryScopeMostPlayedAlbum,
+  LibraryScopeMostPlayedArtist,
+  LibraryScopeMostPlayedResponse,
+};
 
 export interface LibraryScopeSearchRequest {
   scopes: LibraryScopePair[];
@@ -142,6 +160,31 @@ export function libraryScopeStatistics(
       })),
     },
   });
+}
+
+/** Aggregate ranked albums from every selected Statistics-style index scope. */
+export async function libraryScopeMostPlayed(
+  request: LibraryScopeMostPlayedRequest,
+): Promise<LibraryScopeMostPlayedResponse> {
+  const result = await commands.libraryScopeMostPlayed({
+    ...request,
+    scopes: request.scopes.map(scope => ({
+      ...scope,
+      serverId: serverIndexKeyForId(scope.serverId),
+    })),
+  });
+  if (result.status === 'error') throw new Error(result.error);
+  return {
+    ...result.data,
+    albums: result.data.albums.map(album => ({
+      ...album,
+      serverId: mapServerIdFromIndexKey(album.serverId),
+    })),
+    artists: result.data.artists.map(artist => ({
+      ...artist,
+      serverId: mapServerIdFromIndexKey(artist.serverId),
+    })),
+  };
 }
 
 export function libraryScopeListAlbums(
