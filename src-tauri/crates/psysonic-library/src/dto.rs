@@ -816,6 +816,10 @@ pub enum LibraryMainstageAlbumFeed {
     RecentlyPlayed,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Chronological album feed over one ordered multi-server library scope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -829,6 +833,9 @@ pub struct LibraryMainstageAlbumsRequest {
     /// OR-matched atomic genres, applied before chronological album grouping.
     #[serde(default)]
     pub genres: Vec<String>,
+    /// New Releases page needs genre filter counts; Home's chronological rail does not.
+    #[serde(default = "default_true")]
+    pub include_genre_counts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

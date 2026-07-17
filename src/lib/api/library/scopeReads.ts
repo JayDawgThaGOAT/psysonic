@@ -40,6 +40,7 @@ export interface LibraryScopeMainstageAlbumsRequest {
   limit: number;
   offset: number;
   genres?: string[];
+  includeGenreCounts?: boolean;
 }
 
 export interface LibraryScopeMainstageAlbumsResponse {

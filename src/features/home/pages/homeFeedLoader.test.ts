@@ -372,6 +372,7 @@ describe('homeFeedLoader failure isolation', () => {
       feed: 'newReleases',
       limit: 12,
       offset: 5,
+      includeGenreCounts: false,
     });
     expect(getAlbumListForServer).not.toHaveBeenCalled();
     expect(result.recent.map(item => `${item.serverId}:${item.id}`))

@@ -235,11 +235,16 @@ pub fn list_mainstage_albums(
     let initial_candidates = candidate_limit(offset, fetch_limit);
 
     store.with_read_conn(|conn| {
-        let genre_counts = if request.feed == LibraryMainstageAlbumFeed::NewReleases {
+        let genre_counts_start = std::time::Instant::now();
+        let genre_counts = if request.include_genre_counts
+            && request.feed == LibraryMainstageAlbumFeed::NewReleases
+        {
             new_release_genre_counts(conn, scopes)?
         } else {
             Vec::new()
         };
+        let genre_counts_ms = genre_counts_start.elapsed().as_millis();
+        let feed_start = std::time::Instant::now();
         let mut bounded_candidates = initial_candidates;
         loop {
             let (sql, binds) = build_mainstage_query(
@@ -280,6 +285,20 @@ pub fn list_mainstage_albums(
             let has_more = albums.len() > limit as usize;
             albums.truncate(limit as usize);
             overlay_album_starred_at_rows(conn, &mut albums);
+            if psysonic_core::logging::should_log_debug() {
+                crate::app_deprintln!(
+                    "[frontend][mainstage-browse] {}",
+                    serde_json::json!({
+                        "feed": request.feed,
+                        "scopeCount": scopes.len(),
+                        "includeGenreCounts": request.include_genre_counts,
+                        "genreCountMs": genre_counts_ms,
+                        "feedMs": feed_start.elapsed().as_millis(),
+                        "candidateLimit": bounded_candidates,
+                        "resultCount": albums.len(),
+                    })
+                );
+            }
             return Ok(LibraryMainstageAlbumsResponse { albums, has_more, genre_counts });
         }
     }).map_err(|e| e.to_string())
@@ -359,6 +378,7 @@ mod tests {
             limit: Some(30),
             offset: None,
             genres: Vec::new(),
+            include_genre_counts: true,
         }
     }
 
@@ -481,6 +501,31 @@ mod tests {
             response.genre_counts.iter().map(|row| (row.value.as_str(), row.album_count)).collect::<Vec<_>>(),
             [("Jazz", 1), ("Rock", 1)],
         );
+    }
+
+    #[test]
+    fn home_feed_skips_genre_counts_when_not_requested() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[track("s1", "rock", "Rock release", "a-rock", "l1", Some(200))])
+            .unwrap();
+        store
+            .with_conn_mut("test.mainstage_skip_genres", |conn| {
+                conn.execute(
+                    "INSERT INTO track_genre (server_id, track_id, genre, album_id, library_id) \
+                     VALUES ('s1', 'rock', 'Rock', 'a-rock', 'l1')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let mut req = request(vec![scope("s1", "l1")], LibraryMainstageAlbumFeed::NewReleases);
+        req.include_genre_counts = false;
+        let response = list_mainstage_albums(&store, &req).unwrap();
+
+        assert_eq!(response.albums.len(), 1);
+        assert!(response.genre_counts.is_empty());
     }
 
     #[test]

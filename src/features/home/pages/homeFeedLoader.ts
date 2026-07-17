@@ -244,6 +244,7 @@ export async function loadHomeChronologicalFeed(
     feed: options.feed,
     limit: HOME_PAGE_SIZE,
     offset: options.offset ?? 0,
+    includeGenreCounts: false,
   }).then(response => ({
     status: 'success' as const,
     albums: response.albums.map(albumToAlbum),

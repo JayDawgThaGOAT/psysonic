@@ -30,6 +30,7 @@ describe('loadLocalNewReleases', () => {
       limit: 30,
       offset: 60,
       genres: [],
+      includeGenreCounts: true,
     });
     expect(result.albums.map(album => [album.serverId, album.id])).toEqual([
       ['server-b', 'newer'],

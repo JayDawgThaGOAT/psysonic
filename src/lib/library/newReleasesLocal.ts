@@ -16,6 +16,7 @@ export async function loadLocalNewReleases(
     limit,
     offset,
     genres,
+    includeGenreCounts: true,
   });
   return {
     albums: response.albums.map(albumToAlbum),
