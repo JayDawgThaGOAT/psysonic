@@ -634,6 +634,7 @@ pub async fn library_advanced_search(
                         "limit": trace_limit,
                         "filterCount": trace_filter_count,
                         "scopeCount": trace_scope_count,
+                        "skipTotals": request.skip_totals,
                         "creditMode": request.artist_credit_mode,
                         "letterBucket": request.artist_letter_bucket,
                         "ok": result.is_ok(),

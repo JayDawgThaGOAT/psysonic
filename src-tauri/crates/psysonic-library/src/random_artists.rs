@@ -13,8 +13,8 @@ pub fn list_random_artists(
     limit: Option<u32>,
 ) -> Result<Vec<LibraryArtistDto>, String> {
     let limit = limit.unwrap_or(RANDOM_ARTISTS_LIMIT).clamp(1, RANDOM_ARTISTS_LIMIT);
-    store
-        .with_read_conn(|conn| {
+    let (artists, timing) = store
+        .with_read_conn_timed(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT server_id, id, name, name_sort, album_count, synced_at, raw_json \
                  FROM artist WHERE server_id = ?1 ORDER BY RANDOM() LIMIT ?2",
@@ -37,7 +37,19 @@ pub fn list_random_artists(
             .collect::<rusqlite::Result<Vec<_>>>();
             rows
         })
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let blocked_by = timing
+        .blocked_by
+        .map(|owner| format!("{}:{}", owner.file, owner.line))
+        .unwrap_or_else(|| "none".to_string());
+    crate::app_deprintln!(
+        "[library-db][random-artists] server={} lock_wait_ms={} query_ms={} blocked_by={}",
+        server_id,
+        timing.lock_wait_ms,
+        timing.exec_ms,
+        blocked_by,
+    );
+    Ok(artists)
 }
 
 #[cfg(test)]
