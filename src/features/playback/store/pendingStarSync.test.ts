@@ -100,6 +100,18 @@ describe('pendingStarSync', () => {
     expect(starMock).toHaveBeenCalledWith('t1', 'song', { serverId: 'srv-b' });
   });
 
+  it('isolates scoped favorite overrides that share a raw id', async () => {
+    queueSongStar('shared', false, 'srv-b', { scopedOverride: true });
+
+    expect(usePlayerStore.getState().starredOverrides).toMatchObject({
+      'srv-b:shared': false,
+    });
+    expect(usePlayerStore.getState().starredOverrides.shared).toBeUndefined();
+
+    await vi.runAllTimersAsync();
+    expect(unstarMock).toHaveBeenCalledWith('shared', 'song', { serverId: 'srv-b' });
+  });
+
   it('latest toggle wins when re-queued before sync', async () => {
     queueSongStar('t1', true);
     queueSongStar('t1', false); // user toggled back off
@@ -121,5 +133,16 @@ describe('pendingStarSync', () => {
     const s = usePlayerStore.getState();
     expect('t1' in s.userRatingOverrides).toBe(false); // cleared
     expect(s.currentTrack?.userRating).toBe(4); // track stays patched
+  });
+
+  it('routes scoped ratings to the owner and clears only its composite override', async () => {
+    queueSongRating('shared', 5, 'srv-b', { scopedOverride: true });
+    expect(usePlayerStore.getState().userRatingOverrides['srv-b:shared']).toBe(5);
+    expect(usePlayerStore.getState().userRatingOverrides.shared).toBeUndefined();
+
+    await vi.runAllTimersAsync();
+
+    expect(setRatingMock).toHaveBeenCalledWith('shared', 5, { serverId: 'srv-b' });
+    expect(usePlayerStore.getState().userRatingOverrides['srv-b:shared']).toBeUndefined();
   });
 });

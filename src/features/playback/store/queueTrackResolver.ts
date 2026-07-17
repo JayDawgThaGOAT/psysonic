@@ -290,10 +290,11 @@ export function invalidateQueueResolver(trackId: string): void {
  *  succeeds). Unlike {@link invalidateQueueResolver}, this keeps the entry so a
  *  visible queue row never blanks to a placeholder — the row stays resolved and
  *  just reflects the synced value. No-op for refs not currently cached. */
-export function patchCachedTrack(trackId: string, patch: Partial<Track>): void {
+export function patchCachedTrack(trackId: string, patch: Partial<Track>, serverId?: string): void {
   let changed = false;
+  const scopedKey = serverId ? `${canonicalQueueServerKey(serverId)}:${trackId}` : null;
   for (const [key, track] of cache) {
-    if (key.endsWith(`:${trackId}`)) {
+    if ((scopedKey && key === scopedKey) || (!scopedKey && key.endsWith(`:${trackId}`))) {
       cache.set(key, { ...track, ...patch });
       changed = true;
     }

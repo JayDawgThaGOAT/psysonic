@@ -16,6 +16,7 @@ import { join } from '@tauri-apps/api/path';
 import { showToast } from '@/lib/dom/toast';
 import { useZipDownloadStore } from '@/features/offline';
 import { useRangeSelection } from '@/lib/hooks/useRangeSelection';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
 import { useMainstageInpageHeaderTight } from '@/lib/hooks/useMainstageInpageHeaderTight';
 import { albumGridWarmCovers } from '@/cover/layoutSizes';
@@ -151,11 +152,14 @@ export default function NewReleases() {
     selectedGenres,
   ]);
 
-  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(displayAlbums);
+  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(
+    displayAlbums,
+    ownedEntityKey,
+  );
 
   const toggleSelectionMode = () => { setSelectionMode(v => !v); resetSelection(); };
   const clearSelection = () => { setSelectionMode(false); resetSelection(); };
-  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(a.id));
+  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(ownedEntityKey(a)));
 
   const handleDownloadZips = async () => {
     if (selectedAlbums.length === 0) return;
@@ -336,7 +340,7 @@ export default function NewReleases() {
             <div style={{ visibility: isScrollRestorePending ? 'hidden' : 'visible' }}>
             <VirtualCardGrid
               items={displayAlbums}
-              itemKey={(a, _i) => a.id}
+              itemKey={(a, _i) => ownedEntityKey(a)}
               rowVariant="album"
               disableVirtualization={albumBrowsePlainLayout}
               layoutSignal={displayAlbums.length}
@@ -347,8 +351,8 @@ export default function NewReleases() {
                   album={a}
                   observeScrollRootId={NEW_RELEASES_INPAGE_SCROLL_VIEWPORT_ID}
                   selectionMode={selectionMode}
-                  selected={selectedIds.has(a.id)}
-                  onToggleSelect={toggleSelect}
+                  selected={selectedIds.has(ownedEntityKey(a))}
+                  onToggleSelect={(_id, opts) => toggleSelect(ownedEntityKey(a), opts)}
                   selectedAlbums={selectedAlbums}
                 />
               )}

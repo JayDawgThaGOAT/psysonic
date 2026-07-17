@@ -13,8 +13,8 @@ import { loadArtistFromLocalPlayback, offlineLocalBrowseEnabled } from '@/featur
 import { readDetailServerId } from '@/lib/navigation/detailServerScope';
 import { runLocalArtistLosslessBrowse } from '@/lib/library/browseTextSearch';
 import { isLosslessSuffix } from '@/lib/library/losslessFormats';
-import { librarySelectionForServer } from '@/lib/api/subsonicClient';
-import { tryLoadArtistDetailMultiScope } from '@/features/artist/hooks/loadArtistDetailMultiScope';
+import { tryLoadArtistDetailMultiScope } from '@/lib/library/loadArtistDetailMultiScope';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 
 export interface UseArtistDetailDataOptions {
   /** When true, albums and top tracks are limited to lossless containers (local index preferred). */
@@ -61,8 +61,8 @@ export function useArtistDetailData(
   const audiomuseNavidromeEnabled = useAuthStore(
     s => !!(serverId && s.audiomuseNavidromeByServer[serverId]),
   );
-  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
-  const musicLibrarySelectionByServer = useAuthStore(s => s.musicLibrarySelectionByServer);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const browseScope = getLibraryBrowseScope();
   const offlineBrowseActive = useOfflineBrowseContext().active && !!serverId;
   const preferLocalBytesOnly = offlineBrowseActive && offlineLocalBrowseEnabled(serverId);
   const preferLocalArtist = preferLocalBytesOnly
@@ -90,12 +90,13 @@ export function useArtistDetailData(
 
     (async () => {
       try {
+        const currentBrowseScope = getLibraryBrowseScope();
         if (offlineBrowseActive && !preferLocalBytesOnly) {
           setLoading(false);
           return;
         }
-        if (serverId && librarySelectionForServer(serverId).length > 0) {
-          const multi = await tryLoadArtistDetailMultiScope(serverId, id);
+        if (serverId && currentBrowseScope.pairs.length > 0) {
+          const multi = await tryLoadArtistDetailMultiScope(currentBrowseScope.pairs, serverId, id);
           if (cancelled) return;
           if (multi) {
             setArtist(multi.artist);
@@ -105,6 +106,8 @@ export function useArtistDetailData(
             setLoading(false);
             return;
           }
+          setLoading(false);
+          return;
         }
         if (preferLocalArtist && serverId && id) {
           const local = preferLocalBytesOnly
@@ -193,9 +196,8 @@ export function useArtistDetailData(
     return () => { cancelled = true; };
   }, [
     id,
+    libraryBrowseScopeVersion,
     losslessOnly,
-    musicLibraryFilterVersion,
-    musicLibrarySelectionByServer,
     offlineBrowseActive,
     preferLocalArtist,
     preferLocalBytesOnly,
@@ -204,7 +206,7 @@ export function useArtistDetailData(
   ]);
 
   useEffect(() => {
-    if (!id || preferLocalArtist) return;
+    if (!id || preferLocalArtist || browseScope.multiServer) return;
     let cancelled = false;
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -220,10 +222,10 @@ export function useArtistDetailData(
         if (!cancelled) setArtistInfoLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, audiomuseNavidromeEnabled, preferLocalArtist]);
+  }, [id, audiomuseNavidromeEnabled, preferLocalArtist, browseScope.multiServer]);
 
   useEffect(() => {
-    if (!id || !artist || preferLocalArtist) return;
+    if (!id || !artist || preferLocalArtist || browseScope.multiServer) return;
     const ownAlbumIds = new Set(albums.map(a => a.id));
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -265,7 +267,7 @@ export function useArtistDetailData(
         setFeaturedLoading(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artist?.id, musicLibraryFilterVersion, losslessOnly, albums, preferLocalArtist]);
+  }, [artist?.id, libraryBrowseScopeVersion, losslessOnly, albums, preferLocalArtist, browseScope.multiServer]);
 
   const info = infoEntry && infoEntry.id === id ? infoEntry.value : null;
 

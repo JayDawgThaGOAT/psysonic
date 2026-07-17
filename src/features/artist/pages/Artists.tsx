@@ -41,7 +41,6 @@ import { readArtistBrowseRestore } from '@/lib/navigation/albumDetailNavigation'
 
 import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
-import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import {
   beginArtistsBrowseTrace,
   emitArtistsBrowseDebug,
@@ -52,10 +51,7 @@ import {
 import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
-
-function artistEntityKey(artist: { id: string; serverId?: string }): string {
-  return artist.serverId ? `${artist.serverId}:${artist.id}` : artist.id;
-}
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export default function Artists() {
   const perfFlags = usePerfProbeFlags();
@@ -69,18 +65,10 @@ export default function Artists() {
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const libraryBrowseVersion = musicLibraryFilterVersion + libraryBrowseScopeVersion;
-  const serverId = useAuthStore(s => s.activeServerId ?? '');
-  const libraryScopeKey = useAuthStore(s => {
-    if (!serverId) return 'all';
-    const resolved = resolveServerIdForIndexKey(serverId);
-    const selection = s.musicLibrarySelectionByServer[resolved];
-    if (selection !== undefined) {
-      return selection.length === 0 ? 'all' : selection.join(',');
-    }
-    const legacy = s.musicLibraryFilterByServer[resolved];
-    if (legacy === undefined || legacy === 'all') return 'all';
-    return legacy;
-  });
+  const activeServerId = useAuthStore(s => s.activeServerId ?? '');
+  const browseScope = getLibraryBrowseScope();
+  const serverId = browseScope.anchorServerId ?? activeServerId;
+  const libraryScopeKey = browseScope.fingerprint || 'all';
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
 
   const scrollSnapshotRef = useRef<ArtistBrowseScrollSnapshot>({ scrollTop: 0, visibleCount: 0 });
@@ -148,7 +136,9 @@ export default function Artists() {
     creditMode,
     letterFilter,
     musicLibraryFilterVersion: libraryBrowseVersion,
-    libraryScopeKey: `${libraryScopeKey}:${libraryBrowseScopeVersion}`,
+    libraryScopeKey,
+    libraryScopes: browseScope.pairs,
+    multiServer: browseScope.multiServer,
     ignoredArticles,
   });
 
@@ -198,7 +188,7 @@ export default function Artists() {
     });
   }, []);
 
-  const selectedArtists = artists.filter(a => selectedIds.has(artistEntityKey(a)));
+  const selectedArtists = artists.filter(a => selectedIds.has(ownedEntityKey(a)));
 
   const {
     filtered, visible, hasMore, groups, letters, artistListFlatRows,

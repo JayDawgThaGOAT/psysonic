@@ -1,4 +1,4 @@
-import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { resolveAlbum } from '@/features/offline';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useSyncExternalStore } from 'react';
@@ -63,12 +63,9 @@ import {
 } from '@/lib/library/albumBrowseDebug';
 import { librarySelectionForServer } from '@/lib/api/subsonicClient';
 import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 type SortType = AlbumBrowseSort;
-
-function albumEntityKey(album: { id: string; serverId?: string }): string {
-  return album.serverId ? `${album.serverId}:${album.id}` : album.id;
-}
 
 function sanitizeFilename(name: string): string {
   // eslint-disable-next-line no-control-regex -- intentional: strip control chars for safe download filenames
@@ -284,7 +281,10 @@ export default function Albums() {
   // `displayAlbums` — visible grid slice (local index) or loaded SQL pages (network).
   const [selectionMode, setSelectionMode] = useState(false);
 
-  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(displayAlbums);
+  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(
+    displayAlbums,
+    ownedEntityKey,
+  );
 
   const toggleSelectionMode = () => {
     setSelectionMode(v => !v);
@@ -296,7 +296,7 @@ export default function Albums() {
     resetSelection();
   };
 
-  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(albumEntityKey(a)));
+  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(ownedEntityKey(a)));
   const enqueue = usePlayerStore(state => state.enqueue);
 
   const handleEnqueueSelected = async () => {
@@ -304,7 +304,7 @@ export default function Albums() {
     try {
       // Parallel album resolves — Navidrome handles concurrent requests fine.
       const results = await Promise.all(
-        selectedAlbums.map(a => resolveAlbum(serverId, a.id).catch(() => null)),
+        selectedAlbums.map(a => resolveAlbum(a.serverId ?? serverId, a.id).catch(() => null)),
       );
       const tracks = results.flatMap(r => r ? r.songs.map(songToTrack) : []);
       if (tracks.length > 0) {
@@ -330,7 +330,7 @@ export default function Albums() {
       const downloadId = crypto.randomUUID();
       const filename = `${sanitizeFilename(album.name)}.zip`;
       const destPath = await join(folder, filename);
-      const url = buildDownloadUrl(album.id);
+      const url = buildDownloadUrlForServer(album.serverId ?? serverId, album.id);
       start(downloadId, filename);
       try {
         await downloadZip({ id: downloadId, url, destPath });
@@ -348,9 +348,10 @@ export default function Albums() {
     let queued = 0;
     for (const album of selectedAlbums) {
       try {
-        const detail = await resolveAlbum(serverId, album.id);
+        const ownerServerId = album.serverId ?? serverId;
+        const detail = await resolveAlbum(ownerServerId, album.id);
         if (!detail) throw new Error('album unavailable');
-        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, serverId);
+        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, ownerServerId);
         queued++;
       } catch {
         showToast(t('albums.offlineFailed', { name: album.name }), 3000, 'error');
@@ -606,7 +607,7 @@ export default function Albums() {
                 <div ref={gridMeasureRef}>
                   <VirtualCardGrid
                     items={displayAlbums}
-                    itemKey={(a, _i) => albumEntityKey(a)}
+                      itemKey={(a, _i) => ownedEntityKey(a)}
                     rowVariant="album"
                     disableVirtualization={albumBrowsePlainLayout}
                     layoutSignal={displayAlbums.length}
@@ -622,8 +623,8 @@ export default function Albums() {
                         observeScrollRootId={ALBUMS_INPAGE_SCROLL_VIEWPORT_ID}
                         linkQuery={losslessOnly ? LOSSLESS_MODE_QUERY : undefined}
                         selectionMode={selectionMode}
-                        selected={selectedIds.has(albumEntityKey(a))}
-                        onToggleSelect={(_id, opts) => toggleSelect(albumEntityKey(a), opts)}
+                        selected={selectedIds.has(ownedEntityKey(a))}
+                        onToggleSelect={(_id, opts) => toggleSelect(ownedEntityKey(a), opts)}
                         selectedAlbums={selectedAlbums}
                       />
                     )}

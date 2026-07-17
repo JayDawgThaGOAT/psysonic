@@ -1,6 +1,6 @@
 import {
   libraryScopeArtistDetail,
-  scopePairsFromLibrarySelection,
+  type LibraryScopePair,
 } from '@/lib/api/library/scopeReads';
 import { albumToAlbum, artistToArtist, trackToSong } from '@/lib/library/advancedSearchLocal';
 import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
@@ -16,12 +16,13 @@ export interface ArtistDetailMultiScopePayload {
  * (one or more). Returns null on IPC failure or when the merged artist anchor is missing.
  */
 export async function tryLoadArtistDetailMultiScope(
+  scopes: LibraryScopePair[],
   serverId: string,
   artistId: string,
 ): Promise<ArtistDetailMultiScopePayload | null> {
   try {
     const response = await libraryScopeArtistDetail(serverId, {
-      scopes: scopePairsFromLibrarySelection(serverId),
+      scopes,
       artistId,
       serverId,
     });

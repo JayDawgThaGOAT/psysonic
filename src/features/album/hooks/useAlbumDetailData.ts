@@ -22,8 +22,10 @@ import {
   shouldAttemptSubsonicForActiveServer,
   shouldAttemptSubsonicForServer,
 } from '@/lib/network/subsonicNetworkGuard';
-import { librarySelectionForServer } from '@/lib/api/subsonicClient';
 import { tryLoadAlbumDetailMultiScope } from '@/features/album/hooks/loadAlbumDetailMultiScope';
+import { tryLoadArtistDetailMultiScope } from '@/lib/library/loadArtistDetailMultiScope';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
 
 type AlbumPayload = ResolvedAlbum;
 
@@ -48,8 +50,7 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
   const [starredSongs, setStarredSongs] = useState<Set<string>>(new Set());
   const favoritesOfflineEnabled = useAuthStore(s => s.favoritesOfflineEnabled);
   const activeServerId = useAuthStore(s => s.activeServerId);
-  const musicLibrarySelectionByServer = useAuthStore(s => s.musicLibrarySelectionByServer);
-  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const [searchParams] = useSearchParams();
   const detailServerId = readDetailServerId(searchParams, activeServerId);
   const offlineBrowseActive = useOfflineBrowseContext().active && !!detailServerId;
@@ -74,9 +75,15 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
       artistId: string | undefined,
       useLocalArtist: boolean,
       localBytesOnly: boolean,
+      scopes?: LibraryScopePair[],
     ) => {
       if (!artistId) return;
       try {
+        if (serverId && scopes?.length) {
+          const scoped = await tryLoadArtistDetailMultiScope(scopes, serverId, artistId);
+          if (scoped) setRelatedAlbums(scoped.albums.filter(a => a.id !== id));
+          return;
+        }
         if (useLocalArtist && serverId) {
           const artistLocal = localBytesOnly
             ? await loadArtistFromLocalPlayback(serverId, artistId)
@@ -98,6 +105,7 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
     };
 
     void (async () => {
+      const browseScope = getLibraryBrowseScope();
       if (offlineBrowseActive && detailServerId) {
         const local = await resolveAlbum(detailServerId, id);
         if (local) {
@@ -114,13 +122,21 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
         return;
       }
 
-      if (detailServerId && librarySelectionForServer(detailServerId).length > 0) {
-        const multi = await tryLoadAlbumDetailMultiScope(detailServerId, id);
+      if (detailServerId && browseScope.pairs.length > 0) {
+        const multi = await tryLoadAlbumDetailMultiScope(browseScope.pairs, detailServerId, id);
         if (multi) {
           applyAlbumPayload(multi);
-          await loadRelatedAlbums(detailServerId, multi.album.artistId, true, false);
+          await loadRelatedAlbums(
+            multi.album.serverId ?? detailServerId,
+            multi.album.artistId,
+            true,
+            false,
+            browseScope.pairs,
+          );
           return;
         }
+        setLoading(false);
+        return;
       }
 
       // Index-first when the local SQLite index is ready, not only when the
@@ -191,8 +207,7 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
     detailServerId,
     favoritesOfflineEnabled,
     id,
-    musicLibraryFilterVersion,
-    musicLibrarySelectionByServer,
+    libraryBrowseScopeVersion,
     offlineBrowseActive,
     searchParams,
   ]);

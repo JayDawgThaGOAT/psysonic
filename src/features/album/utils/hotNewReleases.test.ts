@@ -14,13 +14,21 @@ function album(id: string, created: string, serverId = 's1'): SubsonicAlbum {
 describe('hot New Releases overlay', () => {
   beforeEach(() => getAlbumListForServer.mockReset());
 
-  it('merges by album id and orders by catalog creation time', () => {
+  it('merges only equal owner identities and orders by catalog creation time', () => {
     const merged = mergeHotNewReleases(
       [album('local', '2026-01-01T00:00:00Z'), album('same', '2026-01-01T00:00:00Z')],
-      [album('hot', '2026-01-03T00:00:00Z', 's2'), album('same', '2026-01-02T00:00:00Z', 's2')],
+      [
+        album('hot', '2026-01-03T00:00:00Z', 's2'),
+        album('same', '2026-01-02T00:00:00Z', 's2'),
+        album('same', '2026-01-04T00:00:00Z', 's1'),
+      ],
     );
-    expect(merged.map(item => item.id)).toEqual(['hot', 'same', 'local']);
-    expect(merged.find(item => item.id === 'same')?.serverId).toBe('s2');
+    expect(merged.map(item => `${item.serverId}:${item.id}`)).toEqual([
+      's1:same',
+      's2:hot',
+      's2:same',
+      's1:local',
+    ]);
   });
 
   it('requests each selected library and keeps only recent valid dates', async () => {

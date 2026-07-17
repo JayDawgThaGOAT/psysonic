@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 const CURRENT_YEAR = new Date().getFullYear();
 const MIN_YEAR = 1950;
@@ -76,7 +77,7 @@ export function useFavoritesSongFiltering(deps: FavoritesSongFilteringDeps): Fav
   const filteredSongs = useMemo(() => {
     return songs.filter(s => {
       // Remove unfavorited
-      if (starredOverrides[s.id] === false) return false;
+      if ((starredOverrides[ownedEntityKey(s)] ?? starredOverrides[s.id]) === false) return false;
 
       // Artist filter (composite key when favorites span servers)
       if (selectedArtist) {
@@ -126,8 +127,8 @@ export function useFavoritesSongFiltering(deps: FavoritesSongFilteringDeps): Fav
         case 'album':
           return multiplier * ((a.album || '').localeCompare(b.album || ''));
         case 'rating': {
-          const ratingA = ratings[a.id] ?? userRatingOverrides[a.id] ?? a.userRating ?? 0;
-          const ratingB = ratings[b.id] ?? userRatingOverrides[b.id] ?? b.userRating ?? 0;
+          const ratingA = ratings[ownedEntityKey(a)] ?? userRatingOverrides[ownedEntityKey(a)] ?? userRatingOverrides[a.id] ?? a.userRating ?? 0;
+          const ratingB = ratings[ownedEntityKey(b)] ?? userRatingOverrides[ownedEntityKey(b)] ?? userRatingOverrides[b.id] ?? b.userRating ?? 0;
           return multiplier * (ratingA - ratingB);
         }
         case 'duration':

@@ -23,6 +23,8 @@ import {
 } from '@/lib/library/favoritesBrowseDebug';
 import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 
 const FAV_COLUMNS: readonly ColDef[] = [
   { key: 'num',        i18nKey: null,              minWidth: 60,  defaultWidth: 60,  required: true  },
@@ -92,17 +94,18 @@ export default function Favorites() {
   const isPlaying = usePlayerStore(s => s.isPlaying);
   const starredOverrides = usePlayerStore(s => s.starredOverrides);
 
-  const handleRate = (songId: string, rating: number) => {
-    setRatings(r => ({ ...r, [songId]: rating }));
+  const handleRate = (song: SubsonicSong, rating: number) => {
+    const key = ownedEntityKey(song);
+    setRatings(r => ({ ...r, [key]: rating }));
     // F4: optimistic override + retried server sync via the central helper.
-    queueSongRating(songId, rating);
+    queueSongRating(song.id, rating, song.serverId, { scopedOverride: true });
   };
 
-  function removeSong(id: string) {
+  function removeSong(song: SubsonicSong) {
     // F4: optimistic un-star + retried server sync via the central helper.
-    const song = songs.find(s => s.id === id);
-    queueSongStar(id, false, song?.serverId);
-    setSongs(prev => prev.filter(s => s.id !== id));
+    const key = ownedEntityKey(song);
+    queueSongStar(song.id, false, song.serverId, { scopedOverride: true });
+    setSongs(prev => prev.filter(candidate => ownedEntityKey(candidate) !== key));
   }
 
   const { visibleSongs, handleSortClick, getSortIndicator } = useFavoritesSongFiltering({

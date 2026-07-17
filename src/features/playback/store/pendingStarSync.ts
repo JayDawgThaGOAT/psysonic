@@ -2,6 +2,7 @@ import { setRating, star, unstar } from '@/lib/api/subsonicStarRating';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { patchCachedTrack } from '@/features/playback/store/queueTrackResolver';
 import { onActiveServerBecameReachable } from '@/lib/network/activeServerReachability';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 /**
  * F4 — pending-sync for **song** star + rating (spec §6.5 / R7-18).
@@ -26,8 +27,8 @@ import { onActiveServerBecameReachable } from '@/lib/network/activeServerReachab
  */
 
 type Task =
-  | { kind: 'star'; id: string; starred: boolean; serverId?: string }
-  | { kind: 'rating'; id: string; rating: number };
+  | { kind: 'star'; id: string; starred: boolean; serverId?: string; overrideKey: string }
+  | { kind: 'rating'; id: string; rating: number; serverId?: string; overrideKey: string };
 
 const pending = new Map<string, Task>(); // key `${kind}:${id}` — latest wins
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -36,7 +37,7 @@ const MAX_BACKOFF_MS = 30_000;
 let listenersArmed = false;
 
 const keyOf = (t: Task) =>
-  t.kind === 'star' ? `star:${t.serverId ?? ''}:${t.id}` : `${t.kind}:${t.id}`;
+  `${t.kind}:${t.serverId ?? ''}:${t.id}`;
 
 function armListeners(): void {
   if (listenersArmed || typeof window === 'undefined') return;
@@ -68,10 +69,11 @@ async function run(k: string): Promise<void> {
       const meta = task.serverId ? { serverId: task.serverId } : undefined;
       if (task.starred) await star(task.id, 'song', meta);
       else await unstar(task.id, 'song', meta);
-      onStarSuccess(task.id, task.starred);
+      onStarSuccess(task);
     } else {
-      await setRating(task.id, task.rating);
-      onRatingSuccess(task.id);
+      if (task.serverId) await setRating(task.id, task.rating, { serverId: task.serverId });
+      else await setRating(task.id, task.rating);
+      onRatingSuccess(task);
     }
     // Only retire the entry if a newer toggle hasn't superseded it mid-flight.
     if (pending.get(k) === task) {
@@ -86,36 +88,45 @@ async function run(k: string): Promise<void> {
   }
 }
 
-function onStarSuccess(id: string, starred: boolean): void {
-  const starredVal = starred ? new Date().toISOString() : undefined;
+function onStarSuccess(task: Extract<Task, { kind: 'star' }>): void {
+  const starredVal = task.starred ? new Date().toISOString() : undefined;
   // Keep the override — list views merge it (step 3 atop this file).
   usePlayerStore.setState(s => ({
     currentTrack:
-      s.currentTrack?.id === id ? { ...s.currentTrack, starred: starredVal } : s.currentTrack,
+      s.currentTrack?.id === task.id
+        && (!task.serverId || !s.currentTrack.serverId || s.currentTrack.serverId === task.serverId)
+        ? { ...s.currentTrack, starred: starredVal }
+        : s.currentTrack,
   }));
   // Thin-state: the queue's copy lives in the resolver cache. Patch it in place
   // to the synced value rather than dropping it — a dropped entry would blank the
   // visible queue row to a "…" placeholder until the next window re-resolve.
-  patchCachedTrack(id, { starred: starredVal });
+  patchCachedTrack(task.id, { starred: starredVal }, task.serverId);
 }
 
-function onRatingSuccess(id: string): void {
-  const rating = usePlayerStore.getState().userRatingOverrides[id];
+function onRatingSuccess(task: Extract<Task, { kind: 'rating' }>): void {
+  const rating = usePlayerStore.getState().userRatingOverrides[task.overrideKey];
   usePlayerStore.setState(s => {
-    if (!(id in s.userRatingOverrides)) return {};
+    if (!(task.overrideKey in s.userRatingOverrides)) return {};
     const next = { ...s.userRatingOverrides };
-    delete next[id];
+    delete next[task.overrideKey];
     return { userRatingOverrides: next };
   });
   // Patch the cached queue track in place (see onStarSuccess) so the row keeps
   // its title and shows the synced rating without flashing a placeholder.
-  if (rating !== undefined) patchCachedTrack(id, { userRating: rating });
+  if (rating !== undefined) patchCachedTrack(task.id, { userRating: rating }, task.serverId);
 }
 
 /** Optimistically (un)star a song and sync it to the server with retry. */
-export function queueSongStar(id: string, starred: boolean, serverId?: string): void {
-  usePlayerStore.getState().setStarredOverride(id, starred);
-  const t: Task = { kind: 'star', id, starred, serverId };
+export function queueSongStar(
+  id: string,
+  starred: boolean,
+  serverId?: string,
+  options?: { scopedOverride?: boolean },
+): void {
+  const overrideKey = options?.scopedOverride ? ownedEntityKey({ id, serverId }) : id;
+  usePlayerStore.getState().setStarredOverride(overrideKey, starred);
+  const t: Task = { kind: 'star', id, starred, serverId, overrideKey };
   const k = keyOf(t);
   pending.set(k, t);
   attempts.delete(k);
@@ -124,9 +135,15 @@ export function queueSongStar(id: string, starred: boolean, serverId?: string): 
 }
 
 /** Optimistically rate a song and sync it to the server with retry. */
-export function queueSongRating(id: string, rating: number): void {
-  usePlayerStore.getState().setUserRatingOverride(id, rating);
-  const t: Task = { kind: 'rating', id, rating };
+export function queueSongRating(
+  id: string,
+  rating: number,
+  serverId?: string,
+  options?: { scopedOverride?: boolean },
+): void {
+  const overrideKey = options?.scopedOverride ? ownedEntityKey({ id, serverId }) : id;
+  usePlayerStore.getState().setUserRatingOverride(overrideKey, rating);
+  const t: Task = { kind: 'rating', id, rating, serverId, overrideKey };
   const k = keyOf(t);
   pending.set(k, t);
   attempts.delete(k);

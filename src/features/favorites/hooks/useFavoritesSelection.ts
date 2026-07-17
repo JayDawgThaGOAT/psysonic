@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useSelectionStore } from '@/store/selectionStore';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export interface FavoritesSelectionResult {
   toggleSelect: (id: string, idx: number, shift: boolean) => void;
@@ -41,7 +42,8 @@ export function useFavoritesSelection(
         const from = Math.min(lastSelectedIdxRef.current, idx);
         const to = Math.max(lastSelectedIdxRef.current, idx);
         for (let j = from; j <= to; j++) {
-          const sid = visibleSongs[j]?.id;
+          const song = visibleSongs[j];
+          const sid = song ? ownedEntityKey(song) : null;
           if (sid) next.add(sid);
         }
       } else {

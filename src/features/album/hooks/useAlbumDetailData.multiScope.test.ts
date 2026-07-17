@@ -6,19 +6,10 @@ import { useAuthStore } from '@/store/authStore';
 
 const tryLoadAlbumDetailMultiScopeMock = vi.fn();
 const resolveAlbumMock = vi.fn();
-const librarySelectionForServerMock = vi.fn();
 
 vi.mock('@/features/album/hooks/loadAlbumDetailMultiScope', () => ({
   tryLoadAlbumDetailMultiScope: (...args: unknown[]) => tryLoadAlbumDetailMultiScopeMock(...args),
 }));
-
-vi.mock('@/lib/api/subsonicClient', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/lib/api/subsonicClient')>();
-  return {
-    ...actual,
-    librarySelectionForServer: (...args: unknown[]) => librarySelectionForServerMock(...args),
-  };
-});
 
 vi.mock('@/features/offline', () => ({
   resolveAlbum: (...args: unknown[]) => resolveAlbumMock(...args),
@@ -48,13 +39,20 @@ describe('useAlbumDetailData — multi-library selection', () => {
   beforeEach(() => {
     tryLoadAlbumDetailMultiScopeMock.mockReset();
     resolveAlbumMock.mockReset();
-    librarySelectionForServerMock.mockReset();
     useAuthStore.setState({
       activeServerId: 'srv-1',
-      servers: [{ id: 'srv-1', name: 'S', url: 'https://s.test', username: 'u', password: 'p' }],
+      servers: [
+        { id: 'srv-1', name: 'S1', url: 'https://s1.test', username: 'u', password: 'p' },
+        { id: 'srv-2', name: 'S2', url: 'https://s2.test', username: 'u', password: 'p' },
+      ],
       favoritesOfflineEnabled: false,
-      musicLibrarySelectionByServer: { 'srv-1': ['lib-a', 'lib-b'] },
-      musicLibraryFilterVersion: 0,
+      musicFoldersByServer: {
+        'srv-1': [{ id: 'lib-a', name: 'A' }],
+        'srv-2': [{ id: 'lib-b', name: 'B' }],
+      },
+      libraryBrowseServerIds: ['srv-1', 'srv-2'],
+      libraryBrowseSelectionByServer: { 'srv-1': ['lib-a'], 'srv-2': ['lib-b'] },
+      libraryBrowseScopeVersion: 0,
     });
   });
 
@@ -62,39 +60,44 @@ describe('useAlbumDetailData — multi-library selection', () => {
     vi.clearAllMocks();
   });
 
-  it('loads via tryLoadAlbumDetailMultiScope when more than one library is selected', async () => {
+  it('loads via the authoritative cross-server browse scope', async () => {
     tryLoadAlbumDetailMultiScopeMock.mockResolvedValue({
       album: { id: 'alb-1', name: 'Merged', artistId: 'art-1', songs: [] },
       songs: [{ id: 'trk-1', title: 'One' }],
     });
-    librarySelectionForServerMock.mockReturnValue(['lib-a', 'lib-b']);
-
     const { result } = renderHook(() => useAlbumDetailData('alb-1'), { wrapper: routerWrapper });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(tryLoadAlbumDetailMultiScopeMock).toHaveBeenCalledWith('srv-1', 'alb-1');
+    expect(tryLoadAlbumDetailMultiScopeMock).toHaveBeenCalledWith([
+      { serverId: 'srv-1', libraryId: 'lib-a' },
+      { serverId: 'srv-2', libraryId: 'lib-b' },
+    ], 'srv-1', 'alb-1');
     expect(resolveAlbumMock).not.toHaveBeenCalled();
     expect(result.current.album?.album).toMatchObject({ id: 'alb-1', name: 'Merged' });
     expect(result.current.album?.songs).toHaveLength(1);
   });
 
-  it('loads via tryLoadAlbumDetailMultiScope when one library is selected', async () => {
+  it('loads via the authoritative scope when one folder is selected', async () => {
+    useAuthStore.setState({
+      libraryBrowseServerIds: ['srv-1'],
+      libraryBrowseSelectionByServer: { 'srv-1': ['lib-a'] },
+    });
     tryLoadAlbumDetailMultiScopeMock.mockResolvedValue({
       album: { id: 'alb-1', name: 'Scoped', artistId: 'art-1', songs: [] },
       songs: [{ id: 'trk-1', title: 'One' }],
     });
-    librarySelectionForServerMock.mockReturnValue(['sampler']);
-
     const { result } = renderHook(() => useAlbumDetailData('alb-1'), { wrapper: routerWrapper });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(tryLoadAlbumDetailMultiScopeMock).toHaveBeenCalledWith('srv-1', 'alb-1');
+    expect(tryLoadAlbumDetailMultiScopeMock).toHaveBeenCalledWith([
+      { serverId: 'srv-1', libraryId: 'lib-a' },
+    ], 'srv-1', 'alb-1');
     expect(resolveAlbumMock).not.toHaveBeenCalled();
     expect(result.current.album?.album).toMatchObject({ name: 'Scoped' });
   });
 
-  it('does not call tryLoadAlbumDetailMultiScope when all libraries are selected', async () => {
-    librarySelectionForServerMock.mockReturnValue([]);
+  it('uses the direct resolver when no concrete browse scope is configured', async () => {
+    useAuthStore.setState({ musicFoldersByServer: {}, libraryBrowseServerIds: [] });
     resolveAlbumMock.mockResolvedValue({
       album: { id: 'alb-1', name: 'Single' },
       songs: [],
@@ -108,8 +111,7 @@ describe('useAlbumDetailData — multi-library selection', () => {
     expect(result.current.album?.album).toMatchObject({ id: 'alb-1', name: 'Single' });
   });
 
-  it('falls through to resolveAlbum when multi-scope load returns null', async () => {
-    librarySelectionForServerMock.mockReturnValue(['lib-a', 'lib-b']);
+  it('does not escape the authoritative scope when the scoped lookup misses', async () => {
     tryLoadAlbumDetailMultiScopeMock.mockResolvedValue(null);
     resolveAlbumMock.mockResolvedValue({
       album: { id: 'alb-1', name: 'Fallback' },
@@ -120,7 +122,7 @@ describe('useAlbumDetailData — multi-library selection', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(tryLoadAlbumDetailMultiScopeMock).toHaveBeenCalled();
-    expect(resolveAlbumMock).toHaveBeenCalled();
-    expect(result.current.album?.album).toMatchObject({ name: 'Fallback' });
+    expect(resolveAlbumMock).not.toHaveBeenCalled();
+    expect(result.current.album).toBeNull();
   });
 });

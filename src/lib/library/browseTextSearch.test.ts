@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const libraryListRandomArtists = vi.fn();
+const libraryAdvancedSearch = vi.fn();
 const librarySelectionForServer = vi.fn();
 const libraryIsReady = vi.fn();
+const waitForLibraryBrowseReady = vi.fn();
 
 vi.mock('@/lib/api/library', () => ({
   libraryListRandomArtists: (...args: unknown[]) => libraryListRandomArtists(...args),
+  libraryAdvancedSearch: (...args: unknown[]) => libraryAdvancedSearch(...args),
 }));
 vi.mock('@/lib/api/subsonicClient', () => ({
   libraryScopeForServer: vi.fn(),
@@ -14,11 +17,12 @@ vi.mock('@/lib/api/subsonicClient', () => ({
 }));
 vi.mock('./libraryReady', () => ({
   libraryIsReady: (...args: unknown[]) => libraryIsReady(...args),
-  waitForLibraryBrowseReady: vi.fn(),
+  waitForLibraryBrowseReady: (...args: unknown[]) => waitForLibraryBrowseReady(...args),
 }));
 
 import {
   browseRaceCountsArtists,
+  fetchLocalArtistCatalogChunk,
   filterBrowseArtistsByNameQuery,
   raceBrowseWithLocalFallback,
   runLocalRandomArtists,
@@ -29,6 +33,44 @@ describe('filterBrowseArtistsByNameQuery', () => {
     const artists = [{ id: '1', name: 'Кино' }];
     expect(filterBrowseArtistsByNameQuery(artists, 'кин')).toHaveLength(1);
     expect(filterBrowseArtistsByNameQuery(artists, 'КИН')).toHaveLength(1);
+  });
+});
+
+describe('fetchLocalArtistCatalogChunk', () => {
+  beforeEach(() => {
+    libraryAdvancedSearch.mockReset();
+    waitForLibraryBrowseReady.mockReset();
+  });
+
+  it('forwards authoritative cross-server scopes without a legacy single-server scope', async () => {
+    waitForLibraryBrowseReady.mockResolvedValue({ ready: true, waitedMs: 0 });
+    libraryAdvancedSearch.mockResolvedValue({
+      source: 'local',
+      artists: [{ serverId: 'server-b', id: 'artist-b', name: 'Only on B', rawJson: {} }],
+    });
+    const scopes = [
+      { serverId: 'server-a', libraryId: 'library-a' },
+      { serverId: 'server-b', libraryId: 'library-b' },
+    ];
+
+    await expect(fetchLocalArtistCatalogChunk(
+      'server-a',
+      0,
+      200,
+      'album',
+      undefined,
+      { libraryScopes: scopes },
+    )).resolves.toEqual({
+      artists: [expect.objectContaining({ serverId: 'server-b', id: 'artist-b' })],
+      hasMore: false,
+    });
+
+    expect(libraryAdvancedSearch).toHaveBeenCalledWith(expect.objectContaining({
+      serverId: 'server-a',
+      libraryScope: undefined,
+      libraryScopes: scopes,
+      entityTypes: ['artist'],
+    }));
   });
 });
 

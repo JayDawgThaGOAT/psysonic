@@ -7,6 +7,7 @@ import { useSelectionStore } from '@/store/selectionStore';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/ContextMenu';
 import GenreFilterBar from '@/ui/GenreFilterBar';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 interface Props {
   visibleSongs: SubsonicSong[];
@@ -45,7 +46,7 @@ export default function FavoritesSongsSectionHeader({
 
   const targetSongs = useMemo(() => {
     if (!inSelectMode) return visibleSongs;
-    return visibleSongs.filter(s => selectedIds.has(s.id));
+    return visibleSongs.filter(s => selectedIds.has(ownedEntityKey(s)));
   }, [inSelectMode, visibleSongs, selectedIds]);
 
   // Snapshot selection when the picker opens so add-to-playlist still sees every
@@ -60,8 +61,8 @@ export default function FavoritesSongsSectionHeader({
         {(selectedArtist || selectedGenres.length > 0 || yearRange[0] !== minYear || yearRange[1] !== currentYear) && (
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
             {selectedArtist
-              ? t('favorites.showingFiltered', { filtered: visibleSongs.length, total: songs.filter(s => starredOverrides[s.id] !== false).length, artist: selectedArtistName ?? selectedArtist })
-              : t('favorites.showingCount', { filtered: visibleSongs.length, total: songs.filter(s => starredOverrides[s.id] !== false).length })}
+              ? t('favorites.showingFiltered', { filtered: visibleSongs.length, total: songs.filter(s => (starredOverrides[ownedEntityKey(s)] ?? starredOverrides[s.id]) !== false).length, artist: selectedArtistName ?? selectedArtist })
+              : t('favorites.showingCount', { filtered: visibleSongs.length, total: songs.filter(s => (starredOverrides[ownedEntityKey(s)] ?? starredOverrides[s.id]) !== false).length })}
           </span>
         )}
       </div>

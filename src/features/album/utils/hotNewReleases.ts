@@ -1,6 +1,7 @@
 import { getAlbumListForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export const HOT_NEW_RELEASE_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 const HOT_NEW_RELEASE_SAMPLE_SIZE = 24;
@@ -16,10 +17,11 @@ export function mergeHotNewReleases(
   hot: SubsonicAlbum[],
 ): SubsonicAlbum[] {
   const byId = new Map<string, SubsonicAlbum>();
-  for (const album of local) byId.set(album.id, album);
+  for (const album of local) byId.set(ownedEntityKey(album), album);
   for (const album of hot) {
-    const prior = byId.get(album.id);
-    byId.set(album.id, prior ? { ...prior, ...album } : album);
+    const key = ownedEntityKey(album);
+    const prior = byId.get(key);
+    byId.set(key, prior ? { ...prior, ...album } : album);
   }
   return [...byId.values()].sort((left, right) => (
     (createdAtMs(right) ?? -Infinity) - (createdAtMs(left) ?? -Infinity)

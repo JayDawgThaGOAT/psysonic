@@ -1,6 +1,6 @@
 import {
   libraryScopeAlbumDetail,
-  scopePairsFromLibrarySelection,
+  type LibraryScopePair,
 } from '@/lib/api/library/scopeReads';
 import { albumToAlbum, trackToSong } from '@/lib/library/advancedSearchLocal';
 import type { ResolvedAlbum } from '@/features/offline';
@@ -10,12 +10,13 @@ import type { ResolvedAlbum } from '@/features/offline';
  * (one or more). Returns null on IPC failure or when the merged album anchor is missing.
  */
 export async function tryLoadAlbumDetailMultiScope(
+  scopes: LibraryScopePair[],
   serverId: string,
   albumId: string,
 ): Promise<ResolvedAlbum | null> {
   try {
     const response = await libraryScopeAlbumDetail(serverId, {
-      scopes: scopePairsFromLibrarySelection(serverId),
+      scopes,
       albumId,
       serverId,
     });

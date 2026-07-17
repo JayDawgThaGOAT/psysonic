@@ -40,6 +40,7 @@ import {
 import { libraryIsReady, waitForLibraryBrowseReady } from './libraryReady';
 import { artistBrowseTimed, emitArtistsBrowseDebug } from './artistBrowseDebug';
 import { raceSearchSources, type SearchRaceWinner } from './searchRace';
+import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
 
 export type { LibrarySearchSurface };
 
@@ -622,6 +623,7 @@ export async function fetchLocalArtistCatalogChunk(
   chunkSize: number,
   creditMode: ArtistCreditMode = 'album',
   letterBucket?: string | null,
+  options?: { libraryScopes?: LibraryScopePair[]; starredOnly?: boolean },
 ): Promise<ArtistCatalogChunkResult | null> {
   if (!serverId) return null;
   const { ready, waitedMs } = await artistBrowseTimed(
@@ -639,10 +641,15 @@ export async function fetchLocalArtistCatalogChunk(
       'rust_advanced_search',
       () => libraryAdvancedSearch({
         serverId,
-        libraryScope: libraryScopeForServer(serverId) ?? undefined,
-        libraryScopes: libraryScopePairsForServer(serverId),
+        libraryScope: options?.libraryScopes?.length
+          ? undefined
+          : libraryScopeForServer(serverId) ?? undefined,
+        libraryScopes: options?.libraryScopes?.length
+          ? options.libraryScopes
+          : libraryScopePairsForServer(serverId),
         entityTypes: ['artist'],
         artistCreditMode: creditMode,
+        starredOnly: options?.starredOnly,
         ...(bucket ? { artistLetterBucket: bucket } : {}),
         sort: [{ field: 'name', dir: 'asc' }],
         limit: chunkSize,
