@@ -120,7 +120,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         ? Math.max(0, result.findIndex(r => r.trackId === currentTrack.id))
         : 0;
       set({ shuffleMode: enabling, queueItems: result, queueIndex: newIndex });
-      syncUserQueueMutationToServer(result, currentTrack, get().currentTime);
+      syncUserQueueMutationToServer(items, result, currentTrack, get().currentTime);
     },
 
     enqueue: (tracks, _orbitConfirmed = false, skipQueueUndo = false) => {
@@ -142,7 +142,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         const newItems = firstAutoIdx === -1
           ? [...items, ...incoming]
           : [...items.slice(0, firstAutoIdx), ...incoming, ...items.slice(firstAutoIdx)];
-        syncUserQueueMutationToServer(newItems, state.currentTrack, state.currentTime);
+        syncUserQueueMutationToServer(items, newItems, state.currentTrack, state.currentTime);
         prefetchLoudnessForEnqueuedTracks(newItems, state.queueIndex);
         return { queueItems: newItems };
       });
@@ -201,7 +201,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
           ? [...upcoming, ...incoming]
           : [...upcoming.slice(0, firstAutoIdx), ...incoming, ...upcoming.slice(firstAutoIdx)];
         const newItems = [...beforeAndCurrent, ...mergedItems];
-        syncUserQueueMutationToServer(newItems, state.currentTrack, state.currentTime);
+        syncUserQueueMutationToServer(items, newItems, state.currentTrack, state.currentTime);
         return { queueItems: newItems };
       });
     },
@@ -224,7 +224,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         const newQueueIndex = idx <= state.queueIndex
           ? state.queueIndex + tracks.length
           : state.queueIndex;
-        syncUserQueueMutationToServer(newItems, state.currentTrack, state.currentTime);
+        syncUserQueueMutationToServer(items, newItems, state.currentTrack, state.currentTime);
         prefetchLoudnessForEnqueuedTracks(newItems, newQueueIndex);
         return { queueItems: newItems, queueIndex: newQueueIndex };
       });
@@ -270,7 +270,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         : toQueueItemRefs(s.queueServerId ?? '', [s.currentTrack!]);
       const newIndex = at >= 0 ? at : 0;
       set({ queueItems: newItems, queueIndex: newIndex });
-      syncUserQueueMutationToServer(newItems, s.currentTrack, s.currentTime);
+      syncUserQueueMutationToServer(items, newItems, s.currentTrack, s.currentTime);
     },
 
     clearQueue: () => {
@@ -302,13 +302,14 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       pushQueueUndoFromGetter(get);
       const state = get();
       const { queueIndex, currentTrack } = state;
-      const result = itemsOf(state);
+      const previousItems = itemsOf(state);
+      const result = [...previousItems];
       const [removed] = result.splice(startIndex, 1);
       result.splice(endIndex, 0, removed);
       let newIndex = queueIndex;
       if (currentTrack) newIndex = result.findIndex(r => r.trackId === currentTrack.id);
       set({ queueItems: result, queueIndex: Math.max(0, newIndex) });
-      syncUserQueueMutationToServer(result, currentTrack, get().currentTime);
+      syncUserQueueMutationToServer(previousItems, result, currentTrack, get().currentTime);
     },
 
     shuffleQueue: () => {
@@ -328,7 +329,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         : others;
       const newIndex = currentIdx >= 0 ? 0 : -1;
       set({ queueItems: result, queueIndex: Math.max(0, newIndex) });
-      syncUserQueueMutationToServer(result, currentTrack, get().currentTime);
+      syncUserQueueMutationToServer(items, result, currentTrack, get().currentTime);
     },
 
     shuffleUpcomingQueue: () => {
@@ -347,20 +348,21 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       }
       const result = [...head, ...upcoming];
       set({ queueItems: result });
-      syncUserQueueMutationToServer(result, currentTrack, get().currentTime);
+      syncUserQueueMutationToServer(items, result, currentTrack, get().currentTime);
     },
 
     removeTrack: (index) => {
       pushQueueUndoFromGetter(get);
       const state = get();
       const { queueIndex } = state;
-      const newItems = itemsOf(state);
+      const previousItems = itemsOf(state);
+      const newItems = [...previousItems];
       newItems.splice(index, 1);
       set({
         queueItems: newItems,
         queueIndex: Math.min(queueIndex, newItems.length - 1),
       });
-      syncUserQueueMutationToServer(newItems, get().currentTrack, get().currentTime);
+      syncUserQueueMutationToServer(previousItems, newItems, get().currentTrack, get().currentTime);
     },
   };
 }

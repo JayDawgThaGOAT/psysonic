@@ -179,7 +179,7 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
         queueIndex: 0,
         currentTrack: track,
       });
-      syncUserQueueMutationToServer(newItems, track, s.currentTime);
+      syncUserQueueMutationToServer(s.queueItems, newItems, track, s.currentTime);
       if (!wasPlaying) get().resume();
     },
   };

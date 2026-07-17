@@ -27,6 +27,7 @@ export default function FolderBrowser() {
   const [keyboardNavActive, setKeyboardNavActive] = useState(false);
   const filterInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
   const pendingNavColRef = useRef<number | null>(null);
+  const requestGenerationRef = useRef(0);
   const [keyboardPos, setKeyboardPos] = useState<NavPos | null>(null);
   const [contextAnchorPos, setContextAnchorPos] = useState<NavPos | null>(null);
   const currentTrack = usePlayerStore(s => s.currentTrack);
@@ -194,9 +195,12 @@ export default function FolderBrowser() {
       : columns[colIndex]?.kind === 'artists'
         ? 'albums'
         : 'tracks';
+    const requestGeneration = ++requestGenerationRef.current;
+    const parentKey = folderBrowserEntryKey(item);
+    const targetColIndex = colIndex + 1;
     setColumns(prev => [
       ...prev.slice(0, colIndex + 1).map((c, i) =>
-        i === colIndex ? { ...c, selectedKey: folderBrowserEntryKey(item) } : c,
+        i === colIndex ? { ...c, selectedKey: parentKey } : c,
       ),
       {
         id: item.id,
@@ -224,19 +228,33 @@ export default function FolderBrowser() {
       .then(items => {
         const serverItems = items.map(entry => ({ ...entry, serverId: entry.serverId ?? serverId }));
         setColumns(prev => {
-          const idx = prev.findIndex(c => c.id === item.id && c.loading);
-          if (idx === -1) return prev;
+          const parent = prev[colIndex];
+          const target = prev[targetColIndex];
+          if (
+            requestGenerationRef.current !== requestGeneration
+            || parent?.selectedKey !== parentKey
+            || !target?.loading
+            || target.id !== item.id
+            || target.serverId !== serverId
+          ) return prev;
           const next = [...prev];
-          next[idx] = { ...next[idx], items: serverItems, loading: false };
+          next[targetColIndex] = { ...target, items: serverItems, loading: false };
           return next;
         });
       })
       .catch(() => {
         setColumns(prev => {
-          const idx = prev.findIndex(c => c.id === item.id && c.loading);
-          if (idx === -1) return prev;
+          const parent = prev[colIndex];
+          const target = prev[targetColIndex];
+          if (
+            requestGenerationRef.current !== requestGeneration
+            || parent?.selectedKey !== parentKey
+            || !target?.loading
+            || target.id !== item.id
+            || target.serverId !== serverId
+          ) return prev;
           const next = [...prev];
-          next[idx] = { ...next[idx], loading: false, error: true };
+          next[targetColIndex] = { ...target, loading: false, error: true };
           return next;
         });
       });

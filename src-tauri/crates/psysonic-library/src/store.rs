@@ -984,6 +984,18 @@ fn apply_migration_14(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Apply schema 022 idempotently so a crash after `ADD COLUMN` can recover.
+fn apply_migration_22(conn: &Connection) -> rusqlite::Result<()> {
+    if !artist_name_fold_column_exists(conn)? {
+        conn.execute_batch("ALTER TABLE artist ADD COLUMN name_fold TEXT;")?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_artist_name_fold ON artist(server_id, name_fold);",
+    )?;
+    maybe_reconcile_artist_name_fold(conn)?;
+    Ok(())
+}
+
 fn record_schema_migration(conn: &Connection, version: i64) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%s','now'))",
@@ -1391,6 +1403,11 @@ pub(crate) fn run_migrations_with(
             // schema_migrations row — recovers instead of failing on a
             // duplicate-column re-run of the batch.
             apply_migration_14(conn)?;
+            record_schema_migration(conn, version)?;
+            continue;
+        }
+        if version == 22 {
+            apply_migration_22(conn)?;
             record_schema_migration(conn, version)?;
             continue;
         }
@@ -1890,6 +1907,65 @@ mod tests {
             )
             .expect("count migration after");
         assert_eq!(recorded_after, 1);
+    }
+
+    #[test]
+    fn migration_22_recovers_partial_schema_without_schema_migrations_row() {
+        let uri = in_memory_uri();
+        let conn = Connection::open(&uri).expect("connection");
+        configure_write_connection(&conn).expect("pragmas");
+        let migrations_through_21: Vec<(i64, &str)> = MIGRATIONS
+            .iter()
+            .copied()
+            .filter(|(version, _)| *version <= 21)
+            .collect();
+        run_migrations_with(
+            &conn,
+            &migrations_through_21,
+            LIBRARY_DB_MIN_COMPATIBLE_VERSION,
+            no_op_hook,
+        )
+        .expect("migrate through v21");
+        conn.execute(
+            "INSERT INTO artist (server_id, id, name, synced_at) VALUES ('s1', 'ar1', 'КИНО', 1)",
+            [],
+        )
+        .expect("seed artist");
+        conn.execute_batch("ALTER TABLE artist ADD COLUMN name_fold TEXT;")
+            .expect("apply partial migration ddl");
+
+        run_migrations_with(
+            &conn,
+            MIGRATIONS,
+            LIBRARY_DB_MIN_COMPATIBLE_VERSION,
+            no_op_hook,
+        )
+        .expect("recover partial migration");
+
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 22",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration marker");
+        assert_eq!(recorded, 1);
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_artist_name_fold'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index marker");
+        assert_eq!(index_exists, 1);
+        let name_fold: String = conn
+            .query_row(
+                "SELECT name_fold FROM artist WHERE server_id = 's1' AND id = 'ar1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("backfilled fold");
+        assert_eq!(name_fold, "кино");
     }
 
     const LIBRARY_SCOPE_INDEXES: [&str; 4] = [

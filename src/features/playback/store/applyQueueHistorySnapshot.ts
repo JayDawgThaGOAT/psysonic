@@ -210,7 +210,7 @@ export function applyQueueHistorySnapshot(
   if (!nextTrack) {
     audioStop().catch(console.error);
     setIsAudioPaused(false);
-    syncUserQueueMutationToServer(nextItems, null, 0);
+    syncUserQueueMutationToServer(prior.queueItems, nextItems, null, 0);
     if (typeof snap.queueListScrollTop === 'number' && Number.isFinite(snap.queueListScrollTop)) {
       setPendingQueueListScrollTop(Math.max(0, snap.queueListScrollTop));
     }
@@ -236,6 +236,6 @@ export function applyQueueHistorySnapshot(
   if (typeof snap.queueListScrollTop === 'number' && Number.isFinite(snap.queueListScrollTop)) {
     setPendingQueueListScrollTop(Math.max(0, snap.queueListScrollTop));
   }
-  syncUserQueueMutationToServer(nextItems, nextTrack, tRestore);
+  syncUserQueueMutationToServer(prior.queueItems, nextItems, nextTrack, tRestore);
   return true;
 }

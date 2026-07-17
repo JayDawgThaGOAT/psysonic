@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import { useAuthStore } from '@/store/authStore';
@@ -38,6 +38,16 @@ vi.mock('@/features/folderBrowser/hooks/useFolderBrowserKeyboardNav', () => ({
 }));
 
 import FolderBrowser from './FolderBrowser';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 describe('FolderBrowser', () => {
   beforeEach(() => {
@@ -130,5 +140,30 @@ describe('FolderBrowser', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it('ignores a stale equal-id response after switching to another server', async () => {
+    const user = userEvent.setup();
+    const alpha = deferred<Array<{ serverId: string; id: string; name: string }>>();
+    const beta = deferred<Array<{ serverId: string; id: string; name: string }>>();
+    libraryScopeListArtistsMock.mockImplementation((serverId: string) => (
+      serverId === 'server-a' ? alpha.promise : beta.promise
+    ));
+
+    renderWithProviders(<FolderBrowser />, { route: '/folders' });
+    await user.click(await screen.findByRole('button', { name: 'Alpha - Library A' }));
+    await user.click(screen.getByRole('button', { name: 'Beta - Library B' }));
+
+    await act(async () => {
+      alpha.resolve([{ serverId: 'server-a', id: 'artist-a', name: 'Stale Alpha Artist' }]);
+      await alpha.promise;
+    });
+    expect(screen.queryByRole('button', { name: 'Stale Alpha Artist' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      beta.resolve([{ serverId: 'server-b', id: 'artist-b', name: 'Current Beta Artist' }]);
+      await beta.promise;
+    });
+    expect(await screen.findByRole('button', { name: 'Current Beta Artist' })).toBeInTheDocument();
   });
 });

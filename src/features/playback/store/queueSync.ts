@@ -123,13 +123,22 @@ function scheduleQueueSyncToServer(
 }
 
 function scheduleUserQueueSyncByServer(
-  queue: QueueItemRef[],
+  previousQueue: QueueItemRef[],
+  nextQueue: QueueItemRef[],
   currentTrack: Track | null,
   currentTime: number,
 ): void {
-  for (const [serverId, refs] of queueRefsByServer(queue)) {
-    if (!isQueueServerReachable(serverId)) continue;
+  const previousByServer = queueRefsByServer(previousQueue);
+  const nextByServer = queueRefsByServer(nextQueue);
+  const serverIds = new Set([...previousByServer.keys(), ...nextByServer.keys()]);
+  for (const serverId of serverIds) {
+    const refs = nextByServer.get(serverId);
+    if (!refs) {
+      scheduleQueueClearForServer(serverId);
+      continue;
+    }
     cancelPendingQueueSync(serverId);
+    if (!isQueueServerReachable(serverId)) continue;
     const timeout = setTimeout(() => {
       syncTimeoutByServer.delete(serverId);
       if (!isQueueServerReachable(serverId)) return;
@@ -140,8 +149,8 @@ function scheduleUserQueueSyncByServer(
 }
 
 function scheduleQueueClearForServer(serverId: string): void {
-  if (!isQueueServerReachable(serverId)) return;
   cancelPendingQueueSync(serverId);
+  if (!isQueueServerReachable(serverId)) return;
   const timeout = setTimeout(() => {
     syncTimeoutByServer.delete(serverId);
     if (!isQueueServerReachable(serverId)) return;
@@ -160,12 +169,13 @@ export function syncQueueToServer(queue: QueueItemRef[], currentTrack: Track | n
 
 /** Debounced push after a user queue edit — suspends idle auto-pull until manual sync or Play. */
 export function syncUserQueueMutationToServer(
-  queue: QueueItemRef[],
+  previousQueue: QueueItemRef[],
+  nextQueue: QueueItemRef[],
   currentTrack: Track | null,
   currentTime: number,
 ): void {
   touchQueueMutationClock();
-  scheduleUserQueueSyncByServer(queue, currentTrack, currentTime);
+  scheduleUserQueueSyncByServer(previousQueue, nextQueue, currentTrack, currentTime);
 }
 
 /** Debounced remote clear for every server represented by the removed local refs. */
