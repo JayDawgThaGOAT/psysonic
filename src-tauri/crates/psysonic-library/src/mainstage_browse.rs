@@ -234,7 +234,7 @@ pub fn list_mainstage_albums(
     let requested_results = offset.saturating_add(fetch_limit);
     let initial_candidates = candidate_limit(offset, fetch_limit);
 
-    store.with_read_conn(|conn| {
+    store.with_mainstage_read_conn(|conn| {
         let genre_counts_start = std::time::Instant::now();
         let genre_counts = if request.include_genre_counts
             && request.feed == LibraryMainstageAlbumFeed::NewReleases
