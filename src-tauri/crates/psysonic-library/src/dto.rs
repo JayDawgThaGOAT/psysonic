@@ -720,6 +720,41 @@ pub struct LibraryScopePair {
     pub library_id: String,
 }
 
+/// Entity surface served by the cursor-based scoped browse engine.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LibraryScopeBrowseEntity {
+    Album,
+    Artist,
+    Track,
+}
+
+/// Indexed catalogue browse request. FTS and arbitrary compound filters remain
+/// on `library_advanced_search`; this contract powers ordinary entity pages.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeBrowseRequest {
+    pub entity: LibraryScopeBrowseEntity,
+    pub scopes: Vec<LibraryScopePair>,
+    #[serde(default)]
+    pub sort: Vec<LibrarySortClause>,
+    pub limit: u32,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeBrowseResponse {
+    pub albums: Vec<LibraryAlbumDto>,
+    pub artists: Vec<LibraryArtistDto>,
+    pub tracks: Vec<LibraryTrackDto>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub source: String,
+}
+
 /// Derive ordered `(server_id, library_id)` pairs from request fields.
 /// List order is merge priority (index 0 wins). Empty = all libraries on the server.
 pub(crate) fn ordered_library_scope_pairs(

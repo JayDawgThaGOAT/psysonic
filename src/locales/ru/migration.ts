@@ -12,4 +12,7 @@ export const migration = {
   genreTagsTitle: 'Обновление индекса жанров…',
   genreTagsBody: 'Индексируем жанры для просмотра и фильтров. Выполняется один раз после обновления.',
   genreTagsFailed: 'Не удалось обновить индекс жанров',
+  scopeBrowseProjectionTitle: 'Обновление индекса библиотеки…',
+  scopeBrowseProjectionBody: 'Подготавливаем каталог альбомов для более быстрого просмотра. Выполняется один раз после обновления.',
+  scopeBrowseProjectionFailed: 'Не удалось обновить индекс библиотеки',
 };

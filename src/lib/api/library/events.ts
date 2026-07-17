@@ -5,10 +5,12 @@
  */
 import { commands } from '@/generated/bindings';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import type {
   LibrarySyncProgressPayload,
   LibrarySyncIdlePayload,
   GenreTagsInspectDto,
+  ScopeBrowseProjectionInspectDto,
 } from './dto';
 
 export function subscribeLibrarySyncProgress(
@@ -36,4 +38,12 @@ export async function libraryGenreTagsInspect(): Promise<GenreTagsInspectDto> {
 export async function libraryGenreTagsRun(): Promise<void> {
   const res = await commands.libraryGenreTagsRun();
   if (res.status === 'error') throw new Error(res.error);
+}
+
+export function libraryScopeBrowseProjectionInspect(): Promise<ScopeBrowseProjectionInspectDto> {
+  return invoke('library_scope_browse_projection_inspect');
+}
+
+export function libraryScopeBrowseProjectionRun(): Promise<void> {
+  return invoke('library_scope_browse_projection_run');
 }

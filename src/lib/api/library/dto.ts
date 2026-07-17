@@ -172,6 +172,12 @@ export interface SyncJobDto {
   kind: string; // 'initial_sync' | 'delta_sync'
 }
 
+export interface ScopeBrowseProjectionInspectDto {
+  needed: boolean;
+  totalTracks: number;
+  doneTracks: number;
+}
+
 // ── Advanced Search (PR-5d, §5.13 / §5.5B) ────────────────────────────
 
 export type LibraryEntityType = 'artist' | 'album' | 'track';
@@ -200,6 +206,25 @@ export interface LibrarySortClause {
 export interface LibraryScopePair {
   serverId: string;
   libraryId: string;
+}
+
+export type LibraryScopeBrowseEntity = 'album' | 'artist' | 'track';
+
+export interface LibraryScopeBrowseRequest {
+  entity: LibraryScopeBrowseEntity;
+  scopes: LibraryScopePair[];
+  sort?: LibrarySortClause[];
+  limit: number;
+  cursor?: string | null;
+}
+
+export interface LibraryScopeBrowseResponse {
+  albums: LibraryAlbumDto[];
+  artists: LibraryArtistDto[];
+  tracks: LibraryTrackDto[];
+  nextCursor?: string | null;
+  hasMore: boolean;
+  source: string;
 }
 
 export interface LibraryAdvancedSearchRequest {

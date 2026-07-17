@@ -11,6 +11,8 @@ pub(crate) mod bulk_ingest;
 pub mod advanced_search;
 pub mod album_compilation_filter;
 pub mod browse_support;
+pub mod scope_browse;
+pub mod browse_projection;
 mod advanced_search_mood;
 pub mod analysis_backfill;
 pub mod analysis_backfill_policy;

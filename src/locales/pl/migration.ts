@@ -12,4 +12,7 @@ export const migration = {
   genreTagsTitle: 'Aktualizowanie indeksu gatunków…',
   genreTagsBody: 'Indeksowanie gatunków do przeglądania i filtrów. Uruchamia się jednorazowo po aktualizacji.',
   genreTagsFailed: 'Aktualizacja indeksu gatunków nie powiodła się',
+  scopeBrowseProjectionTitle: 'Aktualizowanie indeksu przeglądania biblioteki…',
+  scopeBrowseProjectionBody: 'Przygotowywanie katalogu albumów do szybszego przeglądania. Uruchamia się raz po aktualizacji.',
+  scopeBrowseProjectionFailed: 'Nie udało się zaktualizować indeksu przeglądania biblioteki',
 };

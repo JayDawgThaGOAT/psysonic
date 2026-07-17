@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 19;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 20;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -63,6 +63,9 @@ pub(crate) const MIGRATION_018_ARTIST_SYNCED_INDEX: &str =
 /// suffix-selective lossless browse index.
 pub(crate) const MIGRATION_019_MAINSTAGE_FEED_INDEXES: &str =
     include_str!("../migrations/019_mainstage_feed_indexes.sql");
+/// Version 20: materialized per-library album rows for keyset scope browse.
+pub(crate) const MIGRATION_020_SCOPE_BROWSE_PROJECTION: &str =
+    include_str!("../migrations/020_scope_browse_projection.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -76,6 +79,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (17, MIGRATION_017_LIBRARY_TAG_STATE),
     (18, MIGRATION_018_ARTIST_SYNCED_INDEX),
     (19, MIGRATION_019_MAINSTAGE_FEED_INDEXES),
+    (20, MIGRATION_020_SCOPE_BROWSE_PROJECTION),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -95,6 +99,10 @@ pub(crate) fn ensure_mainstage_feed_indexes(conn: &Connection) -> rusqlite::Resu
 /// not survive despite the migration marker being recorded.
 pub(crate) fn ensure_entity_user_rating_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(MIGRATION_019_MAINSTAGE_FEED_INDEXES)
+}
+
+pub(crate) fn ensure_scope_browse_projection_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(MIGRATION_020_SCOPE_BROWSE_PROJECTION)
 }
 
 
@@ -679,6 +687,7 @@ fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> 
     ensure_genre_tags_schema(conn)?;
     ensure_mainstage_feed_indexes(conn)?;
     ensure_entity_user_rating_schema(conn)?;
+    ensure_scope_browse_projection_schema(conn)?;
     checkpoint_wal_conn(conn, "open")?;
     Ok(())
 }

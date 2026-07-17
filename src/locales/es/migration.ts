@@ -12,4 +12,7 @@ export const migration = {
   genreTagsTitle: 'Actualizando índice de géneros…',
   genreTagsBody: 'Indexando géneros para exploración y filtros. Se ejecuta una vez tras la actualización.',
   genreTagsFailed: 'Error al actualizar el índice de géneros',
+  scopeBrowseProjectionTitle: 'Actualizando el índice de exploración de la biblioteca…',
+  scopeBrowseProjectionBody: 'Preparando tu catálogo de álbumes para una exploración más rápida. Se ejecuta una vez tras actualizar.',
+  scopeBrowseProjectionFailed: 'Error al actualizar el índice de exploración de la biblioteca',
 };

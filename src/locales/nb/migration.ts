@@ -12,4 +12,7 @@ export const migration = {
   genreTagsTitle: 'Oppdaterer sjangerindeks…',
   genreTagsBody: 'Indekserer sjangre for blaing og filtre. Kjøres én gang etter oppgradering.',
   genreTagsFailed: 'Oppdatering av sjangerindeks mislyktes',
+  scopeBrowseProjectionTitle: 'Oppdaterer bibliotekets nettlesingsindeks…',
+  scopeBrowseProjectionBody: 'Forbereder albumkatalogen for raskere navigering. Dette kjøres én gang etter oppdatering.',
+  scopeBrowseProjectionFailed: 'Kunne ikke oppdatere bibliotekets nettlesingsindeks',
 };

@@ -118,6 +118,7 @@ impl<'a> TrackRepository<'a> {
         };
         let (_, timing) = self.store.with_conn_mut_timed("track.upsert_initial_ingest", |conn| {
             let tx = conn.transaction()?;
+            let affected_album_scopes = crate::browse_projection::collect_affected_album_scopes(&tx, rows)?;
             let mut upsert = tx.prepare_cached(sql)?;
             for r in rows {
                 if let Some(gen) = resync_gen {
@@ -203,6 +204,7 @@ impl<'a> TrackRepository<'a> {
                 sync_track_genre_row(&tx, r)?;
             }
             drop(upsert);
+            crate::browse_projection::refresh_album_scopes(&tx, affected_album_scopes)?;
             tx.commit()?;
             Ok(())
         })?;
@@ -224,7 +226,8 @@ impl<'a> TrackRepository<'a> {
     pub fn sweep_resync_orphans(&self, server_id: &str, resync_gen: i64) -> Result<u32, String> {
         let now = now_unix_ms();
         let changed = self.store.with_conn_mut("track.sweep_resync_orphans", |c| {
-            c.execute(
+            let tx = c.transaction()?;
+            tx.execute(
                 "DELETE FROM track_genre \
                  WHERE server_id = ?1 AND track_id IN ( \
                    SELECT id FROM track \
@@ -232,11 +235,14 @@ impl<'a> TrackRepository<'a> {
                  )",
                 params![server_id, resync_gen],
             )?;
-            c.execute(
+            let changed = tx.execute(
                 "UPDATE track SET deleted = 1, synced_at = ?3 \
                  WHERE server_id = ?1 AND deleted = 0 AND resync_gen != ?2",
                 params![server_id, resync_gen, now],
-            )
+            )?;
+            crate::browse_projection::rebuild_server(&tx, server_id)?;
+            tx.commit()?;
+            Ok(changed)
         })?;
         Ok(changed as u32)
     }
@@ -504,6 +510,7 @@ impl<'a> TrackRepository<'a> {
         }
         self.store.with_conn_mut("track.upsert_batch_remap", |conn| {
             let tx = conn.transaction()?;
+            let affected_album_scopes = crate::browse_projection::collect_affected_album_scopes(&tx, rows)?;
             let mut remapped: Vec<RemapEntry> = Vec::new();
             let mut upsert = tx.prepare_cached(UPSERT_SQL)?;
             let mut remap_lookup = if unstable_track_ids {
@@ -600,6 +607,7 @@ impl<'a> TrackRepository<'a> {
 
             drop(upsert);
             drop(remap_lookup);
+            crate::browse_projection::refresh_album_scopes(&tx, affected_album_scopes)?;
 
             tx.commit()?;
             Ok(RemapStats { remapped })

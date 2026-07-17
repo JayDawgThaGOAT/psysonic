@@ -26,7 +26,8 @@ use crate::dto::{
     LibraryCrossServerSearchResponse, LibraryLiveSearchRequest, LibraryLiveSearchResponse,
     LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse,
     LibraryScopeAlbumDetailRequest, LibraryScopeAlbumDetailResponse, LibraryScopeArtistDetailRequest,
-    LibraryScopeArtistDetailResponse, LibraryScopeListRequest, LibraryScopeSearchRequest,
+    LibraryScopeArtistDetailResponse, LibraryScopeBrowseRequest, LibraryScopeBrowseResponse,
+    LibraryScopeListRequest, LibraryScopeSearchRequest,
     LibraryTrackDto,
     LibraryTracksEnvelope, OfflinePathDto, PlaySessionDayDetailDto, PlaySessionHeatmapDayDto,
     PlaySessionInputDto, PlaySessionRecentDayDto, PlaySessionRecentTrackDto, PlaySessionYearBoundsDto, PlaySessionYearSummaryDto, PurgeReportDto, SyncJobDto, SyncStateDto,
@@ -734,6 +735,32 @@ pub async fn library_scope_list_albums(
 ) -> Result<Vec<crate::dto::LibraryAlbumDto>, String> {
     let store = Arc::clone(&runtime.store);
     library_spawn_blocking(move || scope_merge::list_albums(&store, &request)).await
+}
+
+/// Candidate-first indexed browse for ordinary Albums / Tracks / Artists pages.
+#[tauri::command]
+pub async fn library_scope_browse(
+    runtime: State<'_, LibraryRuntime>,
+    request: LibraryScopeBrowseRequest,
+) -> Result<LibraryScopeBrowseResponse, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::scope_browse::browse(&store, &request)).await
+}
+
+#[tauri::command]
+pub fn library_scope_browse_projection_inspect(
+    runtime: State<'_, LibraryRuntime>,
+) -> Result<crate::browse_projection::ScopeBrowseProjectionInspectDto, String> {
+    crate::browse_projection::inspect(&runtime.store)
+}
+
+#[tauri::command]
+pub async fn library_scope_browse_projection_run(
+    app: tauri::AppHandle,
+    runtime: State<'_, LibraryRuntime>,
+) -> Result<(), String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::browse_projection::run_backfill(&store, &app)).await
 }
 
 // NOT specta-collected: returns LibraryAlbumDto carrying raw_json: Value.

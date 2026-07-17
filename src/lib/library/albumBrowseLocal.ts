@@ -1,4 +1,4 @@
-import { libraryAdvancedSearch, libraryListAlbumsByGenre } from '@/lib/api/library';
+import { libraryAdvancedSearch, libraryListAlbumsByGenre, libraryScopeBrowse } from '@/lib/api/library';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { libraryScopeForServer, libraryScopePairsForServer } from '@/lib/api/subsonicClient';
 import { dedupeById } from '@/lib/util/dedupeById';
@@ -151,6 +151,39 @@ export async function runLocalAlbumBrowse(
     let albums = resp.albums.map(albumToAlbum);
     if (useServerStarredIds) albums = markServerStarredAlbums(albums);
     return { albums, hasMore: albums.length === pageSize };
+  } catch {
+    return null;
+  }
+}
+
+/** Indexed candidate-first page for the ordinary unfiltered All Albums catalogue. */
+export async function runLocalAlbumScopeBrowse(
+  serverId: string,
+  sort: AlbumBrowseQuery['sort'],
+  limit: number,
+  cursor?: string | null,
+): Promise<{ albums: SubsonicAlbum[]; hasMore: boolean; nextCursor?: string | null } | null> {
+  if (!serverId) return null;
+  const scope = getLibraryBrowseScope();
+  if (scope.pairs.length === 0) return null;
+  try {
+    const response = await albumBrowseTimed(
+      'scope_browse',
+      () => libraryScopeBrowse(serverId, {
+        entity: 'album',
+        scopes: scope.pairs,
+        sort: albumSortClauses(sort),
+        limit,
+        cursor,
+      }),
+      { scopeCount: scope.pairs.length, limit, cursor: cursor != null },
+    );
+    if (response.source !== 'local') return null;
+    return {
+      albums: response.albums.map(albumToAlbum),
+      hasMore: response.hasMore,
+      nextCursor: response.nextCursor,
+    };
   } catch {
     return null;
   }

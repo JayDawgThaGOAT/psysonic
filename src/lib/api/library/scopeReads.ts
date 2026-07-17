@@ -15,6 +15,8 @@ import type {
   GenreAlbumCountRow,
   LibraryScopePair,
   LibraryTrackDto,
+  LibraryScopeBrowseRequest,
+  LibraryScopeBrowseResponse,
 } from './dto';
 
 export type { LibraryScopePair };
@@ -120,6 +122,23 @@ export function libraryScopeListAlbums(
       scopes: mapScopePairs(request.scopes, serverId),
     },
   }).then(albums => mapAlbumsServerId(albums, serverId));
+}
+
+export function libraryScopeBrowse(
+  serverId: string,
+  request: LibraryScopeBrowseRequest,
+): Promise<LibraryScopeBrowseResponse> {
+  return invoke<LibraryScopeBrowseResponse>('library_scope_browse', {
+    request: {
+      ...request,
+      scopes: mapScopePairs(request.scopes, serverId),
+    },
+  }).then(response => ({
+    ...response,
+    albums: mapAlbumsServerId(response.albums, serverId),
+    artists: mapArtistsServerId(response.artists, serverId),
+    tracks: mapTracksServerId(response.tracks, serverId),
+  }));
 }
 
 export function libraryScopeListArtists(
