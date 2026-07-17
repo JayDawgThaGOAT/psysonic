@@ -2021,7 +2021,7 @@ where
     F: Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 {
     let where_sql = w.where_sql();
-    store.with_read_conn(|conn| {
+    store.with_scope_detail_read_conn(|conn| {
         let total = if skip_totals {
             0u32
         } else {

@@ -1877,7 +1877,7 @@ pub fn artist_detail(
         return Err("server_id and artist_id are required".into());
     }
 
-    store.with_read_conn(|conn| {
+    store.with_scope_detail_read_conn(|conn| {
         let artist_key = lookup_artist_key(conn, server_id, artist_id)?;
         let mut candidates = fetch_artist_candidates(
             conn,
@@ -1900,13 +1900,17 @@ pub fn artist_detail(
             server_id,
             artist_id,
         )?;
-        let tracks = fetch_scope_deduped_tracks_for_artist_key(
-            conn,
-            scopes,
-            artist_key.as_deref(),
-            server_id,
-            artist_id,
-        )?;
+        let tracks = if request.include_tracks {
+            fetch_scope_deduped_tracks_for_artist_key(
+                conn,
+                scopes,
+                artist_key.as_deref(),
+                server_id,
+                artist_id,
+            )?
+        } else {
+            Vec::new()
+        };
         Ok(LibraryScopeArtistDetailResponse {
             artist,
             albums,
@@ -1986,6 +1990,43 @@ mod tests {
     fn seed_and_rebuild(store: &LibraryStore, rows: &[TrackRow]) {
         TrackRepository::new(store).upsert_batch(rows).unwrap();
         rebuild_cluster_keys(store, None).unwrap();
+    }
+
+    #[test]
+    fn artist_detail_can_skip_tracks_for_discography_only_callers() {
+        let store = LibraryStore::open_in_memory();
+        seed_and_rebuild(
+            &store,
+            &[track(
+                "s1",
+                "t1",
+                "Song",
+                Some("Artist"),
+                "Album",
+                "alb1",
+                Some("art1"),
+                200,
+                "lib-a",
+                Some(2024),
+                Some("Rock"),
+                None,
+            )],
+        );
+
+        let response = artist_detail(
+            &store,
+            &LibraryScopeArtistDetailRequest {
+                scopes: vec![scope_pair("s1", "lib-a")],
+                artist_id: "art1".into(),
+                server_id: "s1".into(),
+                include_tracks: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.artist.id, "art1");
+        assert_eq!(response.albums.len(), 1);
+        assert!(response.tracks.is_empty());
     }
 
     #[test]

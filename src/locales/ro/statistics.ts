@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: 'Timpul total de redare',
   genreInsights: 'Perspectivele Genurilor',
   formatDistribution: 'Distribuția Formatului',
-  formatSample: 'Eșantion de {{n}} piese',
+  formatSample: 'Din {{n}} piese',
   computing: 'Se calculează…',
   genreSongs: '{{count}} Piese',
   genreAlbums: '{{count}} Albume',

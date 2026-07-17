@@ -1,7 +1,6 @@
-import { fetchStatisticsFormatSample, fetchStatisticsLibraryAggregates, fetchStatisticsOverview } from '@/lib/api/subsonicStatistics';
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
+import { fetchStatisticsLibraryAggregates, fetchStatisticsOverview } from '@/lib/api/subsonicStatistics';
 import type { SubsonicAlbum, SubsonicGenre } from '@/lib/api/subsonicTypes';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Share2 } from 'lucide-react';
 import { formatHumanHoursMinutes } from '@/lib/format/formatHumanDuration';
@@ -35,6 +34,16 @@ const PERIODS: { key: StatsPeriod; label: string }[] = [
   { key: 'overall', label: 'lfmPeriodOverall' },
 ];
 
+function StatisticsLoadingDots({ label }: { label: string }) {
+  return (
+    <span className="statistics-loading-dots" aria-label={label} role="status">
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
+
 export default function Statistics() {
   const { t } = useTranslation();
   const location = useLocation();
@@ -52,12 +61,13 @@ export default function Statistics() {
   const [totalSongs, setTotalSongs] = useState<number | null>(null);
   const [totalAlbums, setTotalAlbums] = useState<number | null>(null);
   const [genres, setGenres] = useState<SubsonicGenre[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [aggregateLoading, setAggregateLoading] = useState(true);
 
   const [totalPlaytime, setTotalPlaytime] = useState<number | null>(null);
   const [playtimeCapped, setPlaytimeCapped] = useState(false);
   const [formatData, setFormatData] = useState<{ format: string; count: number }[] | null>(null);
-  const [formatSampleSize, setFormatSampleSize] = useState(0);
+  const [formatTrackCount, setFormatTrackCount] = useState(0);
 
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -84,18 +94,25 @@ export default function Statistics() {
     if (offlineBrowseActive || isPlayerStats) {
       // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLoading(false);
+      setOverviewLoading(false);
       return;
     }
+    setOverviewLoading(true);
+    const startedAt = performance.now();
     fetchStatisticsOverview()
       .then(d => {
         setRecent(d.recent);
         setFrequent(d.frequent);
         setHighest(d.highest);
-        setArtistCount(d.artistCount);
-        setLoading(false);
+        setOverviewLoading(false);
+        console.info('[statistics] overview loaded', {
+          elapsedMs: Math.round(performance.now() - startedAt),
+          recent: d.recent.length,
+          frequent: d.frequent.length,
+          highest: d.highest.length,
+        });
       })
-      .catch(() => setLoading(false));
+      .catch(() => setOverviewLoading(false));
   }, [musicLibraryFilterVersion, offlineBrowseActive, isPlayerStats]);
 
   // Background: playtime, album/song counts, genre insights (cached per server+library like rating prefetch)
@@ -104,48 +121,51 @@ export default function Statistics() {
     let cancelled = false;
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
+    setArtistCount(null);
     setTotalPlaytime(null);
     setTotalAlbums(null);
     setTotalSongs(null);
     setPlaytimeCapped(false);
     setGenres([]);
+    setFormatData(null);
+    setFormatTrackCount(0);
+    setAggregateLoading(true);
+    const startedAt = performance.now();
     (async () => {
       try {
         const agg = await fetchStatisticsLibraryAggregates();
         if (cancelled) return;
+        setArtistCount(agg.artistCount);
         setTotalPlaytime(agg.playtimeSec);
         setTotalAlbums(agg.albumsCounted);
         setTotalSongs(agg.songsCounted);
         setPlaytimeCapped(agg.capped);
         setGenres(agg.genres);
+        setFormatData(agg.formats);
+        setFormatTrackCount(agg.songsCounted);
+        setAggregateLoading(false);
+        console.info('[statistics] index aggregates loaded', {
+          elapsedMs: Math.round(performance.now() - startedAt),
+          artists: agg.artistCount,
+          albums: agg.albumsCounted,
+          songs: agg.songsCounted,
+          genres: agg.genres.length,
+          formats: agg.formats.length,
+        });
       } catch {
         if (!cancelled) {
+          setArtistCount(0);
           setTotalPlaytime(0);
           setTotalAlbums(0);
           setTotalSongs(0);
           setPlaytimeCapped(false);
           setGenres([]);
+          setFormatData([]);
+          setFormatTrackCount(0);
+          setAggregateLoading(false);
         }
       }
     })();
-    return () => { cancelled = true; };
-  }, [musicLibraryFilterVersion, offlineBrowseActive, isPlayerStats]);
-
-  // Background: format distribution (cached random sample, same TTL as other Statistics fetches)
-  useEffect(() => {
-    if (offlineBrowseActive || isPlayerStats) return;
-    let cancelled = false;
-    // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setFormatData(null);
-    setFormatSampleSize(0);
-    fetchStatisticsFormatSample()
-      .then(s => {
-        if (cancelled) return;
-        setFormatData(s.rows);
-        setFormatSampleSize(s.sampleSize);
-      })
-      .catch(() => {});
     return () => { cancelled = true; };
   }, [musicLibraryFilterVersion, offlineBrowseActive, isPlayerStats]);
 
@@ -178,20 +198,6 @@ export default function Statistics() {
     }).catch(() => setLfmLoading(false));
   }, [lfmPeriod, enrichmentPrimaryId, offlineBrowseActive, isPlayerStats]);
 
-  const loadMore = async (
-    type: 'frequent' | 'highest',
-    currentList: SubsonicAlbum[],
-    setter: React.Dispatch<React.SetStateAction<SubsonicAlbum[]>>
-  ) => {
-    try {
-      const more = await getAlbumList(type, 12, currentList.length);
-      const newItems = more.filter(m => !currentList.find(c => c.id === m.id));
-      if (newItems.length > 0) setter(prev => [...prev, ...newItems]);
-    } catch (e) {
-      console.error('Failed to load more', e);
-    }
-  };
-
   const playtimeDisplay = totalPlaytime === null
     ? t('statistics.computing')
     : (playtimeCapped ? '≥ ' : '') + formatHumanHoursMinutes(totalPlaytime);
@@ -200,7 +206,7 @@ export default function Statistics() {
     n === null ? t('statistics.computing') : (playtimeCapped ? '≥ ' : '') + n.toLocaleString();
 
   const stats = [
-    { label: t('statistics.statArtists'), value: artistCount?.toLocaleString() ?? '—', tooltip: t('statistics.statArtistsTooltip') },
+    { label: t('statistics.statArtists'), value: artistCount?.toLocaleString() ?? t('statistics.computing'), tooltip: t('statistics.statArtistsTooltip') },
     { label: t('statistics.statAlbums'), value: countDisplay(totalAlbums) },
     { label: t('statistics.statSongs'), value: countDisplay(totalSongs) },
     { label: t('statistics.statPlaytime'), value: playtimeDisplay },
@@ -216,31 +222,29 @@ export default function Statistics() {
 
       {isPlayerStats ? (
         <PlayerStatisticsPanel />
-      ) : loading ? (
-        <div className="loading-center"><div className="spinner" /></div>
       ) : (
         <div className="stats-page">
 
           <div className="stats-overview">
             {stats.map(s => (
               <div key={s.label} className="stats-card">
-                <span className="stats-card-value">{s.value}</span>
+                <span className="stats-card-value">{aggregateLoading ? <StatisticsLoadingDots label={t('statistics.computing')} /> : s.value}</span>
                 <span className="stats-card-label" data-tooltip={s.tooltip} data-tooltip-wrap="true">{s.label}</span>
               </div>
             ))}
           </div>
 
           {/* Genre Insights + Format Distribution */}
-          {(topGenres.length > 0 || formatData) && (
+          {(topGenres.length > 0 || formatData || aggregateLoading) && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginBottom: '0.5rem' }}>
 
-              {topGenres.length > 0 && (
+              {(topGenres.length > 0 || aggregateLoading) && (
                 <div style={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '12px', padding: '1.25rem', backdropFilter: 'blur(8px)' }}>
                   <h3 style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--accent)', marginBottom: '1rem' }}>
                     {t('statistics.genreInsights')}
                   </h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                    {topGenres.map(g => (
+                    {aggregateLoading ? <StatisticsLoadingDots label={t('statistics.computing')} /> : topGenres.map(g => (
                       <div key={g.value || '__genre_unknown__'}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.2rem' }}>
                           <span style={{ fontSize: '0.8rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
@@ -266,17 +270,17 @@ export default function Statistics() {
                 </div>
               )}
 
-              {formatData && (
+              {(formatData || aggregateLoading) && (
                 <div style={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '12px', padding: '1.25rem', backdropFilter: 'blur(8px)' }}>
                   <h3 style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--accent)', marginBottom: '0.25rem' }}>
                     {t('statistics.formatDistribution')}
                   </h3>
                   <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-                    {t('statistics.formatSample', { n: formatSampleSize.toLocaleString() })}
+                    {aggregateLoading ? <StatisticsLoadingDots label={t('statistics.computing')} /> : t('statistics.formatSample', { n: formatTrackCount.toLocaleString() })}
                   </p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                    {formatData.map(f => {
-                      const pct = formatSampleSize > 0 ? Math.round((f.count / formatSampleSize) * 100) : 0;
+                    {!aggregateLoading && formatData?.map(f => {
+                      const pct = formatTrackCount > 0 ? Math.round((f.count / formatTrackCount) * 100) : 0;
                       return (
                         <div key={f.format}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.2rem' }}>
@@ -303,15 +307,13 @@ export default function Statistics() {
             </div>
           )}
 
-          {recent.length > 0 && (
+          {overviewLoading ? <div className="statistics-row-loading"><StatisticsLoadingDots label={t('statistics.computing')} /></div> : recent.length > 0 && (
             <AlbumRow title={t('statistics.recentlyPlayed')} albums={recent} />
           )}
 
-          <AlbumRow
+          {overviewLoading ? <div className="statistics-row-loading"><StatisticsLoadingDots label={t('statistics.computing')} /></div> : <AlbumRow
             title={t('statistics.mostPlayed')}
             albums={frequent}
-            onLoadMore={() => loadMore('frequent', frequent, setFrequent)}
-            moreText={t('statistics.loadMore')}
             headerExtra={frequent.length >= 9 ? (
               <button
                 type="button"
@@ -323,15 +325,13 @@ export default function Statistics() {
                 <Share2 size={18} />
               </button>
             ) : undefined}
-          />
+          />}
 
-          <AlbumRow
+          {overviewLoading ? <div className="statistics-row-loading"><StatisticsLoadingDots label={t('statistics.computing')} /></div> : <AlbumRow
             title={t('statistics.highestRated')}
             albums={highest}
-            onLoadMore={() => loadMore('highest', highest, setHighest)}
-            moreText={t('statistics.loadMore')}
             showRating
-          />
+          />}
 
           {/* Music Network Stats */}
           {enrichmentPrimaryId !== null && (

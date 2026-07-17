@@ -509,6 +509,7 @@ export async function loadAlbumFromLocalPlayback(
     entityTypes: ['album'],
     restrictAlbumIds: [albumId],
     limit: 1,
+    skipTotals: true,
   }).catch(() => null);
   const albumDto = albumSearch?.albums[0];
   const album = albumDto

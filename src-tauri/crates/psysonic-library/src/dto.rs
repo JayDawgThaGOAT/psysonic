@@ -720,6 +720,48 @@ pub struct LibraryScopePair {
     pub library_id: String,
 }
 
+/// One selected server and its optional music-folder filter for aggregate index reads.
+/// An empty `library_ids` list includes every indexed folder on that server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsScope {
+    pub server_id: String,
+    #[serde(default)]
+    pub library_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsRequest {
+    pub scopes: Vec<LibraryStatisticsScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsGenreDto {
+    pub value: String,
+    pub song_count: i64,
+    pub album_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsFormatDto {
+    pub value: String,
+    pub song_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsDto {
+    pub artist_count: i64,
+    pub album_count: i64,
+    pub song_count: i64,
+    pub playtime_sec: i64,
+    pub genres: Vec<LibraryStatisticsGenreDto>,
+    pub formats: Vec<LibraryStatisticsFormatDto>,
+}
+
 /// Entity surface served by the cursor-based scoped browse engine.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -872,6 +914,10 @@ pub struct LibraryScopeArtistDetailRequest {
     pub scopes: Vec<LibraryScopePair>,
     pub artist_id: String,
     pub server_id: String,
+    /// Detail views need tracks for top songs; discography-only callers can skip
+    /// the extra scoped track query.
+    #[serde(default = "default_true")]
+    pub include_tracks: bool,
 }
 
 /// `library_scope_album_detail` response.

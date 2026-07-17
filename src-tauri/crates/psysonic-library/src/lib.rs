@@ -46,6 +46,7 @@ pub mod scope_merge;
 pub mod search;
 pub mod store;
 pub mod starred_browse;
+pub mod statistics;
 pub mod sync;
 pub(crate) mod track_fts;
 

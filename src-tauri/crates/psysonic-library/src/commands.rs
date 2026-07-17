@@ -27,7 +27,7 @@ use crate::dto::{
     LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse,
     LibraryScopeAlbumDetailRequest, LibraryScopeAlbumDetailResponse, LibraryScopeArtistDetailRequest,
     LibraryScopeArtistDetailResponse, LibraryScopeBrowseRequest, LibraryScopeBrowseResponse,
-    LibraryScopeListRequest, LibraryScopeSearchRequest,
+    LibraryScopeListRequest, LibraryScopeSearchRequest, LibraryStatisticsDto, LibraryStatisticsRequest,
     LibraryTrackDto,
     LibraryTracksEnvelope, OfflinePathDto, PlaySessionDayDetailDto, PlaySessionHeatmapDayDto,
     PlaySessionInputDto, PlaySessionRecentDayDto, PlaySessionRecentTrackDto, PlaySessionYearBoundsDto, PlaySessionYearSummaryDto, PurgeReportDto, SyncJobDto, SyncStateDto,
@@ -180,6 +180,18 @@ pub fn library_count_live_tracks(
     }
     let repo = TrackRepository::new(&runtime.store);
     repo.count_live_tracks(&server_id)
+}
+
+/// Index-backed Statistics aggregates for one or more selected servers/folders.
+/// Deliberately does not merge equivalent albums/artists between scopes.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_scope_statistics(
+    runtime: State<'_, LibraryRuntime>,
+    request: LibraryStatisticsRequest,
+) -> Result<LibraryStatisticsDto, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::statistics::query_statistics(&store, &request)).await
 }
 
 #[tauri::command]
@@ -596,9 +608,29 @@ pub async fn library_advanced_search(
         .as_ref()
         .map(|scopes| scopes.len())
         .unwrap_or(if request.library_scope.is_some() { 1 } else { 0 });
+    let trace_advanced_search = psysonic_core::logging::should_log_debug();
+    let trace_entity_types = format!("{:?}", request.entity_types);
+    let trace_filters = request
+        .filters
+        .iter()
+        .map(|filter| format!("{}:{}", filter.field, filter.op.as_str()))
+        .collect::<Vec<_>>();
+    let trace_skip_totals = request.skip_totals;
     library_spawn_blocking(move || {
         let t0 = std::time::Instant::now();
         let result = advanced_search::run_advanced_search(&store, &request);
+        if trace_advanced_search {
+            crate::app_deprintln!(
+                "[library-db][advanced-search] entity_types={} scope_count={} filters={:?} limit={} offset={} skip_totals={} elapsed_ms={}",
+                trace_entity_types,
+                trace_scope_count,
+                trace_filters,
+                trace_limit,
+                trace_offset,
+                trace_skip_totals,
+                t0.elapsed().as_millis(),
+            );
+        }
         if trace_album_browse {
             let step_ms = t0.elapsed().as_millis();
             let album_count = result.as_ref().map(|r| r.albums.len()).unwrap_or(0);

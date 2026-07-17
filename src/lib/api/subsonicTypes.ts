@@ -235,23 +235,19 @@ export interface RandomSongsFilters {
 }
 
 export interface StatisticsLibraryAggregates {
+  artistCount: number;
   playtimeSec: number;
   albumsCounted: number;
   songsCounted: number;
   capped: boolean;
   genres: SubsonicGenre[];
+  formats: { format: string; count: number }[];
 }
 
 export interface StatisticsOverviewData {
   recent: SubsonicAlbum[];
   frequent: SubsonicAlbum[];
   highest: SubsonicAlbum[];
-  artistCount: number;
-}
-
-export interface StatisticsFormatSample {
-  rows: { format: string; count: number }[];
-  sampleSize: number;
 }
 
 export interface SearchResults {

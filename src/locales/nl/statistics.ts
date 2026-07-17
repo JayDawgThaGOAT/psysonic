@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: 'Totale speelduur',
   genreInsights: 'Genre-inzichten',
   formatDistribution: 'Formaatdistributie',
-  formatSample: 'Steekproef van {{n}} nummers',
+  formatSample: 'Over {{n}} nummers',
   computing: 'Berekenen…',
   genreSongs: '{{count}} nummers',
   genreAlbums: '{{count}} albums',

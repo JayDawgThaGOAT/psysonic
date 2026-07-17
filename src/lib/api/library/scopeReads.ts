@@ -28,6 +28,21 @@ export interface LibraryScopeListRequest {
   offset?: number;
 }
 
+export interface LibraryStatisticsScope {
+  serverId: string;
+  /** Empty means every indexed folder on this server. */
+  libraryIds: string[];
+}
+
+export interface LibraryScopeStatisticsResponse {
+  artistCount: number;
+  albumCount: number;
+  songCount: number;
+  playtimeSec: number;
+  genres: GenreAlbumCountRow[];
+  formats: { value: string; songCount: number }[];
+}
+
 export interface LibraryScopeSearchRequest {
   scopes: LibraryScopePair[];
   query: string;
@@ -59,6 +74,8 @@ export interface LibraryScopeArtistDetailRequest {
   scopes: LibraryScopePair[];
   artistId: string;
   serverId: string;
+  /** Skip tracks when the caller needs only artist metadata and discography. */
+  includeTracks?: boolean;
 }
 
 export interface LibraryScopeAlbumDetailResponse {
@@ -111,6 +128,20 @@ export function scopePairsFromLibrarySelection(serverId: string): LibraryScopePa
     serverId: indexKey,
     libraryId,
   }));
+}
+
+/** Aggregate selected index scopes without cross-server entity merging. */
+export function libraryScopeStatistics(
+  scopes: LibraryStatisticsScope[],
+): Promise<LibraryScopeStatisticsResponse> {
+  return invoke<LibraryScopeStatisticsResponse>('library_scope_statistics', {
+    request: {
+      scopes: scopes.map(scope => ({
+        ...scope,
+        serverId: serverIndexKeyForId(scope.serverId),
+      })),
+    },
+  });
 }
 
 export function libraryScopeListAlbums(

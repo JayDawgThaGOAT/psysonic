@@ -177,6 +177,10 @@ pub struct LibraryStore {
     /// Dedicated read-only handle for Mainstage's wide chronological scans so
     /// genre counts cannot queue short browse and Favorites reads behind them.
     mainstage_read_conn: Mutex<Connection>,
+    /// Dedicated reader for heavy derived reads. Scoped artist detail and grouped
+    /// album/artist queries can scan large track sets, so they must not stall
+    /// startup browse requests.
+    scope_detail_read_conn: Mutex<Connection>,
     /// Current holder of `read_conn`, used only to attribute contention in
     /// targeted diagnostics such as the Favorites initial snapshot.
     read_op_owner: Mutex<Option<ReadOpOwner>>,
@@ -197,12 +201,13 @@ impl LibraryStore {
     }
 
     fn open_file(db_path: &Path) -> Result<Self, String> {
-        let (write_conn, read_conn, mainstage_read_conn) =
+        let (write_conn, read_conn, mainstage_read_conn, scope_detail_read_conn) =
             open_database_connections(db_path).map_err(|e| e.to_string())?;
         Ok(Self {
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
             mainstage_read_conn: Mutex::new(mainstage_read_conn),
+            scope_detail_read_conn: Mutex::new(scope_detail_read_conn),
             read_op_owner: Mutex::new(None),
             bulk_ingest_active: AtomicBool::new(false),
             swap_in_progress: AtomicBool::new(false),
@@ -233,10 +238,15 @@ impl LibraryStore {
         configure_read_connection(&mainstage_read_conn).expect("mainstage read pragmas");
         crate::identity::attach_cluster_read_memory(&mainstage_read_conn, &cluster_uri)
             .expect("cluster attach mainstage read");
+        let scope_detail_read_conn = Connection::open(&uri).expect("in-memory scope detail read connection");
+        configure_read_connection(&scope_detail_read_conn).expect("scope detail read pragmas");
+        crate::identity::attach_cluster_read_memory(&scope_detail_read_conn, &cluster_uri)
+            .expect("cluster attach scope detail read");
         Self {
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
             mainstage_read_conn: Mutex::new(mainstage_read_conn),
+            scope_detail_read_conn: Mutex::new(scope_detail_read_conn),
             read_op_owner: Mutex::new(None),
             bulk_ingest_active: AtomicBool::new(false),
             swap_in_progress: AtomicBool::new(false),
@@ -290,6 +300,19 @@ impl LibraryStore {
             Ok(guard) => Ok(guard),
             Err(poisoned) => {
                 crate::app_eprintln!("[library-db] mainstage read lock was poisoned — recovering");
+                Ok(poisoned.into_inner())
+            }
+        }
+    }
+
+    fn lock_scope_detail_read_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        if self.swap_in_progress() {
+            return Err("library database swap in progress".to_string());
+        }
+        match self.scope_detail_read_conn.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poisoned) => {
+                crate::app_eprintln!("[library-db] scope detail read lock was poisoned — recovering");
                 Ok(poisoned.into_inner())
             }
         }
@@ -354,6 +377,16 @@ impl LibraryStore {
         f: impl FnOnce(&Connection) -> rusqlite::Result<R>,
     ) -> Result<R, String> {
         let conn = self.lock_mainstage_read_conn()?;
+        run_conn_closure(&conn, f)
+    }
+
+    /// Isolated reader for heavy derived reads, which can be much wider than
+    /// ordinary browse reads even when their result page is small.
+    pub(crate) fn with_scope_detail_read_conn<R>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<R>,
+    ) -> Result<R, String> {
+        let conn = self.lock_scope_detail_read_conn()?;
         run_conn_closure(&conn, f)
     }
 
@@ -425,16 +458,23 @@ impl LibraryStore {
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database swap".to_string()
         })?;
+        let mut scope_detail_read_conn = self.scope_detail_read_conn.lock().map_err(|_| {
+            "library store scope detail read lock poisoned during database swap".to_string()
+        })?;
 
         let write_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let read_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let mainstage_read_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        let scope_detail_read_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let old_write = std::mem::replace(&mut *write_conn, write_tmp);
         let old_read = std::mem::replace(&mut *read_conn, read_tmp);
         let old_mainstage_read = std::mem::replace(&mut *mainstage_read_conn, mainstage_read_tmp);
+        let old_scope_detail_read =
+            std::mem::replace(&mut *scope_detail_read_conn, scope_detail_read_tmp);
         drop(old_write);
         drop(old_read);
         drop(old_mainstage_read);
+        drop(old_scope_detail_read);
 
         let backup = active_path.with_file_name(format!(
             "{}.backup-pre-indexkey",
@@ -457,8 +497,9 @@ impl LibraryStore {
             }
             drop(read_conn);
             drop(mainstage_read_conn);
+            drop(scope_detail_read_conn);
             drop(write_conn);
-            let (reopened_write, reopened_read, reopened_mainstage_read) = open_database_connections(active_path)
+            let (reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read) = open_database_connections(active_path)
                 .map_err(|e| format!("library swap reopen failed after rename error: {e}"))?;
             let mut write_conn = self.write_conn.lock().map_err(|_| {
                 "library store write lock poisoned during database swap".to_string()
@@ -469,15 +510,20 @@ impl LibraryStore {
             let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
                 "library store mainstage read lock poisoned during database swap".to_string()
             })?;
+            let mut scope_detail_read_conn = self.scope_detail_read_conn.lock().map_err(|_| {
+                "library store scope detail read lock poisoned during database swap".to_string()
+            })?;
             *write_conn = reopened_write;
             *read_conn = reopened_read;
             *mainstage_read_conn = reopened_mainstage_read;
+            *scope_detail_read_conn = reopened_scope_detail_read;
             swap_guard.release();
             return Err(err.to_string());
         }
 
         drop(read_conn);
         drop(mainstage_read_conn);
+        drop(scope_detail_read_conn);
         drop(write_conn);
 
         // The freshly-installed library file has different track ids; the
@@ -498,12 +544,16 @@ impl LibraryStore {
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database swap".to_string()
         })?;
+        let mut scope_detail_read_conn = self.scope_detail_read_conn.lock().map_err(|_| {
+            "library store scope detail read lock poisoned during database swap".to_string()
+        })?;
 
         match reopen {
-            Ok((reopened_write, reopened_read, reopened_mainstage_read)) => {
+            Ok((reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read)) => {
                 *write_conn = reopened_write;
                 *read_conn = reopened_read;
                 *mainstage_read_conn = reopened_mainstage_read;
+                *scope_detail_read_conn = reopened_scope_detail_read;
                 swap_guard.release();
                 Ok(Some(backup))
             }
@@ -516,11 +566,12 @@ impl LibraryStore {
                     let _ = move_sidecar(&backup, active_path, "-wal");
                     let _ = move_sidecar(&backup, active_path, "-shm");
                 }
-                let (reopened_write, reopened_read, reopened_mainstage_read) = open_database_connections(active_path)
+                let (reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read) = open_database_connections(active_path)
                     .map_err(|e| format!("library swap reopen failed after revert: {e}"))?;
                 *write_conn = reopened_write;
                 *read_conn = reopened_read;
                 *mainstage_read_conn = reopened_mainstage_read;
+                *scope_detail_read_conn = reopened_scope_detail_read;
                 swap_guard.release();
                 Err(format!("library swap failed: {open_err}"))
             }
@@ -538,16 +589,23 @@ impl LibraryStore {
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database restore".to_string()
         })?;
+        let mut scope_detail_read_conn = self.scope_detail_read_conn.lock().map_err(|_| {
+            "library store scope detail read lock poisoned during database restore".to_string()
+        })?;
 
         let write_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let read_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let mainstage_read_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        let scope_detail_read_tmp = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let old_write = std::mem::replace(&mut *write_conn, write_tmp);
         let old_read = std::mem::replace(&mut *read_conn, read_tmp);
         let old_mainstage_read = std::mem::replace(&mut *mainstage_read_conn, mainstage_read_tmp);
+        let old_scope_detail_read =
+            std::mem::replace(&mut *scope_detail_read_conn, scope_detail_read_tmp);
         drop(old_write);
         drop(old_read);
         drop(old_mainstage_read);
+        drop(old_scope_detail_read);
 
         if active_path.exists() {
             remove_db_with_sidecars(active_path)?;
@@ -560,13 +618,14 @@ impl LibraryStore {
 
         drop(read_conn);
         drop(mainstage_read_conn);
+        drop(scope_detail_read_conn);
         drop(write_conn);
 
         // Restored library file → the fixed-name identity sidecar is stale; drop
         // it so keys rebuild lazily against the restored content (see swap).
         crate::identity::remove_cluster_files_for_library(active_path);
 
-        let (reopened_write, reopened_read, reopened_mainstage_read) =
+        let (reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read) =
             open_database_connections(active_path).map_err(|e| e.to_string())?;
 
         let mut write_conn = self.write_conn.lock().map_err(|_| {
@@ -578,9 +637,13 @@ impl LibraryStore {
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database restore".to_string()
         })?;
+        let mut scope_detail_read_conn = self.scope_detail_read_conn.lock().map_err(|_| {
+            "library store scope detail read lock poisoned during database restore".to_string()
+        })?;
         *write_conn = reopened_write;
         *read_conn = reopened_read;
         *mainstage_read_conn = reopened_mainstage_read;
+        *scope_detail_read_conn = reopened_scope_detail_read;
         swap_guard.release();
         Ok(())
     }
@@ -814,7 +877,9 @@ fn checkpoint_wal_conn(conn: &Connection, op: &str) -> rusqlite::Result<()> {
 
 /// Open write + read handles after migrations, one-time repairs, WAL checkpoint,
 /// and cluster identity DB attach.
-fn open_database_connections(db_path: &Path) -> rusqlite::Result<(Connection, Connection, Connection)> {
+fn open_database_connections(
+    db_path: &Path,
+) -> rusqlite::Result<(Connection, Connection, Connection, Connection)> {
     let write_conn = Connection::open(db_path)?;
     configure_write_connection(&write_conn)?;
     prepare_write_connection_for_open(&write_conn)?;
@@ -823,6 +888,8 @@ fn open_database_connections(db_path: &Path) -> rusqlite::Result<(Connection, Co
     configure_read_connection(&read_conn)?;
     let mainstage_read_conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     configure_read_connection(&mainstage_read_conn)?;
+    let scope_detail_read_conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    configure_read_connection(&scope_detail_read_conn)?;
 
     // The identity sidecar is fully rebuildable; a corrupt/unwritable
     // `library-cluster.db` must never prevent the library itself from opening.
@@ -839,7 +906,12 @@ fn open_database_connections(db_path: &Path) -> rusqlite::Result<(Connection, Co
             "[library-db] mainstage identity sidecar unavailable, multi-library dedup disabled: {e}"
         );
     }
-    Ok((write_conn, read_conn, mainstage_read_conn))
+    if let Err(e) = crate::identity::attach_cluster_read_file(&scope_detail_read_conn, db_path) {
+        crate::app_eprintln!(
+            "[library-db] scope detail identity sidecar unavailable, multi-library dedup disabled: {e}"
+        );
+    }
+    Ok((write_conn, read_conn, mainstage_read_conn, scope_detail_read_conn))
 }
 
 fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> {
@@ -1319,6 +1391,35 @@ mod tests {
             "shared read was blocked by the mainstage reader"
         );
         mainstage.join().expect("mainstage reader thread");
+    }
+
+    #[test]
+    fn scope_detail_reader_does_not_block_the_shared_browse_reader() {
+        let store = std::sync::Arc::new(LibraryStore::open_in_memory());
+        let (started_tx, started_rx) = mpsc::channel();
+        let detail_store = std::sync::Arc::clone(&store);
+        let detail = std::thread::spawn(move || {
+            detail_store
+                .with_scope_detail_read_conn(|_| {
+                    started_tx.send(()).expect("signal scope detail read start");
+                    std::thread::sleep(Duration::from_millis(100));
+                    Ok(())
+                })
+                .unwrap();
+        });
+        started_rx.recv().expect("wait for scope detail read");
+
+        let started_at = std::time::Instant::now();
+        let value: i64 = store
+            .with_read_conn(|conn| conn.query_row("SELECT 1", [], |row| row.get(0)))
+            .unwrap();
+
+        assert_eq!(value, 1);
+        assert!(
+            started_at.elapsed() < Duration::from_millis(50),
+            "shared read was blocked by the scope detail reader"
+        );
+        detail.join().expect("scope detail reader thread");
     }
 
     #[test]

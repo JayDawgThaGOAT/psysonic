@@ -24,6 +24,11 @@ export const commands = {
 	libraryAnalysisProgress: (serverId: string) => typedError<LibraryAnalysisProgressDto, string>(__TAURI_INVOKE("library_analysis_progress", { serverId })),
 	libraryCountLiveTracks: (serverId: string) => typedError<number, string>(__TAURI_INVOKE("library_count_live_tracks", { serverId })),
 	libraryGetStatus: (serverId: string, libraryScope: string | null) => typedError<SyncStateDto, string>(__TAURI_INVOKE("library_get_status", { serverId, libraryScope })),
+	/**
+	 *  Index-backed Statistics aggregates for one or more selected servers/folders.
+	 *  Deliberately does not merge equivalent albums/artists between scopes.
+	 */
+	libraryScopeStatistics: (request: LibraryStatisticsRequest) => typedError<LibraryStatisticsDto, string>(__TAURI_INVOKE("library_scope_statistics", { request })),
 	libraryGetArtifact: (serverId: string, trackId: string, artifactKind: string, sourceKind: string | null, sourceId: string | null, format: string | null) => typedError<{
 	serverId: string,
 	trackId: string,
@@ -1057,6 +1062,39 @@ export type LibraryCoverProgressDto = {
 export type LibraryServerKeyMigrationDto = {
 	legacyId: string,
 	indexKey: string,
+};
+
+export type LibraryStatisticsDto = {
+	artistCount: number,
+	albumCount: number,
+	songCount: number,
+	playtimeSec: number,
+	genres: LibraryStatisticsGenreDto[],
+	formats: LibraryStatisticsFormatDto[],
+};
+
+export type LibraryStatisticsFormatDto = {
+	value: string,
+	songCount: number,
+};
+
+export type LibraryStatisticsGenreDto = {
+	value: string,
+	songCount: number,
+	albumCount: number,
+};
+
+export type LibraryStatisticsRequest = {
+	scopes: LibraryStatisticsScope[],
+};
+
+/**
+ *  One selected server and its optional music-folder filter for aggregate index reads.
+ *  An empty `library_ids` list includes every indexed folder on that server.
+ */
+export type LibraryStatisticsScope = {
+	serverId: string,
+	libraryIds?: string[],
 };
 
 export type LibraryTierDiskHit = {

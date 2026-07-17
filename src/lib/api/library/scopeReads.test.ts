@@ -7,6 +7,7 @@ import {
   libraryScopeListArtists,
   libraryScopeListMainstageAlbums,
   libraryScopeSearchTracks,
+  libraryScopeStatistics,
   type LibraryScopePair,
 } from './scopeReads';
 import { useAuthStore } from '@/store/authStore';
@@ -23,6 +24,13 @@ beforeEach(() => {
         id: 'profile-s1',
         name: 'S1',
         url: 'https://s1.example',
+        username: 'u',
+        password: 'p',
+      },
+      {
+        id: 'profile-s2',
+        name: 'S2',
+        url: 'https://s2.example',
         username: 'u',
         password: 'p',
       },
@@ -64,6 +72,30 @@ describe('libraryScopeListArtists', () => {
         scopes: [
           { serverId: 's1.example', libraryId: 'lib-a' },
           { serverId: 's1.example', libraryId: 'lib-b' },
+        ],
+      },
+    });
+  });
+});
+
+describe('libraryScopeStatistics', () => {
+  it('maps every selected profile server to its index key', async () => {
+    let captured: unknown;
+    onInvoke('library_scope_statistics', (args) => {
+      captured = args;
+      return { artistCount: 0, albumCount: 0, songCount: 0, playtimeSec: 0, genres: [] };
+    });
+
+    await libraryScopeStatistics([
+      { serverId: 'profile-s1', libraryIds: ['lib-a'] },
+      { serverId: 'profile-s2', libraryIds: [] },
+    ]);
+
+    expect(captured).toEqual({
+      request: {
+        scopes: [
+          { serverId: 's1.example', libraryIds: ['lib-a'] },
+          { serverId: 's2.example', libraryIds: [] },
         ],
       },
     });
