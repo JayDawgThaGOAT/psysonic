@@ -14,9 +14,10 @@ import type {
   LibraryAdvancedSearchResponse,
   LibraryLiveSearchRequest,
   LibraryLiveSearchResponse,
-  LibraryLosslessAlbumsRequest,
-  LibraryLosslessAlbumsResponse,
-  LibraryArtistLosslessBrowseRequest,
+    LibraryLosslessAlbumsRequest,
+    LibraryLosslessAlbumsResponse,
+    LibraryAlbumDto,
+    LibraryArtistLosslessBrowseRequest,
   LibraryArtistLosslessBrowseResponse,
   LibraryArtistDto,
   LibraryCrossServerSearchResponse,
@@ -80,6 +81,35 @@ export function libraryAdvancedSearch(
       serverId: mapServerIdFromIndexKey(album.serverId, request.serverId),
     })),
     tracks: mapTracksServerId(response.tracks, request.serverId),
+  }));
+}
+
+/** Persisted album/track stars for the Favorites initial local snapshot. */
+export function libraryListStarred(serverId: string): Promise<{
+  albums: LibraryAlbumDto[];
+  tracks: LibraryTrackDto[];
+  readLockWaitMs: number;
+  sqlMs: number;
+  blockedBy: string | null;
+}> {
+  const indexKey = serverIndexKeyForId(serverId);
+  return invoke<{
+    albums: LibraryAlbumDto[];
+    tracks: LibraryTrackDto[];
+    readLockWaitMs: number;
+    sqlMs: number;
+    blockedBy: string | null;
+  }>('library_list_starred', {
+    serverId: indexKey,
+  }).then(response => ({
+    albums: response.albums.map(album => ({
+      ...album,
+      serverId: mapServerIdFromIndexKey(album.serverId, serverId),
+    })),
+    tracks: mapTracksServerId(response.tracks, serverId),
+    readLockWaitMs: response.readLockWaitMs,
+    sqlMs: response.sqlMs,
+    blockedBy: response.blockedBy,
   }));
 }
 

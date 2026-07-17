@@ -385,6 +385,25 @@ export const PERF_PROBE_TOGGLE_TREE: PerfToggleGroup[] = [
           },
         ],
       },
+      {
+        id: 'mainstage-favorites',
+        label: 'Favorites (`/favorites`)',
+        children: [
+          {
+            id: 'favorites-debug-traces',
+            label: 'Debug traces',
+            children: [
+              {
+                id: 'favoritesBrowseTrace',
+                label: 'Browse perf trace',
+                description:
+                  'Step timing for favorites snapshots, server refresh, radio load, and paint (`favorites-browse` scope). Requires PsyLab → Logs → Debug.',
+                trace: 'favoritesBrowse',
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
 ];

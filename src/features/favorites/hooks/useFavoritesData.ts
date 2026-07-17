@@ -15,6 +15,11 @@ import {
   loadStarredFromAllLibraryIndexes,
   loadStarredFromAllServersOnline,
 } from '@/features/offline';
+import {
+  beginFavoritesBrowseTrace,
+  emitFavoritesBrowseDebug,
+  favoritesBrowseTimed,
+} from '@/lib/library/favoritesBrowseDebug';
 
 export interface FavoritesDataResult {
   albums: SubsonicAlbum[];
@@ -61,6 +66,11 @@ export function useFavoritesData(): FavoritesDataResult {
       setAlbums(starred.albums);
       setArtists(starred.artists);
       setSongs(starred.songs);
+      emitFavoritesBrowseDebug('starred_snapshot_applied', {
+        albumCount: starred.albums.length,
+        artistCount: starred.artists.length,
+        songCount: starred.songs.length,
+      });
     };
 
     const loadRadioFavorites = async () => {
@@ -68,30 +78,52 @@ export function useFavoritesData(): FavoritesDataResult {
       try {
         const favIds = new Set<string>(JSON.parse(localStorage.getItem('psysonic_radio_favorites') ?? '[]'));
         if (favIds.size === 0) return;
-        const all = await getInternetRadioStations();
+        const all = await favoritesBrowseTimed('radio_stations', () => getInternetRadioStations(), {
+          favoriteStationCount: favIds.size,
+        });
         if (!cancelled) {
-          setRadioStations(all.filter(s => favIds.has(s.id)));
+          const favoriteStations = all.filter(s => favIds.has(s.id));
+          setRadioStations(favoriteStations);
+          emitFavoritesBrowseDebug('radio_favorites_applied', {
+            stationCount: favoriteStations.length,
+          });
         }
       } catch { /* ignore */ }
     };
 
     const loadAll = async () => {
       setLoading(true);
+      beginFavoritesBrowseTrace({
+        favoritesOfflineEnabled,
+        offlineBrowseActive,
+        connectionStatus: connStatus,
+        activeServerReachable: isActiveServerReachable(),
+        serverCount: servers.length,
+      });
 
       if (favoritesOfflineEnabled) {
         try {
-          applyStarred(await loadStarredFromAllLibraryIndexes(offlineBrowseActive));
+          applyStarred(await favoritesBrowseTimed(
+            'library_index_snapshot',
+            () => loadStarredFromAllLibraryIndexes(offlineBrowseActive),
+          ));
         } catch { /* ignore */ }
+        if (cancelled) return;
         if (!cancelled) setLoading(false);
 
         if (connStatus === 'connected' && isActiveServerReachable()) {
           try {
-            applyStarred(await loadStarredFromAllServersOnline());
+            applyStarred(await favoritesBrowseTimed(
+              'server_starred_refresh',
+              () => loadStarredFromAllServersOnline(),
+            ));
           } catch { /* keep library snapshot */ }
         }
       } else {
         if (connStatus === 'connected' && isActiveServerReachable()) {
-          const [starredResult] = await Promise.allSettled([getStarred()]);
+          const [starredResult] = await Promise.allSettled([
+            favoritesBrowseTimed('server_starred', () => getStarred()),
+          ]);
           if (starredResult.status === 'fulfilled') {
             applyStarred(starredResult.value);
           }
@@ -100,6 +132,7 @@ export function useFavoritesData(): FavoritesDataResult {
       }
 
       void loadRadioFavorites();
+      emitFavoritesBrowseDebug('load_complete');
     };
 
     void loadAll();

@@ -646,6 +646,17 @@ pub async fn library_advanced_search(
     .await
 }
 
+/// Narrow local Favorites snapshot. Artist stars remain server-owned and are
+/// supplied by the subsequent `getStarred2` refresh.
+#[tauri::command]
+pub async fn library_list_starred(
+    runtime: State<'_, LibraryRuntime>,
+    server_id: String,
+) -> Result<crate::starred_browse::LibraryStarredResponse, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::starred_browse::list_starred(&store, &server_id)).await
+}
+
 // NOT specta-collected: returns a DTO carrying `raw_json: Value` (LibraryTrack/Album/ArtistDto) — specta rc.25 can't export serde_json::Value. Stays hand-written on generate_handler!.
 #[tauri::command]
 pub async fn library_list_lossless_albums(

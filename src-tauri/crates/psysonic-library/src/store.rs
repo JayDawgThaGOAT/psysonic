@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 22;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 23;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -72,6 +72,9 @@ pub(crate) const MIGRATION_021_SCOPE_BROWSE_TRACKS: &str =
     include_str!("../migrations/021_scope_browse_tracks.sql");
 pub(crate) const MIGRATION_022_ARTIST_NAME_FOLD: &str =
     include_str!("../migrations/022_artist_name_fold.sql");
+/// Version 23: partial index for the Favorites initial local snapshot.
+pub(crate) const MIGRATION_023_STARRED_BROWSE_INDEXES: &str =
+    include_str!("../migrations/023_starred_browse_indexes.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -88,6 +91,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (20, MIGRATION_020_SCOPE_BROWSE_PROJECTION),
     (21, MIGRATION_021_SCOPE_BROWSE_TRACKS),
     (22, MIGRATION_022_ARTIST_NAME_FOLD),
+    (23, MIGRATION_023_STARRED_BROWSE_INDEXES),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -124,6 +128,32 @@ pub(crate) enum MigrationOutcome {
     BreakingBump,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReadOpTiming {
+    pub lock_wait_ms: u64,
+    pub exec_ms: u64,
+    pub blocked_by: Option<ReadOpOwner>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReadOpOwner {
+    pub file: &'static str,
+    pub line: u32,
+}
+
+struct ReadOpOwnerGuard<'a> {
+    owner: &'a Mutex<Option<ReadOpOwner>>,
+}
+
+impl Drop for ReadOpOwnerGuard<'_> {
+    fn drop(&mut self) {
+        match self.owner.lock() {
+            Ok(mut current) => *current = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+    }
+}
+
 /// In-memory tests share one DB across the read/write pair in a single store.
 static IN_MEMORY_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Shared-cache URI for the attached identity DB (mirrors [`in_memory_uri`]).
@@ -144,6 +174,9 @@ pub struct LibraryStore {
     write_conn: Mutex<Connection>,
     /// Read-only handle for search / status / hydrate while sync writes (WAL).
     read_conn: Mutex<Connection>,
+    /// Current holder of `read_conn`, used only to attribute contention in
+    /// targeted diagnostics such as the Favorites initial snapshot.
+    read_op_owner: Mutex<Option<ReadOpOwner>>,
     /// IS-3 bulk ingest in progress — read paths skip write-lock work.
     bulk_ingest_active: AtomicBool,
     /// `swap_database_file` / `restore_database_backup` — fail fast instead of
@@ -166,6 +199,7 @@ impl LibraryStore {
         Ok(Self {
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
+            read_op_owner: Mutex::new(None),
             bulk_ingest_active: AtomicBool::new(false),
             swap_in_progress: AtomicBool::new(false),
         })
@@ -194,6 +228,7 @@ impl LibraryStore {
         Self {
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
+            read_op_owner: Mutex::new(None),
             bulk_ingest_active: AtomicBool::new(false),
             swap_in_progress: AtomicBool::new(false),
         }
@@ -260,12 +295,50 @@ impl LibraryStore {
     }
 
     /// Read-only connection — search, status, hydrate; does not block on sync writes.
+    #[track_caller]
     pub(crate) fn with_read_conn<R>(
         &self,
         f: impl FnOnce(&Connection) -> rusqlite::Result<R>,
     ) -> Result<R, String> {
         let conn = self.lock_read_conn()?;
+        let _owner = self.mark_read_owner(std::panic::Location::caller());
         run_conn_closure(&conn, f)
+    }
+
+    #[track_caller]
+    pub(crate) fn with_read_conn_timed<R>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<R>,
+    ) -> Result<(R, ReadOpTiming), String> {
+        let blocked_by = self.read_op_owner();
+        let lock_start = std::time::Instant::now();
+        let conn = self.lock_read_conn()?;
+        let lock_wait_ms = lock_start.elapsed().as_millis() as u64;
+        let _owner = self.mark_read_owner(std::panic::Location::caller());
+        let exec_start = std::time::Instant::now();
+        let value = run_conn_closure(&conn, f)?;
+        let exec_ms = exec_start.elapsed().as_millis() as u64;
+        Ok((value, ReadOpTiming {
+            lock_wait_ms,
+            exec_ms,
+            blocked_by: (lock_wait_ms > 0).then_some(blocked_by).flatten(),
+        }))
+    }
+
+    fn read_op_owner(&self) -> Option<ReadOpOwner> {
+        match self.read_op_owner.lock() {
+            Ok(owner) => *owner,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
+    }
+
+    fn mark_read_owner(&self, caller: &'static std::panic::Location<'static>) -> ReadOpOwnerGuard<'_> {
+        let owner = ReadOpOwner { file: caller.file(), line: caller.line() };
+        match self.read_op_owner.lock() {
+            Ok(mut current) => *current = Some(owner),
+            Err(poisoned) => *poisoned.into_inner() = Some(owner),
+        }
+        ReadOpOwnerGuard { owner: &self.read_op_owner }
     }
 
     pub(crate) fn with_conn_mut<R>(
