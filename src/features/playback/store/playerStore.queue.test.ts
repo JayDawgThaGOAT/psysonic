@@ -39,6 +39,7 @@ import {
 import { onInvoke } from '@/test/mocks/tauri';
 import { resetPlayerStore } from '@/test/helpers/storeReset';
 import { makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import { getCachedTrack } from '@/features/playback/store/queueTrackResolver';
 
 beforeEach(() => {
   resetPlayerStore();
@@ -56,6 +57,14 @@ describe('enqueue', () => {
     const t1 = makeTrack({ id: 't1' });
     usePlayerStore.getState().enqueue([t1], true);
     expect(usePlayerStore.getState().queueItems.map(r => r.trackId)).toEqual(['t1']);
+  });
+
+  it('keeps the supplied duration available to queue rows', () => {
+    const folderTrack = makeTrack({ id: 'folder-track', duration: 60, serverId: 'folder.example' });
+    usePlayerStore.getState().enqueue([folderTrack], true);
+
+    const ref = usePlayerStore.getState().queueItems[0];
+    expect(getCachedTrack(ref!)).toEqual(expect.objectContaining({ duration: 60 }));
   });
 
   it('appends multiple tracks in order', () => {

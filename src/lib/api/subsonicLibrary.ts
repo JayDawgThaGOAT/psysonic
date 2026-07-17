@@ -51,26 +51,6 @@ export async function getMusicIndexes(musicFolderId: string): Promise<SubsonicDi
   return mapMusicIndexes(data);
 }
 
-export async function getMusicDirectoryForServer(serverId: string, id: string): Promise<SubsonicDirectory> {
-  const data = await apiForServer<{ directory: { id: string; parent?: string; name: string; child?: SubsonicDirectoryEntry | SubsonicDirectoryEntry[] } }>(
-    serverId,
-    'getMusicDirectory.view',
-    { id },
-  );
-  const dir = data.directory;
-  const child = !dir.child ? [] : Array.isArray(dir.child) ? dir.child : [dir.child];
-  return { id: dir.id, parent: dir.parent, name: dir.name, child };
-}
-
-export async function getMusicIndexesForServer(serverId: string, musicFolderId: string): Promise<SubsonicDirectoryEntry[]> {
-  const data = await apiForServer<{ indexes: { index?: { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] } | { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] }[] } }>(
-    serverId,
-    'getIndexes.view',
-    { musicFolderId },
-  );
-  return mapMusicIndexes(data);
-}
-
 function mapMusicFolders(data: { musicFolders: { musicFolder: SubsonicMusicFolder | SubsonicMusicFolder[] } }): SubsonicMusicFolder[] {
   const raw = data.musicFolders?.musicFolder;
   if (!raw) return [];

@@ -23,7 +23,7 @@ interface Args {
   fallbackNavPos: (cols: Column[]) => NavPos | null;
   handleActivate: (colIndex: number, item: SubsonicDirectoryEntry) => void;
   handleDirClick: (colIndex: number, item: SubsonicDirectoryEntry) => void;
-  setSelectedInColumn: (colIndex: number, itemId: string) => void;
+  setSelectedInColumn: (colIndex: number, item: SubsonicDirectoryEntry) => void;
   clearSelectedInColumn: (colIndex: number) => void;
   openContextMenuForEntry: (col: Column, item: SubsonicDirectoryEntry, x: number, y: number) => void;
   clearFiltersRightOf: (colIndex: number) => void;
@@ -91,7 +91,7 @@ export function useFolderBrowserKeyboardNav({
         const nextItem = visibleItems[nextRowIndex];
         setKeyboardPos({ colIndex: current.colIndex, rowIndex: nextRowIndex });
         if (nextItem.isDir) handleDirClick(current.colIndex, nextItem);
-        else setSelectedInColumn(current.colIndex, nextItem.id);
+        else setSelectedInColumn(current.colIndex, nextItem);
       } else if (
         current.rowIndex === 0 &&
         (filterFocusCol === current.colIndex || !!columnFilters[current.colIndex])
@@ -112,7 +112,7 @@ export function useFolderBrowserKeyboardNav({
         const nextItem = visibleItems[nextRowIndex];
         setKeyboardPos({ colIndex: current.colIndex, rowIndex: nextRowIndex });
         if (nextItem.isDir) handleDirClick(current.colIndex, nextItem);
-        else setSelectedInColumn(current.colIndex, nextItem.id);
+        else setSelectedInColumn(current.colIndex, nextItem);
       }
       return;
     }
@@ -133,7 +133,7 @@ export function useFolderBrowserKeyboardNav({
         const rowIndex = Math.min(preferredRowIndex(nextColIndex), nextVisibleItems.length - 1);
         if (rowIndex >= 0) {
           const nextItem = nextVisibleItems[rowIndex];
-          setSelectedInColumn(nextColIndex, nextItem.id);
+          setSelectedInColumn(nextColIndex, nextItem);
           setKeyboardPos({ colIndex: nextColIndex, rowIndex });
           return;
         }

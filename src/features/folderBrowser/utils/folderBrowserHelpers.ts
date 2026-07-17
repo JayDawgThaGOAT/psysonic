@@ -1,20 +1,81 @@
 import type React from 'react';
 import type { SubsonicAlbum, SubsonicDirectoryEntry } from '@/lib/api/subsonicTypes';
 import type { Track } from '@/lib/media/trackTypes';
+import type { LibraryAlbumDto, LibraryArtistDto, LibraryTrackDto } from '@/lib/api/library/dto';
 
-export type ColumnKind = 'roots' | 'indexes' | 'directory';
+export type ColumnKind = 'roots' | 'artists' | 'albums' | 'tracks';
 export type NavPos = { colIndex: number; rowIndex: number };
 
 export type Column = {
   id: string;
   name: string;
   items: SubsonicDirectoryEntry[];
-  selectedId: string | null;
+  selectedKey: string | null;
   loading: boolean;
   error: boolean;
   kind: ColumnKind;
   serverId?: string;
+  scopes?: { serverId: string; libraryId: string }[];
 };
+
+/** Server APIs only guarantee entity IDs are unique within one server. */
+export function folderBrowserEntryKey(entry: Pick<SubsonicDirectoryEntry, 'id' | 'serverId'>): string {
+  return `${entry.serverId ?? ''}\u0000${entry.id}`;
+}
+
+export function selectedFolderBrowserEntry(column: Column): SubsonicDirectoryEntry | undefined {
+  return column.selectedKey
+    ? column.items.find(item => folderBrowserEntryKey(item) === column.selectedKey)
+    : undefined;
+}
+
+export function artistDtoToFolderEntry(artist: LibraryArtistDto): SubsonicDirectoryEntry {
+  return {
+    id: artist.id,
+    serverId: artist.serverId,
+    title: artist.name,
+    artistId: artist.id,
+    isDir: true,
+  };
+}
+
+export function albumDtoToFolderEntry(album: LibraryAlbumDto): SubsonicDirectoryEntry {
+  return {
+    id: album.id,
+    serverId: album.serverId,
+    title: album.name,
+    artist: album.artist ?? undefined,
+    artistId: album.artistId ?? undefined,
+    album: album.name,
+    albumId: album.id,
+    coverArt: album.coverArtId ?? undefined,
+    year: album.year ?? undefined,
+    genre: album.genre ?? undefined,
+    isDir: true,
+  };
+}
+
+export function trackDtoToFolderEntry(track: LibraryTrackDto): SubsonicDirectoryEntry {
+  return {
+    id: track.id,
+    serverId: track.serverId,
+    title: track.title,
+    artist: track.artist ?? undefined,
+    artistId: track.artistId ?? undefined,
+    album: track.album,
+    albumId: track.albumId ?? undefined,
+    coverArt: track.coverArtId ?? undefined,
+    duration: track.durationSec,
+    track: track.trackNumber ?? undefined,
+    year: track.year ?? undefined,
+    bitRate: track.bitRate ?? undefined,
+    suffix: track.suffix ?? undefined,
+    genre: track.genre ?? undefined,
+    starred: track.starredAt != null ? new Date(track.starredAt).toISOString() : undefined,
+    userRating: track.userRating ?? undefined,
+    isDir: false,
+  };
+}
 
 /** getMusicDirectory: `albumId` or `album` + row `id` (Navidrome). */
 export function entryToAlbumIfPresent(item: SubsonicDirectoryEntry): SubsonicAlbum | null {

@@ -1,14 +1,11 @@
-import {
-  getMusicDirectoryForServer,
-  getMusicFoldersForServer,
-  getMusicIndexesForServer,
-} from '@/lib/api/subsonicLibrary';
 import type { SubsonicDirectoryEntry, SubsonicArtist } from '@/lib/api/subsonicTypes';
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useTranslation } from 'react-i18next';
 import {
-  entryToAlbumIfPresent, entryToTrack,
+  albumDtoToFolderEntry, artistDtoToFolderEntry, entryToAlbumIfPresent, entryToTrack,
+  folderBrowserEntryKey,
+  trackDtoToFolderEntry,
   type Column, type ColumnKind, type NavPos,
 } from '@/features/folderBrowser/utils/folderBrowserHelpers';
 import FolderBrowserColumn from '@/features/folderBrowser/components/FolderBrowserColumn';
@@ -16,6 +13,11 @@ import { useFolderBrowserNowPlayingPath } from '@/features/folderBrowser/hooks/u
 import { useFolderBrowserScrolling } from '@/features/folderBrowser/hooks/useFolderBrowserScrolling';
 import { useFolderBrowserKeyboardNav } from '@/features/folderBrowser/hooks/useFolderBrowserKeyboardNav';
 import { useAuthStore } from '@/store/authStore';
+import {
+  libraryScopeAlbumDetail,
+  libraryScopeArtistDetail,
+  libraryScopeListArtists,
+} from '@/lib/api/library/scopeReads';
 
 export default function FolderBrowser() {
   const { t } = useTranslation();
@@ -35,6 +37,8 @@ export default function FolderBrowser() {
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const musicFoldersByServer = useAuthStore(s => s.musicFoldersByServer);
+  const libraryBrowseSelectionByServer = useAuthStore(s => s.libraryBrowseSelectionByServer);
   const visibleServers = useMemo(() => {
     const serverIds = libraryBrowseServerIds.length > 0
       ? new Set(libraryBrowseServerIds)
@@ -54,7 +58,7 @@ export default function FolderBrowser() {
       id: 'root',
       name: '',
       items: [],
-      selectedId: null,
+      selectedKey: null,
       loading: true,
       error: false,
       kind: 'roots',
@@ -62,28 +66,21 @@ export default function FolderBrowser() {
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setColumns([placeholder]);
-    Promise.all(visibleServers.map(async server => {
-      try {
-        const folders = await getMusicFoldersForServer(server.id);
-        return folders.map(folder => ({
-          id: `${server.id}\u0000${folder.id}`,
+    const items: SubsonicDirectoryEntry[] = visibleServers.flatMap(server => {
+      const folders = musicFoldersByServer[server.id] ?? [];
+      const selectedIds = libraryBrowseSelectionByServer[server.id] ?? [];
+      return folders
+        .filter(folder => selectedIds.length === 0 || selectedIds.includes(folder.id))
+        .map(folder => ({
+          id: folder.id,
           sourceId: folder.id,
           serverId: server.id,
           title: `${server.name} - ${folder.name}`,
           isDir: true,
         }));
-      } catch {
-        return [] as SubsonicDirectoryEntry[];
-      }
-    }))
-      .then(groups => {
-        const items = groups.flat();
-        setColumns([{ ...placeholder, items, loading: false }]);
-      })
-      .catch(() => {
-        setColumns([{ ...placeholder, items: [], loading: false, error: true }]);
-      });
-  }, [visibleServers]);
+    });
+    setColumns([{ ...placeholder, items, loading: false }]);
+  }, [libraryBrowseSelectionByServer, musicFoldersByServer, visibleServers]);
 
   useEffect(() => {
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
@@ -121,9 +118,9 @@ export default function FolderBrowser() {
   const preferredRowIndex = useCallback((colIndex: number): number => {
     const items = filteredItemsByCol[colIndex] ?? [];
     if (items.length === 0) return -1;
-    const selectedId = columns[colIndex]?.selectedId;
-    if (selectedId) {
-      const selectedIdx = items.findIndex(it => it.id === selectedId);
+    const selectedKey = columns[colIndex]?.selectedKey;
+    if (selectedKey) {
+      const selectedIdx = items.findIndex(it => folderBrowserEntryKey(it) === selectedKey);
       if (selectedIdx >= 0) return selectedIdx;
     }
     return 0;
@@ -147,7 +144,7 @@ export default function FolderBrowser() {
         const safeRowIndex = Math.min(Math.max(0, rowIndex), targetItems.length - 1);
         const targetItem = targetItems[safeRowIndex];
         setColumns(prev =>
-          prev.map((c, i) => (i === targetColIndex ? { ...c, selectedId: targetItem.id } : c)),
+          prev.map((c, i) => (i === targetColIndex ? { ...c, selectedKey: folderBrowserEntryKey(targetItem) } : c)),
         );
         setKeyboardPos({
           colIndex: targetColIndex,
@@ -189,31 +186,43 @@ export default function FolderBrowser() {
     const serverId = item.serverId ?? columns[colIndex]?.serverId;
     if (!serverId) return;
     clearFiltersRightOf(colIndex);
-    const nextKind: ColumnKind = colIndex === 0 ? 'indexes' : 'directory';
+    const scopes = colIndex === 0
+      ? [{ serverId, libraryId: item.sourceId ?? item.id }]
+      : columns[colIndex]?.scopes ?? [];
+    const nextKind: ColumnKind = colIndex === 0
+      ? 'artists'
+      : columns[colIndex]?.kind === 'artists'
+        ? 'albums'
+        : 'tracks';
     setColumns(prev => [
       ...prev.slice(0, colIndex + 1).map((c, i) =>
-        i === colIndex ? { ...c, selectedId: item.id } : c,
+        i === colIndex ? { ...c, selectedKey: folderBrowserEntryKey(item) } : c,
       ),
       {
         id: item.id,
         name: item.title,
         items: [],
-        selectedId: null,
+        selectedKey: null,
         loading: true,
         error: false,
         kind: nextKind,
         serverId,
+        scopes,
       },
     ]);
 
-    const fetchItems =
-      colIndex === 0
-        ? getMusicIndexesForServer(serverId, item.sourceId ?? item.id)
-        : getMusicDirectoryForServer(serverId, item.id).then(d => d.child);
+    const fetchItems = colIndex === 0
+      ? libraryScopeListArtists(serverId, { scopes, sort: 'name', limit: 10_000 })
+        .then(artists => artists.map(artistDtoToFolderEntry))
+      : columns[colIndex]?.kind === 'artists'
+        ? libraryScopeArtistDetail(serverId, { scopes, artistId: item.id, serverId, includeTracks: false })
+          .then(response => response.albums.map(albumDtoToFolderEntry))
+        : libraryScopeAlbumDetail(serverId, { scopes, albumId: item.id, serverId })
+          .then(response => response.tracks.map(trackDtoToFolderEntry));
 
     fetchItems
       .then(items => {
-        const serverItems = items.map(entry => ({ ...entry, serverId }));
+        const serverItems = items.map(entry => ({ ...entry, serverId: entry.serverId ?? serverId }));
         setColumns(prev => {
           const idx = prev.findIndex(c => c.id === item.id && c.loading);
           if (idx === -1) return prev;
@@ -236,11 +245,11 @@ export default function FolderBrowser() {
   const handleFileClick = useCallback(
     (colIndex: number, item: SubsonicDirectoryEntry) => {
       setColumns(prev =>
-        prev.map((c, i) => (i === colIndex ? { ...c, selectedId: item.id } : c)),
+        prev.map((c, i) => (i === colIndex ? { ...c, selectedKey: folderBrowserEntryKey(item) } : c)),
       );
       const path = [
-        ...columns.slice(0, colIndex).map(c => c.selectedId).filter((id): id is string => !!id),
-        item.id,
+        ...columns.slice(0, colIndex).map(c => c.selectedKey).filter((key): key is string => !!key),
+        folderBrowserEntryKey(item),
       ];
       setPlayingPathIds(path);
       const visibleItems = filteredItemsByCol[colIndex] ?? columns[colIndex]?.items ?? [];
@@ -250,19 +259,20 @@ export default function FolderBrowser() {
     [columns, filteredItemsByCol, playTrack, setPlayingPathIds],
   );
 
-  const setSelectedInColumn = useCallback((colIndex: number, itemId: string) => {
+  const setSelectedInColumn = useCallback((colIndex: number, item: SubsonicDirectoryEntry) => {
+    const itemKey = folderBrowserEntryKey(item);
     setColumns(prev => {
-      const prevSelectedId = prev[colIndex]?.selectedId ?? null;
-      if (prevSelectedId !== itemId) {
+      const prevSelectedKey = prev[colIndex]?.selectedKey ?? null;
+      if (prevSelectedKey !== itemKey) {
         clearFiltersRightOf(colIndex);
       }
-      return prev.map((c, i) => (i === colIndex ? { ...c, selectedId: itemId } : c));
+      return prev.map((c, i) => (i === colIndex ? { ...c, selectedKey: itemKey } : c));
     });
   }, [clearFiltersRightOf]);
 
   const clearSelectedInColumn = useCallback((colIndex: number) => {
     setColumns(prev =>
-      prev.map((c, i) => (i === colIndex ? { ...c, selectedId: null } : c)),
+      prev.map((c, i) => (i === colIndex ? { ...c, selectedKey: null } : c)),
     );
   }, []);
 
@@ -279,7 +289,7 @@ export default function FolderBrowser() {
   const openContextMenuForEntry = useCallback(
     (col: Column, item: SubsonicDirectoryEntry, x: number, y: number) => {
       if (item.isDir) {
-        if (col.kind === 'indexes') {
+        if (col.kind === 'artists') {
           const artist: SubsonicArtist = {
             id: item.id,
             name: item.title,
@@ -333,7 +343,7 @@ export default function FolderBrowser() {
   const activeColIndex = useMemo(() => {
     if (keyboardPos) return keyboardPos.colIndex;
     const fromSelection = [...columns]
-      .map((c, i) => (c.selectedId ? i : -1))
+      .map((c, i) => (c.selectedKey ? i : -1))
       .filter(i => i >= 0);
     if (fromSelection.length > 0) return fromSelection[fromSelection.length - 1];
     return Math.max(0, columns.length - 1);
@@ -398,7 +408,7 @@ export default function FolderBrowser() {
                 const nextItem = (filteredItemsByCol[colIndex] ?? [])[rowIndex];
                 if (nextItem) {
                   if (nextItem.isDir) handleDirClick(colIndex, nextItem);
-                  else setSelectedInColumn(colIndex, nextItem.id);
+                  else setSelectedInColumn(colIndex, nextItem);
                 }
                 setKeyboardPos({ colIndex, rowIndex });
                 requestAnimationFrame(() => wrapperRef.current?.focus({ preventScroll: true }));

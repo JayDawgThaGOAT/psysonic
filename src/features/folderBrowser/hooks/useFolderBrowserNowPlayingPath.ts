@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { getMusicDirectoryForServer, getMusicIndexesForServer } from '@/lib/api/subsonicLibrary';
+import {
+  libraryScopeAlbumDetail,
+  libraryScopeArtistDetail,
+  libraryScopeListArtists,
+} from '@/lib/api/library/scopeReads';
 import type { SubsonicDirectoryEntry } from '@/lib/api/subsonicTypes';
 import type { Track } from '@/lib/media/trackTypes';
-import type { Column, NavPos } from '@/features/folderBrowser/utils/folderBrowserHelpers';
+import {
+  albumDtoToFolderEntry, artistDtoToFolderEntry, folderBrowserEntryKey, selectedFolderBrowserEntry,
+  trackDtoToFolderEntry,
+  type Column, type NavPos,
+} from '@/features/folderBrowser/utils/folderBrowserHelpers';
 
 let persistedPlayingPathIds: string[] = [];
 
@@ -27,11 +35,11 @@ export function useFolderBrowserNowPlayingPath({
   const [playingPathIds, setPlayingPathIds] = useState<string[]>(persistedPlayingPathIds);
   const [playingPathServerId, setPlayingPathServerId] = useState<string | null>(null);
   const autoResolvedTrackRef = useRef<string | null>(null);
-  const prevTrackIdRef = useRef<string | null>(null);
+  const prevTrackKeyRef = useRef<string | null>(null);
   const lastHotkeyRevealTsRef = useRef<number | null>(null);
   const location = useLocation();
 
-  const trackIdentity = currentTrack ? `${currentTrack.serverId ?? ''}\u0000${currentTrack.id}` : null;
+  const trackIdentity = currentTrack ? folderBrowserEntryKey(currentTrack) : null;
 
   useEffect(() => {
     if (!currentTrack?.id) {
@@ -41,21 +49,21 @@ export function useFolderBrowserNowPlayingPath({
       setPlayingPathServerId(null);
       return;
     }
-    setPlayingPathIds(prev => (prev[prev.length - 1] === currentTrack.id ? prev : []));
+    setPlayingPathIds(prev => (prev[prev.length - 1] === trackIdentity ? prev : []));
     setPlayingPathServerId(prev => prev === currentTrack.serverId ? prev : null);
-  }, [currentTrack?.id, currentTrack?.serverId]);
+  }, [currentTrack?.id, currentTrack?.serverId, trackIdentity]);
 
   useEffect(() => {
     if (!isPlaying || !currentTrack?.id) return;
     const selectedChain = columns
-      .map(c => c.selectedId)
-      .filter((id): id is string => !!id);
+      .map(selectedFolderBrowserEntry)
+      .filter((entry): entry is SubsonicDirectoryEntry => !!entry)
+      .map(folderBrowserEntryKey);
     if (selectedChain.length === 0) return;
 
-    const lastSelectedId = selectedChain[selectedChain.length - 1];
-    const leafColumn = [...columns].reverse().find(c => c.selectedId);
-    const leafItem = leafColumn?.items.find(it => it.id === lastSelectedId);
-    if (!leafColumn || !leafItem || leafItem.isDir || leafItem.id !== currentTrack.id || leafColumn.serverId !== currentTrack.serverId) return;
+    const leafColumn = [...columns].reverse().find(c => c.selectedKey);
+    const leafItem = leafColumn && selectedFolderBrowserEntry(leafColumn);
+    if (!leafColumn || !leafItem || leafItem.isDir || folderBrowserEntryKey(leafItem) !== trackIdentity) return;
 
     // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -68,8 +76,8 @@ export function useFolderBrowserNowPlayingPath({
       }
       return selectedChain;
     });
-    setPlayingPathServerId(leafColumn.serverId ?? null);
-  }, [columns, currentTrack?.id, currentTrack?.serverId, isPlaying]);
+    setPlayingPathServerId(leafItem.serverId ?? null);
+  }, [columns, currentTrack?.id, currentTrack?.serverId, isPlaying, trackIdentity]);
 
   useEffect(() => {
     persistedPlayingPathIds = playingPathIds;
@@ -81,23 +89,34 @@ export function useFolderBrowserNowPlayingPath({
   ): Promise<Column[] | null> => {
     for (const root of roots) {
       if (!root.serverId || (track.serverId && root.serverId !== track.serverId)) continue;
+      const scopes = [{ serverId: root.serverId, libraryId: root.sourceId ?? root.id }];
       let indexes: SubsonicDirectoryEntry[];
       try {
-        indexes = (await getMusicIndexesForServer(root.serverId, root.sourceId ?? root.id))
-          .map(entry => ({ ...entry, serverId: root.serverId }));
+        indexes = (await libraryScopeListArtists(root.serverId, { scopes, sort: 'name', limit: 10_000 }))
+          .map(artistDtoToFolderEntry);
       } catch {
         continue;
       }
 
       const artistEntry =
-        indexes.find(it => it.isDir && !!track.artistId && it.id === track.artistId) ??
-        indexes.find(it => it.isDir && it.title === track.artist);
+        indexes.find(it =>
+          it.isDir && !!track.artistId && it.id === track.artistId &&
+          (!track.serverId || !it.serverId || it.serverId === track.serverId),
+        ) ??
+        indexes.find(it =>
+          it.isDir && it.title === track.artist &&
+          (!track.serverId || !it.serverId || it.serverId === track.serverId),
+        );
       if (!artistEntry) continue;
 
       let artistChildren: SubsonicDirectoryEntry[];
       try {
-        artistChildren = (await getMusicDirectoryForServer(root.serverId, artistEntry.id)).child
-          .map(entry => ({ ...entry, serverId: root.serverId }));
+        artistChildren = (await libraryScopeArtistDetail(root.serverId, {
+          scopes,
+          artistId: artistEntry.id,
+          serverId: root.serverId,
+          includeTracks: false,
+        })).albums.map(albumDtoToFolderEntry);
       } catch {
         continue;
       }
@@ -107,25 +126,32 @@ export function useFolderBrowserNowPlayingPath({
         (
           (!!track.albumId && (it.albumId === track.albumId || it.id === track.albumId)) ||
           (!!track.album && (it.album === track.album || it.title === track.album))
-        ),
+        ) &&
+        (!track.serverId || !it.serverId || it.serverId === track.serverId),
       );
       if (!albumEntry) continue;
 
       let albumChildren: SubsonicDirectoryEntry[];
       try {
-        albumChildren = (await getMusicDirectoryForServer(root.serverId, albumEntry.id)).child
-          .map(entry => ({ ...entry, serverId: root.serverId }));
+        albumChildren = (await libraryScopeAlbumDetail(root.serverId, {
+          scopes,
+          albumId: albumEntry.id,
+          serverId: root.serverId,
+        })).tracks.map(trackDtoToFolderEntry);
       } catch {
         continue;
       }
-      const songEntry = albumChildren.find(it => !it.isDir && it.id === track.id);
+      const songEntry = albumChildren.find(it =>
+        !it.isDir && it.id === track.id &&
+        (!track.serverId || !it.serverId || it.serverId === track.serverId),
+      );
       if (!songEntry) continue;
 
       return [
-        { id: 'root', name: '', items: roots, selectedId: root.id, loading: false, error: false, kind: 'roots' },
-        { id: root.id, name: root.title, items: indexes, selectedId: artistEntry.id, loading: false, error: false, kind: 'indexes', serverId: root.serverId },
-        { id: artistEntry.id, name: artistEntry.title, items: artistChildren, selectedId: albumEntry.id, loading: false, error: false, kind: 'directory', serverId: root.serverId },
-        { id: albumEntry.id, name: albumEntry.title, items: albumChildren, selectedId: songEntry.id, loading: false, error: false, kind: 'directory', serverId: root.serverId },
+        { id: 'root', name: '', items: roots, selectedKey: folderBrowserEntryKey(root), loading: false, error: false, kind: 'roots' },
+        { id: root.id, name: root.title, items: indexes, selectedKey: folderBrowserEntryKey(artistEntry), loading: false, error: false, kind: 'artists', serverId: root.serverId, scopes },
+        { id: artistEntry.id, name: artistEntry.title, items: artistChildren, selectedKey: folderBrowserEntryKey(albumEntry), loading: false, error: false, kind: 'albums', serverId: root.serverId, scopes },
+        { id: albumEntry.id, name: albumEntry.title, items: albumChildren, selectedKey: folderBrowserEntryKey(songEntry), loading: false, error: false, kind: 'tracks', serverId: root.serverId, scopes },
       ];
     }
     return null;
@@ -145,11 +171,11 @@ export function useFolderBrowserNowPlayingPath({
     const rootCol = columns[0];
     if (!rootCol || rootCol.loading || rootCol.error || rootCol.items.length === 0) return;
 
-    const selectedLeafId =
-      [...columns].reverse().find(c => c.selectedId)?.selectedId ?? null;
-    const wasOnPreviousTrackPath = !!prevTrackIdRef.current && selectedLeafId === prevTrackIdRef.current;
-    const selectedLeafColumn = [...columns].reverse().find(c => c.selectedId);
-    if (selectedLeafId === currentTrack.id && selectedLeafColumn?.serverId === currentTrack.serverId) {
+    const selectedLeafColumn = [...columns].reverse().find(c => c.selectedKey);
+    const selectedLeafEntry = selectedLeafColumn && selectedFolderBrowserEntry(selectedLeafColumn);
+    const selectedLeafKey = selectedLeafEntry ? folderBrowserEntryKey(selectedLeafEntry) : null;
+    const wasOnPreviousTrackPath = !!prevTrackKeyRef.current && selectedLeafKey === prevTrackKeyRef.current;
+    if (selectedLeafKey === trackIdentity) {
       autoResolvedTrackRef.current = trackIdentity;
       if (hotkeyRevealRequested) {
         lastHotkeyRevealTsRef.current = hotkeyRevealTs;
@@ -162,11 +188,11 @@ export function useFolderBrowserNowPlayingPath({
     resolveColumnsForTrack(currentTrack, rootCol.items).then((resolved) => {
       if (cancelled || !resolved) return;
       setColumns(resolved);
-      const path = resolved.map(c => c.selectedId).filter((id): id is string => !!id);
+      const path = resolved.map(c => c.selectedKey).filter((key): key is string => !!key);
       setPlayingPathIds(path);
       setPlayingPathServerId(currentTrack.serverId ?? null);
       const leafColIndex = resolved.length - 1;
-      const leafRowIndex = resolved[leafColIndex].items.findIndex(it => it.id === currentTrack.id);
+      const leafRowIndex = resolved[leafColIndex].items.findIndex(it => folderBrowserEntryKey(it) === trackIdentity);
       if (leafRowIndex >= 0) setKeyboardPos({ colIndex: leafColIndex, rowIndex: leafRowIndex });
       autoResolvedTrackRef.current = trackIdentity;
       if (hotkeyRevealRequested) {
@@ -178,11 +204,11 @@ export function useFolderBrowserNowPlayingPath({
   }, [columns, currentTrack, trackIdentity, resolveColumnsForTrack, location.state, setColumns, setKeyboardPos]);
 
   useEffect(() => {
-    prevTrackIdRef.current = currentTrack?.id ?? null;
-  }, [currentTrack?.id]);
+    prevTrackKeyRef.current = trackIdentity;
+  }, [trackIdentity]);
 
   const isSelectedPathForCurrentTrack =
-    isPlaying && !!currentTrack && playingPathServerId === currentTrack.serverId && playingPathIds[playingPathIds.length - 1] === currentTrack.id;
+    isPlaying && !!currentTrack && playingPathServerId === currentTrack.serverId && playingPathIds[playingPathIds.length - 1] === trackIdentity;
 
   return {
     playingPathIds,

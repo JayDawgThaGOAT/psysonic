@@ -29,6 +29,11 @@ pub(crate) const LIBRARY_ID_BACKFILL_RECONCILE_ID: &str = "library_id_backfill_r
 /// prune these inline; this clears already-accumulated rows at first open.
 pub(crate) const ORPHAN_BROWSE_RECONCILE_ID: &str = "orphan_browse_rows_reconcile_v1";
 
+/// One-time repair of Navidrome decimal durations stored as zero before the
+/// native mapper began rounding them to whole seconds.
+pub(crate) const DURATION_SEC_BACKFILL_RECONCILE_ID: &str = "duration_sec_decimal_backfill_v1";
+const DURATION_SEC_BACKFILL_BATCH_SIZE: i64 = 1_000;
+
 /// Lowest applied schema version the current code can advance from purely
 /// additively. If a DB carries a version below this, the breaking-bump hook
 /// fires (spec §5.7 / P22): the library is treated as incompatible, must be
@@ -920,6 +925,7 @@ fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> 
     maybe_reconcile_artist_name_fold(conn)?;
     maybe_reconcile_replay_gain_peak(conn)?;
     maybe_reconcile_library_id_backfill(conn)?;
+    maybe_reconcile_duration_sec_backfill(conn)?;
     maybe_reconcile_orphan_browse_rows(conn)?;
     ensure_genre_tags_schema(conn)?;
     ensure_mainstage_feed_indexes(conn)?;
@@ -1224,6 +1230,78 @@ fn maybe_reconcile_library_id_backfill(conn: &Connection) -> rusqlite::Result<()
     repair_library_id_from_raw_json(conn)?;
     mark_library_id_backfill_reconcile_completed(conn)?;
     Ok(())
+}
+
+fn duration_sec_backfill_completed(conn: &Connection) -> rusqlite::Result<bool> {
+    let completed: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT completed_at FROM library_data_migration WHERE id = ?1",
+            params![DURATION_SEC_BACKFILL_RECONCILE_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(completed.flatten().is_some())
+}
+
+/// Restore zeroed decimal durations from `raw_json` in bounded transactions.
+/// `cursor_rowid` lets an interrupted startup continue from the last batch.
+fn maybe_reconcile_duration_sec_backfill(conn: &Connection) -> rusqlite::Result<()> {
+    if duration_sec_backfill_completed(conn)? {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO library_data_migration (id, cursor_rowid, started_at) \
+         VALUES (?1, 0, strftime('%s','now')) \
+         ON CONFLICT(id) DO UPDATE SET \
+           started_at = COALESCE(library_data_migration.started_at, excluded.started_at)",
+        params![DURATION_SEC_BACKFILL_RECONCILE_ID],
+    )?;
+
+    loop {
+        let cursor: i64 = conn.query_row(
+            "SELECT cursor_rowid FROM library_data_migration WHERE id = ?1",
+            params![DURATION_SEC_BACKFILL_RECONCILE_ID],
+            |row| row.get(0),
+        )?;
+        let last_rowid: Option<i64> = conn.query_row(
+            "SELECT MAX(rowid) FROM ( \
+               SELECT rowid FROM track \
+               WHERE rowid > ?1 \
+                 AND duration_sec = 0 \
+                 AND json_valid(raw_json) \
+                 AND json_type(raw_json, '$.duration') IN ('integer', 'real') \
+                 AND CAST(json_extract(raw_json, '$.duration') AS REAL) > 0 \
+               ORDER BY rowid LIMIT ?2 \
+             )",
+            params![cursor, DURATION_SEC_BACKFILL_BATCH_SIZE],
+            |row| row.get(0),
+        )?;
+        let Some(last_rowid) = last_rowid else {
+            conn.execute(
+                "UPDATE library_data_migration \
+                 SET completed_at = strftime('%s','now') WHERE id = ?1",
+                params![DURATION_SEC_BACKFILL_RECONCILE_ID],
+            )?;
+            return Ok(());
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE track \
+             SET duration_sec = CAST(ROUND(CAST(json_extract(raw_json, '$.duration') AS REAL)) AS INTEGER) \
+             WHERE rowid > ?1 AND rowid <= ?2 \
+               AND duration_sec = 0 \
+               AND json_valid(raw_json) \
+               AND json_type(raw_json, '$.duration') IN ('integer', 'real') \
+               AND CAST(json_extract(raw_json, '$.duration') AS REAL) > 0",
+            params![cursor, last_rowid],
+        )?;
+        tx.execute(
+            "UPDATE library_data_migration SET cursor_rowid = ?2 WHERE id = ?1",
+            params![DURATION_SEC_BACKFILL_RECONCILE_ID, last_rowid],
+        )?;
+        tx.commit()?;
+    }
 }
 
 fn orphan_browse_reconcile_completed(conn: &Connection) -> rusqlite::Result<bool> {
@@ -2101,6 +2179,63 @@ mod tests {
             })
             .expect("library_id after second reconcile");
         assert_eq!(library_id_after, "");
+    }
+
+    #[test]
+    fn duration_sec_backfill_rounds_decimal_raw_duration_once() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.seed_duration_backfill", |conn| {
+                conn.execute(
+                    "DELETE FROM library_data_migration WHERE id = ?1",
+                    params![DURATION_SEC_BACKFILL_RECONCILE_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO track (server_id, id, title, album, duration_sec, deleted, synced_at, raw_json) \
+                     VALUES ('s1', 'decimal', 'Decimal', 'Al', 0, 0, 1, '{\"duration\":229.85}')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO track (server_id, id, title, album, duration_sec, deleted, synced_at, raw_json) \
+                     VALUES ('s1', 'zero', 'Zero', 'Al', 0, 0, 1, '{\"duration\":0}')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO track (server_id, id, title, album, duration_sec, deleted, synced_at, raw_json) \
+                     VALUES ('s1', 'set', 'Set', 'Al', 100, 0, 1, '{\"duration\":200}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("seed tracks");
+
+        store
+            .with_conn("test.duration_backfill", maybe_reconcile_duration_sec_backfill)
+            .expect("duration backfill");
+
+        let durations: Vec<(String, i64)> = store
+            .with_read_conn(|conn| {
+                conn.prepare("SELECT id, duration_sec FROM track WHERE server_id = 's1' ORDER BY id")?
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            })
+            .expect("backfilled durations");
+        assert_eq!(durations, vec![("decimal".into(), 230), ("set".into(), 100), ("zero".into(), 0)]);
+
+        store
+            .with_conn_mut("test.clear_decimal_duration", |conn| {
+                conn.execute("UPDATE track SET duration_sec = 0 WHERE id = 'decimal'", [])
+            })
+            .expect("clear duration");
+        store
+            .with_conn("test.duration_backfill_again", maybe_reconcile_duration_sec_backfill)
+            .expect("guarded duration backfill");
+        let duration_after: i64 = store
+            .with_read_conn(|conn| {
+                conn.query_row("SELECT duration_sec FROM track WHERE id = 'decimal'", [], |row| row.get(0))
+            })
+            .expect("duration after guarded re-run");
+        assert_eq!(duration_after, 0);
     }
 
     #[test]

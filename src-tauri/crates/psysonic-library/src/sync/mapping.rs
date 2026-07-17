@@ -122,7 +122,7 @@ pub fn navidrome_song_to_track_row(
         album: string_field(raw, "album").unwrap_or_default(),
         album_id: string_field(raw, "albumId"),
         album_artist: string_field(raw, "albumArtist"),
-        duration_sec: raw.get("duration").and_then(|v| v.as_i64()).unwrap_or(0),
+        duration_sec: duration_seconds(raw),
         track_number: raw.get("trackNumber").and_then(|v| v.as_i64()),
         disc_number: raw.get("discNumber").and_then(|v| v.as_i64()),
         year: raw.get("year").and_then(|v| v.as_i64()),
@@ -165,6 +165,19 @@ fn json_string_field(raw: &Value, key: &str) -> Option<String> {
 
 fn string_field(raw: &Value, key: &str) -> Option<String> {
     json_string_field(raw, key)
+}
+
+/// Navidrome's native API reports seconds as either an integer or a decimal.
+/// The local index stores whole seconds, so round rather than silently dropping
+/// a valid fractional value to zero.
+fn duration_seconds(raw: &Value) -> i64 {
+    let seconds = raw.get("duration").and_then(Value::as_f64).unwrap_or(0.0);
+    let rounded = seconds.round();
+    if rounded.is_finite() && (0.0..=i64::MAX as f64).contains(&rounded) {
+        rounded as i64
+    } else {
+        0
+    }
 }
 
 fn parse_iso_ms(s: Option<&str>) -> Option<i64> {
@@ -374,6 +387,19 @@ mod tests {
         });
         let row = navidrome_song_to_track_row("s1", &raw, 1, None).unwrap();
         assert_eq!(row.library_id.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn navidrome_song_rounds_decimal_duration_seconds() {
+        let raw = json!({
+            "id": "tr_1",
+            "title": "Hello",
+            "duration": 229.85,
+        });
+
+        let row = navidrome_song_to_track_row("s1", &raw, 1, None).unwrap();
+
+        assert_eq!(row.duration_sec, 230);
     }
 
     #[test]

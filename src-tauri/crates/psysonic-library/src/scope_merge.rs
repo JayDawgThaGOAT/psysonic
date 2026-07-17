@@ -256,6 +256,22 @@ pub(crate) fn ensure_cluster_keys_for_scopes(
     Ok(())
 }
 
+/// Artist reads use `artist_key` even for a single library, so they must apply
+/// identity-key version upgrades without relying on multi-library dedup being enabled.
+fn ensure_artist_cluster_keys_for_scopes(
+    store: &LibraryStore,
+    scopes: &[LibraryScopePair],
+) -> Result<(), String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for pair in scopes {
+        if !seen.contains(&pair.server_id.as_str()) {
+            seen.push(pair.server_id.as_str());
+            crate::identity::ensure_cluster_keys_built(store, &pair.server_id)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn list_albums(
     store: &LibraryStore,
     request: &LibraryScopeListRequest,
@@ -346,7 +362,7 @@ pub fn list_artists(
     request: &LibraryScopeListRequest,
 ) -> Result<Vec<LibraryArtistDto>, String> {
     let scopes = non_empty_scopes(&request.scopes)?;
-    ensure_cluster_keys_for_scopes(store, scopes)?;
+    ensure_artist_cluster_keys_for_scopes(store, scopes)?;
     let limit = clamp_limit(request.limit);
     let offset = clamp_offset(request.offset);
     let order = artist_order_sql(request.sort.as_deref());
@@ -598,6 +614,7 @@ pub(crate) fn list_artists_layer1_filtered(
     skip_totals: bool,
 ) -> Result<(Vec<LibraryArtistDto>, u32), String> {
     let scopes = non_empty_scopes(scopes)?;
+    ensure_artist_cluster_keys_for_scopes(store, scopes)?;
     let (cte, scope_binds) = scope_cte_sql(scopes);
     let scoped = if scopes.len() == 1 {
         scoped_track_join_layer1()
@@ -697,6 +714,7 @@ pub(crate) fn list_index_artists_layer1_filtered(
     skip_totals: bool,
 ) -> Result<(Vec<LibraryArtistDto>, u32), String> {
     let scopes = non_empty_scopes(scopes)?;
+    ensure_artist_cluster_keys_for_scopes(store, scopes)?;
     let (cte, scope_binds) = scope_cte_sql(scopes);
     let scoped_from = "FROM scope s \
          CROSS JOIN track t ON t.server_id = s.server_id AND t.library_id = s.library_id";
@@ -996,6 +1014,7 @@ pub(crate) fn list_artists_filtered(
     skip_totals: bool,
 ) -> Result<(Vec<LibraryArtistDto>, u32), String> {
     let scopes = non_empty_scopes(scopes)?;
+    ensure_artist_cluster_keys_for_scopes(store, scopes)?;
     let (cte, scope_binds) = scope_cte_sql(scopes);
     let base_where = append_extra_where(
         &format!(
@@ -1377,6 +1396,7 @@ pub(crate) fn live_search_artists(
     limit: u32,
 ) -> Result<Vec<LibraryArtistDto>, String> {
     let scopes = non_empty_scopes(scopes)?;
+    ensure_artist_cluster_keys_for_scopes(store, scopes)?;
     let (cte, mut binds) = scope_cte_sql(scopes);
     let sql = format!(
         "{cte}, \
@@ -1871,6 +1891,7 @@ pub fn artist_detail(
     request: &LibraryScopeArtistDetailRequest,
 ) -> Result<LibraryScopeArtistDetailResponse, String> {
     let scopes = non_empty_scopes(&request.scopes)?;
+    ensure_artist_cluster_keys_for_scopes(store, scopes)?;
     let server_id = request.server_id.trim();
     let artist_id = request.artist_id.trim();
     if server_id.is_empty() || artist_id.is_empty() {
@@ -2027,6 +2048,66 @@ mod tests {
         assert_eq!(response.artist.id, "art1");
         assert_eq!(response.albums.len(), 1);
         assert!(response.tracks.is_empty());
+    }
+
+    #[test]
+    fn list_artists_collapses_collaboration_track_names_for_one_artist_id() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track(
+                    "s1",
+                    "t1",
+                    "Song 1",
+                    Some("Andromida • Daedric"),
+                    "Album 1",
+                    "album-1",
+                    Some("artist-1"),
+                    200,
+                    "lib-a",
+                    None,
+                    None,
+                    None,
+                ),
+                track(
+                    "s1",
+                    "t2",
+                    "Song 2",
+                    Some("Andromida • Nevertel"),
+                    "Album 2",
+                    "album-2",
+                    Some("artist-1"),
+                    220,
+                    "lib-a",
+                    None,
+                    None,
+                    None,
+                ),
+            ])
+            .unwrap();
+        store
+            .with_conn_mut("test.canonical_artist_scope", |conn| {
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, synced_at) VALUES ('s1', 'artist-1', 'Andromida', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+
+        let artists = list_artists(
+            &store,
+            &LibraryScopeListRequest {
+                scopes: vec![scope_pair("s1", "lib-a"), scope_pair("s1", "lib-b")],
+                sort: Some("name".into()),
+                limit: Some(50),
+                offset: Some(0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(artists.iter().filter(|artist| artist.id == "artist-1").count(), 1);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::store::LibraryStore;
 
 use super::attach::CLUSTER_SCHEMA;
 use super::keys::build_track_cluster_keys;
-use super::norm::NORM_VERSION;
+use super::norm::{norm_part, NORM_VERSION};
 
 const UPSERT_CLUSTER_KEY_SQL: &str = "
 INSERT INTO cluster.track_cluster_key (
@@ -67,6 +67,7 @@ type SourceTrackRow = (
     String,
     String,
     Option<String>,
+    Option<String>,
     String,
     Option<String>,
     String,
@@ -81,11 +82,14 @@ pub fn rebuild_cluster_keys(
     store.with_conn_mut("identity.rebuild_cluster_keys", |conn| {
         let tx = conn.transaction()?;
         let mut select = String::from(
-            "SELECT server_id, COALESCE(library_id, ''), id, artist, title, album_artist, album, duration_sec \
-             FROM track WHERE deleted = 0",
+            "SELECT t.server_id, COALESCE(t.library_id, ''), t.id, t.artist, ar.name, t.title, \
+                    t.album_artist, t.album, t.duration_sec \
+             FROM track t \
+             LEFT JOIN artist ar ON ar.server_id = t.server_id AND ar.id = t.artist_id \
+             WHERE t.deleted = 0",
         );
         if server_id.is_some() {
-            select.push_str(" AND server_id = ?1");
+            select.push_str(" AND t.server_id = ?1");
         }
         // Stream rows straight from the `track` SELECT into the sidecar UPSERT
         // (both statements borrow the same tx; the SELECT reads `track`, the
@@ -98,14 +102,28 @@ pub fn rebuild_cluster_keys(
         let mut upserted = 0u64;
         let mut rows = stmt.query(rusqlite::params_from_iter(filter_params.iter()))?;
         while let Some(row) = rows.next()? {
-            let (server_id, library_id, track_id, artist, title, album_artist, album, duration_sec) =
-                map_source_track_row(row)?;
-            let keys = build_track_cluster_keys(
+            let (
+                server_id,
+                library_id,
+                track_id,
+                artist,
+                canonical_artist,
+                title,
+                album_artist,
+                album,
+                duration_sec,
+            ) = map_source_track_row(row)?;
+            let mut keys = build_track_cluster_keys(
                 artist.as_deref(),
                 &title,
                 &album,
                 album_artist.as_deref(),
             );
+            keys.artist_key = canonical_artist
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .or(artist.as_deref())
+                .and_then(norm_part);
             upsert.execute(params![
                 server_id,
                 library_id,
@@ -199,6 +217,7 @@ fn map_source_track_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SourceTrack
         row.get(5)?,
         row.get(6)?,
         row.get(7)?,
+        row.get(8)?,
     ))
 }
 
@@ -315,6 +334,55 @@ mod tests {
             .unwrap();
         assert!(empty_artist.0.is_none());
         assert!(empty_artist.2.is_none());
+    }
+
+    #[test]
+    fn rebuild_uses_canonical_artist_name_for_every_track_with_the_same_artist_id() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track_row(
+                    "s1",
+                    "t1",
+                    "Song 1",
+                    Some("Andromida • Daedric"),
+                    "Album 1",
+                    None,
+                    200,
+                    "lib-a",
+                ),
+                track_row(
+                    "s1",
+                    "t2",
+                    "Song 2",
+                    Some("Andromida • Nevertel"),
+                    "Album 2",
+                    None,
+                    220,
+                    "lib-a",
+                ),
+            ])
+            .unwrap();
+        store
+            .with_conn_mut("test.canonical_artist_key", |conn| {
+                conn.execute("UPDATE track SET artist_id = 'artist-1' WHERE server_id = 's1'", [])?;
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, synced_at) VALUES ('s1', 'artist-1', 'Andromida', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+
+        for track_id in ["t1", "t2"] {
+            let row = store
+                .with_read_conn(|conn| read_cluster_row(conn, "s1", track_id))
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.2.as_deref(), Some("andromida"));
+        }
     }
 
     #[test]
