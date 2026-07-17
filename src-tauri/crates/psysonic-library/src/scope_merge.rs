@@ -99,26 +99,27 @@ fn scoped_track_join() -> &'static str {
      WHERE t.deleted = 0"
 }
 
-fn artist_detail_track_source(
+fn keyed_detail_track_source(
     scope_cte: String,
-    artist_key: Option<&str>,
+    key_column: Option<&'static str>,
+    fallback_filter: &'static str,
 ) -> (String, &'static str, &'static str, &'static str) {
-    if artist_key.is_some() {
+    if let Some(key_column) = key_column {
         let cte = format!(
             "{scope_cte}, \
-             artist_tracks AS MATERIALIZED ( \
+             detail_tracks AS MATERIALIZED ( \
                SELECT ck.server_id, ck.library_id, ck.track_id, ck.cluster_key, \
                       ck.album_key, ck.artist_key, ck.duration_sec, s.pr \
                FROM scope s \
                CROSS JOIN cluster.track_cluster_key ck \
                  ON ck.server_id = s.server_id \
                 AND ck.library_id = s.library_id \
-                AND ck.artist_key = ? \
+                AND ck.{key_column} = ? \
              )"
         );
         (
             cte,
-            "FROM artist_tracks ck \
+            "FROM detail_tracks ck \
              CROSS JOIN track t INDEXED BY sqlite_autoindex_track_1 \
                ON t.server_id = ck.server_id AND t.id = ck.track_id \
              WHERE t.deleted = 0",
@@ -129,7 +130,7 @@ fn artist_detail_track_source(
         (
             scope_cte,
             scoped_track_join(),
-            "AND t.server_id = ? AND t.artist_id = ? AND ck.artist_key IS NULL",
+            fallback_filter,
             "s.pr",
         )
     }
@@ -1635,27 +1636,27 @@ fn fetch_album_candidates(
     anchor_server: &str,
     anchor_album_id: &str,
 ) -> rusqlite::Result<Vec<(i64, LibraryAlbumDto)>> {
-    let (cte, scope_binds) = scope_cte_sql(scopes);
-    let key_filter = if album_key.is_some() {
-        "AND ck.album_key = ?"
-    } else {
-        "AND t.server_id = ? AND t.album_id = ? AND ck.album_key IS NULL"
-    };
+    let (scope_cte, scope_binds) = scope_cte_sql(scopes);
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        album_key.map(|_| "album_key"),
+        "AND t.server_id = ? AND t.album_id = ? AND ck.album_key IS NULL",
+    );
     let sql = format!(
         "{cte}, \
          grouped AS ( \
            SELECT t.server_id, t.album_id, MAX(t.album) AS album, MAX(t.artist) AS artist, \
-                  MAX(t.artist_id) AS artist_id, MAX(t.album_artist) AS album_artist, \
-                  MAX(t.year) AS year, MAX(t.genre) AS genre, MAX(t.cover_art_id) AS cover_art_id, \
-                  MAX(t.starred_at) AS starred_at, MAX(t.synced_at) AS synced_at, \
-                  COUNT(*) AS song_count, SUM(t.duration_sec) AS duration_total, MIN(s.pr) AS best_pr \
-           {scoped} AND t.album_id IS NOT NULL AND t.album_id != '' {key_filter} \
+                   MAX(t.artist_id) AS artist_id, MAX(t.album_artist) AS album_artist, \
+                   MAX(t.year) AS year, MAX(t.genre) AS genre, MAX(t.cover_art_id) AS cover_art_id, \
+                   MAX(t.starred_at) AS starred_at, MAX(t.synced_at) AS synced_at, \
+                   COUNT(*) AS song_count, SUM(t.duration_sec) AS duration_total, MIN({priority}) AS best_pr \
+            {scoped} AND t.album_id IS NOT NULL AND t.album_id != '' {key_filter} \
            GROUP BY t.server_id, t.album_id \
          ) \
          SELECT server_id, album_id, album, artist, artist_id, album_artist, song_count, duration_total, \
                 year, genre, cover_art_id, starred_at, synced_at, best_pr \
          FROM grouped ORDER BY best_pr ASC",
-        scoped = scoped_track_join(),
+        scoped = scoped,
     );
     let mut binds = scope_binds;
     if let Some(key) = album_key {
@@ -1700,24 +1701,24 @@ fn fetch_scope_deduped_tracks_for_album_key(
     anchor_server: &str,
     anchor_album_id: &str,
 ) -> rusqlite::Result<Vec<LibraryTrackDto>> {
-    let (cte, scope_binds) = scope_cte_sql(scopes);
-    let key_filter = if album_key.is_some() {
-        "AND ck.album_key = ?"
-    } else {
-        "AND t.server_id = ? AND t.album_id = ? AND ck.album_key IS NULL"
-    };
+    let (scope_cte, scope_binds) = scope_cte_sql(scopes);
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        album_key.map(|_| "album_key"),
+        "AND t.server_id = ? AND t.album_id = ? AND ck.album_key IS NULL",
+    );
     let cols = aliased_track_columns("t");
     let plain_cols = plain_track_columns_sql();
     let sql = format!(
         "{cte}, \
          ranked AS ( \
-           SELECT {cols}, s.pr, {TRACK_DEDUP_KEY} AS track_dedup, \
-                  ROW_NUMBER() OVER (PARTITION BY {TRACK_DEDUP_KEY} ORDER BY s.pr ASC, t.id ASC) AS rn \
-           {scoped} AND t.album_id IS NOT NULL {key_filter} \
+           SELECT {cols}, {priority} AS pr, {TRACK_DEDUP_KEY} AS track_dedup, \
+                  ROW_NUMBER() OVER (PARTITION BY {TRACK_DEDUP_KEY} ORDER BY {priority} ASC, t.id ASC) AS rn \
+            {scoped} AND t.album_id IS NOT NULL {key_filter} \
          ) \
          SELECT {plain_cols} FROM ranked WHERE rn = 1 \
          ORDER BY track_number ASC NULLS LAST, disc_number ASC NULLS LAST, title COLLATE NOCASE ASC",
-        scoped = scoped_track_join(),
+        scoped = scoped,
     );
     let mut binds = scope_binds;
     if let Some(key) = album_key {
@@ -1779,7 +1780,11 @@ fn fetch_artist_candidates(
     anchor_artist_id: &str,
 ) -> rusqlite::Result<Vec<LibraryArtistDto>> {
     let (scope_cte, scope_binds) = scope_cte_sql(scopes);
-    let (cte, scoped, key_filter, priority) = artist_detail_track_source(scope_cte, artist_key);
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        artist_key.map(|_| "artist_key"),
+        "AND t.server_id = ? AND t.artist_id = ? AND ck.artist_key IS NULL",
+    );
     let sql = format!(
         "{cte}, \
          grouped AS ( \
@@ -1826,7 +1831,11 @@ fn fetch_albums_for_artist_key(
     anchor_artist_id: &str,
 ) -> rusqlite::Result<Vec<LibraryAlbumDto>> {
     let (scope_cte, scope_binds) = scope_cte_sql(scopes);
-    let (cte, scoped, key_filter, priority) = artist_detail_track_source(scope_cte, artist_key);
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        artist_key.map(|_| "artist_key"),
+        "AND t.server_id = ? AND t.artist_id = ? AND ck.artist_key IS NULL",
+    );
     let sql = format!(
         "{cte}, \
          base AS ( \
@@ -1879,7 +1888,11 @@ fn fetch_scope_deduped_tracks_for_artist_key(
     anchor_artist_id: &str,
 ) -> rusqlite::Result<Vec<LibraryTrackDto>> {
     let (scope_cte, scope_binds) = scope_cte_sql(scopes);
-    let (cte, scoped, key_filter, priority) = artist_detail_track_source(scope_cte, artist_key);
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        artist_key.map(|_| "artist_key"),
+        "AND t.server_id = ? AND t.artist_id = ? AND ck.artist_key IS NULL",
+    );
     let cols = aliased_track_columns("t");
     let plain_cols = plain_track_columns_sql();
     let sql = format!(
@@ -2622,21 +2635,39 @@ mod tests {
         );
     }
 
-    #[test]
-    fn artist_detail_uses_scope_artist_key_index() {
+    fn detail_key_query_plan(key_column: &'static str, key: &str) -> Vec<String> {
         let store = LibraryStore::open_in_memory();
         let scopes = vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")];
         let (scope_cte, mut binds) = scope_cte_sql(&scopes);
-        let (cte, scoped, _, _) = artist_detail_track_source(scope_cte, Some("artist-key"));
-        binds.push(SqlValue::Text("artist-key".into()));
+        let (cte, scoped, _, _) = keyed_detail_track_source(scope_cte, Some(key_column), "");
+        binds.push(SqlValue::Text(key.into()));
         let sql = format!("EXPLAIN QUERY PLAN {cte} SELECT t.id {scoped}");
-        let plan: Vec<String> = store
+        store
             .with_scope_detail_read_conn(|conn| {
                 let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(params_from_iter(binds.iter()), |row| row.get(3))?;
                 rows.collect()
             })
-            .unwrap();
+            .unwrap()
+    }
+
+    #[test]
+    fn album_detail_uses_scope_album_key_index() {
+        let plan = detail_key_query_plan("album_key", "album-key");
+
+        assert!(
+            plan.iter().any(|detail| detail.contains("idx_ck_scope_album")),
+            "expected scope album-key index lookup, got: {plan:?}"
+        );
+        assert!(
+            plan.iter().any(|detail| detail.contains("sqlite_autoindex_track_1")),
+            "expected track primary-key lookup, got: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn artist_detail_uses_scope_artist_key_index() {
+        let plan = detail_key_query_plan("artist_key", "artist-key");
 
         assert!(
             plan.iter().any(|detail| detail.contains("idx_ck_scope_artist")),

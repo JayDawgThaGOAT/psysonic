@@ -35,6 +35,7 @@ import {
   rememberAlbumDistinctDiscCovers,
 } from '@/cover/ref';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
 import { useTranslation } from 'react-i18next';
 import { showToast } from '@/lib/dom/toast';
 import { useSelectionStore } from '@/store/selectionStore';
@@ -376,10 +377,14 @@ const handleShuffleAll = () => {
     userRatingOverrides,
   });
 
+  const albumCoverServerScope = useMemo(
+    () => coverServerScopeForServerId(album?.album.serverId || serverId),
+    [album?.album.serverId, serverId],
+  );
   const albumCoverRefResolved = useAlbumCoverRef(
     album?.album.id,
     album?.album.coverArt,
-    undefined,
+    albumCoverServerScope,
     { libraryResolve: true },
   );
   const albumCover = useCoverArt(albumCoverRefResolved, 400, { surface: 'sparse' });
@@ -414,7 +419,7 @@ const handleShuffleAll = () => {
         info={info}
         headerArtistRefs={headerArtistRefs}
         songs={songs}
-        coverArtId={info.coverArt}
+        coverRef={albumCoverRefResolved}
         resolvedCoverUrl={resolvedCoverUrl}
         isStarred={isStarred}
         downloadProgress={null}

@@ -63,7 +63,12 @@ describe('tryLoadAlbumDetailMultiScope', () => {
       albumId: 'alb-1',
       serverId: 'srv-1',
     });
-    expect(result?.album).toMatchObject({ id: 'alb-1', name: 'Merged Album', artistId: 'art-1' });
+    expect(result?.album).toMatchObject({
+      serverId: 'srv-1',
+      id: 'alb-1',
+      name: 'Merged Album',
+      artistId: 'art-1',
+    });
     expect(result?.songs).toHaveLength(2);
     expect(result?.songs[0]).toMatchObject({ id: 'trk-1', title: 'Track One' });
   });

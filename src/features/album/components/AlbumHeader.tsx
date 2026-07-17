@@ -4,8 +4,8 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { Play, Heart, X, ChevronLeft, Download, ListPlus, HardDriveDownload, Share2, Highlighter, Loader2, Shuffle } from 'lucide-react';
 import { CoverArtImage } from '@/cover/CoverArtImage';
-import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
 import { useCoverLightboxSrc } from '@/cover/lightbox';
+import type { CoverArtRef } from '@/cover/types';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
 import { useAlbumDetailBack } from '@/features/album/hooks/useAlbumDetailBack';
@@ -152,7 +152,7 @@ interface AlbumHeaderProps {
   /** OpenSubsonic album credits (derived from album + songs). */
   headerArtistRefs: SubsonicOpenArtistRef[];
   songs: SubsonicSong[];
-  coverArtId?: string;
+  coverRef: CoverArtRef | null;
   resolvedCoverUrl: string | null;
   isStarred: boolean;
   downloadProgress: number | null;
@@ -181,7 +181,7 @@ export default function AlbumHeader({
   info,
   headerArtistRefs,
   songs,
-  coverArtId,
+  coverRef,
   resolvedCoverUrl,
   isStarred,
   downloadProgress,
@@ -210,7 +210,6 @@ export default function AlbumHeader({
   const isMobile = useIsMobile();
   const enableCoverArtBackground = useThemeStore(s => s.enableCoverArtBackground);
 
-  const coverRef = useAlbumCoverRef(info.id, coverArtId, undefined, { libraryResolve: true });
   const { open: openLightbox, lightbox } = useCoverLightboxSrc(coverRef, {
     alt: `${info.name} Cover`,
   });

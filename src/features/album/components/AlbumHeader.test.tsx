@@ -13,7 +13,6 @@ vi.mock('react-router-dom', async importActual => {
 });
 
 // Genre-unrelated dependencies — stub so the test stays focused on the meta row.
-vi.mock('@/cover/useLibraryCoverRef', () => ({ useAlbumCoverRef: () => undefined }));
 vi.mock('@/cover/lightbox', () => ({ useCoverLightboxSrc: () => ({ open: vi.fn(), lightbox: null }) }));
 vi.mock('@/features/album/hooks/useAlbumDetailBack', () => ({ useAlbumDetailBack: () => vi.fn() }));
 vi.mock('@/lib/hooks/useIsMobile', () => ({ useIsMobile: () => false }));
@@ -26,6 +25,7 @@ function baseProps() {
   return {
     headerArtistRefs: [],
     songs: [] as SubsonicSong[],
+    coverRef: null,
     resolvedCoverUrl: null,
     isStarred: false,
     downloadProgress: null,
