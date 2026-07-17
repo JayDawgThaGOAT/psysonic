@@ -15,6 +15,20 @@ import type {
   SubsonicSong,
 } from '@/lib/api/subsonicTypes';
 
+function mapMusicIndexes(data: { indexes: { index?: { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] } | { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] }[] } }): SubsonicDirectoryEntry[] {
+  const raw = data.indexes?.index;
+  if (!raw) return [];
+  const indices = Array.isArray(raw) ? raw : [raw];
+  const entries: SubsonicDirectoryEntry[] = [];
+  for (const idx of indices) {
+    const artists = idx.artist ? (Array.isArray(idx.artist) ? idx.artist : [idx.artist]) : [];
+    for (const artist of artists) {
+      entries.push({ id: artist.id, title: artist.name, isDir: true, coverArt: artist.coverArt });
+    }
+  }
+  return entries;
+}
+
 export async function getMusicDirectory(id: string): Promise<SubsonicDirectory> {
   const data = await api<{ directory: { id: string; parent?: string; name: string; child?: SubsonicDirectoryEntry | SubsonicDirectoryEntry[] } }>(
     'getMusicDirectory.view',
@@ -30,23 +44,31 @@ export async function getMusicDirectory(id: string): Promise<SubsonicDirectory> 
  *  Music folder IDs from getMusicFolders() are NOT valid getMusicDirectory IDs —
  *  use getIndexes.view with musicFolderId instead. */
 export async function getMusicIndexes(musicFolderId: string): Promise<SubsonicDirectoryEntry[]> {
-  type IndexArtist = { id: string; name: string; coverArt?: string };
-  type IndexEntry  = { name: string; artist?: IndexArtist | IndexArtist[] };
-  const data = await api<{ indexes: { index?: IndexEntry | IndexEntry[] } }>(
+  const data = await api<{ indexes: { index?: { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] } | { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] }[] } }>(
     'getIndexes.view',
     { musicFolderId },
   );
-  const raw = data.indexes?.index;
-  if (!raw) return [];
-  const indices = Array.isArray(raw) ? raw : [raw];
-  const entries: SubsonicDirectoryEntry[] = [];
-  for (const idx of indices) {
-    const artists = idx.artist ? (Array.isArray(idx.artist) ? idx.artist : [idx.artist]) : [];
-    for (const a of artists) {
-      entries.push({ id: a.id, title: a.name, isDir: true, coverArt: a.coverArt });
-    }
-  }
-  return entries;
+  return mapMusicIndexes(data);
+}
+
+export async function getMusicDirectoryForServer(serverId: string, id: string): Promise<SubsonicDirectory> {
+  const data = await apiForServer<{ directory: { id: string; parent?: string; name: string; child?: SubsonicDirectoryEntry | SubsonicDirectoryEntry[] } }>(
+    serverId,
+    'getMusicDirectory.view',
+    { id },
+  );
+  const dir = data.directory;
+  const child = !dir.child ? [] : Array.isArray(dir.child) ? dir.child : [dir.child];
+  return { id: dir.id, parent: dir.parent, name: dir.name, child };
+}
+
+export async function getMusicIndexesForServer(serverId: string, musicFolderId: string): Promise<SubsonicDirectoryEntry[]> {
+  const data = await apiForServer<{ indexes: { index?: { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] } | { name: string; artist?: { id: string; name: string; coverArt?: string } | { id: string; name: string; coverArt?: string }[] }[] } }>(
+    serverId,
+    'getIndexes.view',
+    { musicFolderId },
+  );
+  return mapMusicIndexes(data);
 }
 
 function mapMusicFolders(data: { musicFolders: { musicFolder: SubsonicMusicFolder | SubsonicMusicFolder[] } }): SubsonicMusicFolder[] {

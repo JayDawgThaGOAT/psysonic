@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { getMusicDirectory, getMusicIndexes } from '@/lib/api/subsonicLibrary';
+import { getMusicDirectoryForServer, getMusicIndexesForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicDirectoryEntry } from '@/lib/api/subsonicTypes';
 import type { Track } from '@/lib/media/trackTypes';
 import type { Column, NavPos } from '@/features/folderBrowser/utils/folderBrowserHelpers';
@@ -25,20 +25,25 @@ export function useFolderBrowserNowPlayingPath({
   columns, currentTrack, isPlaying, setColumns, setKeyboardPos,
 }: Args): Result {
   const [playingPathIds, setPlayingPathIds] = useState<string[]>(persistedPlayingPathIds);
+  const [playingPathServerId, setPlayingPathServerId] = useState<string | null>(null);
   const autoResolvedTrackRef = useRef<string | null>(null);
   const prevTrackIdRef = useRef<string | null>(null);
   const lastHotkeyRevealTsRef = useRef<number | null>(null);
   const location = useLocation();
+
+  const trackIdentity = currentTrack ? `${currentTrack.serverId ?? ''}\u0000${currentTrack.id}` : null;
 
   useEffect(() => {
     if (!currentTrack?.id) {
       // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPlayingPathIds([]);
+      setPlayingPathServerId(null);
       return;
     }
     setPlayingPathIds(prev => (prev[prev.length - 1] === currentTrack.id ? prev : []));
-  }, [currentTrack?.id]);
+    setPlayingPathServerId(prev => prev === currentTrack.serverId ? prev : null);
+  }, [currentTrack?.id, currentTrack?.serverId]);
 
   useEffect(() => {
     if (!isPlaying || !currentTrack?.id) return;
@@ -50,7 +55,7 @@ export function useFolderBrowserNowPlayingPath({
     const lastSelectedId = selectedChain[selectedChain.length - 1];
     const leafColumn = [...columns].reverse().find(c => c.selectedId);
     const leafItem = leafColumn?.items.find(it => it.id === lastSelectedId);
-    if (!leafItem || leafItem.isDir || leafItem.id !== currentTrack.id) return;
+    if (!leafColumn || !leafItem || leafItem.isDir || leafItem.id !== currentTrack.id || leafColumn.serverId !== currentTrack.serverId) return;
 
     // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -63,7 +68,8 @@ export function useFolderBrowserNowPlayingPath({
       }
       return selectedChain;
     });
-  }, [columns, currentTrack?.id, isPlaying]);
+    setPlayingPathServerId(leafColumn.serverId ?? null);
+  }, [columns, currentTrack?.id, currentTrack?.serverId, isPlaying]);
 
   useEffect(() => {
     persistedPlayingPathIds = playingPathIds;
@@ -74,9 +80,11 @@ export function useFolderBrowserNowPlayingPath({
     roots: SubsonicDirectoryEntry[],
   ): Promise<Column[] | null> => {
     for (const root of roots) {
+      if (!root.serverId || (track.serverId && root.serverId !== track.serverId)) continue;
       let indexes: SubsonicDirectoryEntry[];
       try {
-        indexes = await getMusicIndexes(root.id);
+        indexes = (await getMusicIndexesForServer(root.serverId, root.sourceId ?? root.id))
+          .map(entry => ({ ...entry, serverId: root.serverId }));
       } catch {
         continue;
       }
@@ -88,7 +96,8 @@ export function useFolderBrowserNowPlayingPath({
 
       let artistChildren: SubsonicDirectoryEntry[];
       try {
-        artistChildren = (await getMusicDirectory(artistEntry.id)).child;
+        artistChildren = (await getMusicDirectoryForServer(root.serverId, artistEntry.id)).child
+          .map(entry => ({ ...entry, serverId: root.serverId }));
       } catch {
         continue;
       }
@@ -104,7 +113,8 @@ export function useFolderBrowserNowPlayingPath({
 
       let albumChildren: SubsonicDirectoryEntry[];
       try {
-        albumChildren = (await getMusicDirectory(albumEntry.id)).child;
+        albumChildren = (await getMusicDirectoryForServer(root.serverId, albumEntry.id)).child
+          .map(entry => ({ ...entry, serverId: root.serverId }));
       } catch {
         continue;
       }
@@ -113,9 +123,9 @@ export function useFolderBrowserNowPlayingPath({
 
       return [
         { id: 'root', name: '', items: roots, selectedId: root.id, loading: false, error: false, kind: 'roots' },
-        { id: root.id, name: root.title, items: indexes, selectedId: artistEntry.id, loading: false, error: false, kind: 'indexes' },
-        { id: artistEntry.id, name: artistEntry.title, items: artistChildren, selectedId: albumEntry.id, loading: false, error: false, kind: 'directory' },
-        { id: albumEntry.id, name: albumEntry.title, items: albumChildren, selectedId: songEntry.id, loading: false, error: false, kind: 'directory' },
+        { id: root.id, name: root.title, items: indexes, selectedId: artistEntry.id, loading: false, error: false, kind: 'indexes', serverId: root.serverId },
+        { id: artistEntry.id, name: artistEntry.title, items: artistChildren, selectedId: albumEntry.id, loading: false, error: false, kind: 'directory', serverId: root.serverId },
+        { id: albumEntry.id, name: albumEntry.title, items: albumChildren, selectedId: songEntry.id, loading: false, error: false, kind: 'directory', serverId: root.serverId },
       ];
     }
     return null;
@@ -130,7 +140,7 @@ export function useFolderBrowserNowPlayingPath({
     const hotkeyRevealTs = (location.state as { folderBrowserRevealTs?: number } | null)?.folderBrowserRevealTs ?? null;
     const hotkeyRevealRequested = hotkeyRevealTs !== null && hotkeyRevealTs !== lastHotkeyRevealTsRef.current;
     const forceReveal = hotkeyRevealRequested;
-    if (autoResolvedTrackRef.current === currentTrack.id && !forceReveal) return;
+    if (autoResolvedTrackRef.current === trackIdentity && !forceReveal) return;
 
     const rootCol = columns[0];
     if (!rootCol || rootCol.loading || rootCol.error || rootCol.items.length === 0) return;
@@ -138,8 +148,9 @@ export function useFolderBrowserNowPlayingPath({
     const selectedLeafId =
       [...columns].reverse().find(c => c.selectedId)?.selectedId ?? null;
     const wasOnPreviousTrackPath = !!prevTrackIdRef.current && selectedLeafId === prevTrackIdRef.current;
-    if (selectedLeafId === currentTrack.id) {
-      autoResolvedTrackRef.current = currentTrack.id;
+    const selectedLeafColumn = [...columns].reverse().find(c => c.selectedId);
+    if (selectedLeafId === currentTrack.id && selectedLeafColumn?.serverId === currentTrack.serverId) {
+      autoResolvedTrackRef.current = trackIdentity;
       if (hotkeyRevealRequested) {
         lastHotkeyRevealTsRef.current = hotkeyRevealTs;
       }
@@ -153,24 +164,25 @@ export function useFolderBrowserNowPlayingPath({
       setColumns(resolved);
       const path = resolved.map(c => c.selectedId).filter((id): id is string => !!id);
       setPlayingPathIds(path);
+      setPlayingPathServerId(currentTrack.serverId ?? null);
       const leafColIndex = resolved.length - 1;
       const leafRowIndex = resolved[leafColIndex].items.findIndex(it => it.id === currentTrack.id);
       if (leafRowIndex >= 0) setKeyboardPos({ colIndex: leafColIndex, rowIndex: leafRowIndex });
-      autoResolvedTrackRef.current = currentTrack.id;
+      autoResolvedTrackRef.current = trackIdentity;
       if (hotkeyRevealRequested) {
         lastHotkeyRevealTsRef.current = hotkeyRevealTs;
       }
     });
 
     return () => { cancelled = true; };
-  }, [columns, currentTrack, resolveColumnsForTrack, location.state, setColumns, setKeyboardPos]);
+  }, [columns, currentTrack, trackIdentity, resolveColumnsForTrack, location.state, setColumns, setKeyboardPos]);
 
   useEffect(() => {
     prevTrackIdRef.current = currentTrack?.id ?? null;
   }, [currentTrack?.id]);
 
   const isSelectedPathForCurrentTrack =
-    isPlaying && !!currentTrack && playingPathIds[playingPathIds.length - 1] === currentTrack.id;
+    isPlaying && !!currentTrack && playingPathServerId === currentTrack.serverId && playingPathIds[playingPathIds.length - 1] === currentTrack.id;
 
   return {
     playingPathIds,

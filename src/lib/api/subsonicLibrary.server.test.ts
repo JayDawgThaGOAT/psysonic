@@ -39,6 +39,8 @@ vi.mock('@/lib/library/patchOnUse', () => ({
 import {
   getAlbumForServer,
   getAlbumListForServer,
+  getMusicDirectoryForServer,
+  getMusicIndexesForServer,
   getRandomSongsForServer,
   getSongForServer,
 } from '@/lib/api/subsonicLibrary';
@@ -105,5 +107,21 @@ describe('explicit-server library wrappers', () => {
       songs: [{ ...song, serverId: 'srv-detail' }],
     });
     await expect(getSongForServer('srv-detail', 'song-1')).resolves.toEqual({ ...song, serverId: 'srv-detail' });
+  });
+
+  it('loads directory trees against the requested server', async () => {
+    apiForServerMock
+      .mockResolvedValueOnce({ indexes: { index: [{ name: 'A', artist: [{ id: 'artist-1', name: 'Artist' }] }] } })
+      .mockResolvedValueOnce({ directory: { id: 'artist-1', name: 'Artist', child: { id: 'song-1', title: 'Song', isDir: false } } });
+
+    await expect(getMusicIndexesForServer('srv-folder', 'folder-1')).resolves.toEqual([
+      { id: 'artist-1', title: 'Artist', isDir: true },
+    ]);
+    await expect(getMusicDirectoryForServer('srv-folder', 'artist-1')).resolves.toMatchObject({
+      id: 'artist-1',
+      child: [{ id: 'song-1', title: 'Song', isDir: false }],
+    });
+    expect(apiForServerMock).toHaveBeenNthCalledWith(1, 'srv-folder', 'getIndexes.view', { musicFolderId: 'folder-1' });
+    expect(apiForServerMock).toHaveBeenNthCalledWith(2, 'srv-folder', 'getMusicDirectory.view', { id: 'artist-1' });
   });
 });

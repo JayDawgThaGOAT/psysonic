@@ -13,6 +13,7 @@ export type Column = {
   loading: boolean;
   error: boolean;
   kind: ColumnKind;
+  serverId?: string;
 };
 
 /** getMusicDirectory: `albumId` or `album` + row `id` (Navidrome). */
@@ -22,6 +23,7 @@ export function entryToAlbumIfPresent(item: SubsonicDirectoryEntry): SubsonicAlb
   if (!albumId) return null;
   return {
     id: albumId,
+    serverId: item.serverId,
     name: item.album ?? item.title,
     artist: item.artist ?? '',
     artistId: item.artistId ?? '',
@@ -38,6 +40,7 @@ export function entryToAlbumIfPresent(item: SubsonicDirectoryEntry): SubsonicAlb
 export function entryToTrack(e: SubsonicDirectoryEntry): Track {
   return {
     id: e.id,
+    serverId: e.serverId,
     title: e.title,
     artist: e.artist ?? '',
     album: e.album ?? '',

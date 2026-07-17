@@ -195,6 +195,10 @@ export interface SubsonicArtistInfo {
 
 export interface SubsonicDirectoryEntry {
   id: string;
+  /** Owning saved server when a directory tree combines multiple profiles. */
+  serverId?: string;
+  /** Original folder id when a multi-server root needs a collision-free row id. */
+  sourceId?: string;
   parent?: string;
   title: string;
   isDir: boolean;

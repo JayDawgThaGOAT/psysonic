@@ -1,4 +1,8 @@
-import { getMusicFolders, getMusicDirectory, getMusicIndexes } from '@/lib/api/subsonicLibrary';
+import {
+  getMusicDirectoryForServer,
+  getMusicFoldersForServer,
+  getMusicIndexesForServer,
+} from '@/lib/api/subsonicLibrary';
 import type { SubsonicDirectoryEntry, SubsonicArtist } from '@/lib/api/subsonicTypes';
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
@@ -11,6 +15,7 @@ import FolderBrowserColumn from '@/features/folderBrowser/components/FolderBrows
 import { useFolderBrowserNowPlayingPath } from '@/features/folderBrowser/hooks/useFolderBrowserNowPlayingPath';
 import { useFolderBrowserScrolling } from '@/features/folderBrowser/hooks/useFolderBrowserScrolling';
 import { useFolderBrowserKeyboardNav } from '@/features/folderBrowser/hooks/useFolderBrowserKeyboardNav';
+import { useAuthStore } from '@/store/authStore';
 
 export default function FolderBrowser() {
   const { t } = useTranslation();
@@ -27,6 +32,15 @@ export default function FolderBrowser() {
   const playTrack = usePlayerStore(s => s.playTrack);
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
   const isContextMenuOpen = usePlayerStore(s => s.contextMenu.isOpen);
+  const servers = useAuthStore(s => s.servers);
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const visibleServers = useMemo(() => {
+    const serverIds = libraryBrowseServerIds.length > 0
+      ? new Set(libraryBrowseServerIds)
+      : new Set(activeServerId ? [activeServerId] : []);
+    return servers.filter(server => serverIds.has(server.id));
+  }, [activeServerId, libraryBrowseServerIds, servers]);
 
   const { wrapperRef, columnsViewportWidth } = useFolderBrowserScrolling({
     columns, keyboardPos, keyboardNavActive, setKeyboardNavActive,
@@ -48,19 +62,28 @@ export default function FolderBrowser() {
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setColumns([placeholder]);
-    getMusicFolders()
-      .then(folders => {
-        const items: SubsonicDirectoryEntry[] = folders.map(f => ({
-          id: f.id,
-          title: f.name,
+    Promise.all(visibleServers.map(async server => {
+      try {
+        const folders = await getMusicFoldersForServer(server.id);
+        return folders.map(folder => ({
+          id: `${server.id}\u0000${folder.id}`,
+          sourceId: folder.id,
+          serverId: server.id,
+          title: `${server.name} - ${folder.name}`,
           isDir: true,
         }));
+      } catch {
+        return [] as SubsonicDirectoryEntry[];
+      }
+    }))
+      .then(groups => {
+        const items = groups.flat();
         setColumns([{ ...placeholder, items, loading: false }]);
       })
       .catch(() => {
         setColumns([{ ...placeholder, items: [], loading: false, error: true }]);
       });
-  }, []);
+  }, [visibleServers]);
 
   useEffect(() => {
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
@@ -163,6 +186,8 @@ export default function FolderBrowser() {
   }, []);
 
   const handleDirClick = useCallback((colIndex: number, item: SubsonicDirectoryEntry) => {
+    const serverId = item.serverId ?? columns[colIndex]?.serverId;
+    if (!serverId) return;
     clearFiltersRightOf(colIndex);
     const nextKind: ColumnKind = colIndex === 0 ? 'indexes' : 'directory';
     setColumns(prev => [
@@ -177,19 +202,23 @@ export default function FolderBrowser() {
         loading: true,
         error: false,
         kind: nextKind,
+        serverId,
       },
     ]);
 
     const fetchItems =
-      colIndex === 0 ? getMusicIndexes(item.id) : getMusicDirectory(item.id).then(d => d.child);
+      colIndex === 0
+        ? getMusicIndexesForServer(serverId, item.sourceId ?? item.id)
+        : getMusicDirectoryForServer(serverId, item.id).then(d => d.child);
 
     fetchItems
       .then(items => {
+        const serverItems = items.map(entry => ({ ...entry, serverId }));
         setColumns(prev => {
           const idx = prev.findIndex(c => c.id === item.id && c.loading);
           if (idx === -1) return prev;
           const next = [...prev];
-          next[idx] = { ...next[idx], items, loading: false };
+          next[idx] = { ...next[idx], items: serverItems, loading: false };
           return next;
         });
       })
@@ -202,7 +231,7 @@ export default function FolderBrowser() {
           return next;
         });
       });
-  }, [clearFiltersRightOf]);
+  }, [clearFiltersRightOf, columns]);
 
   const handleFileClick = useCallback(
     (colIndex: number, item: SubsonicDirectoryEntry) => {
@@ -251,7 +280,12 @@ export default function FolderBrowser() {
     (col: Column, item: SubsonicDirectoryEntry, x: number, y: number) => {
       if (item.isDir) {
         if (col.kind === 'indexes') {
-          const artist: SubsonicArtist = { id: item.id, name: item.title, coverArt: item.coverArt };
+          const artist: SubsonicArtist = {
+            id: item.id,
+            name: item.title,
+            coverArt: item.coverArt,
+            serverId: item.serverId,
+          };
           openContextMenu(x, y, artist, 'artist');
           return;
         }
@@ -265,6 +299,7 @@ export default function FolderBrowser() {
             id: item.artistId,
             name: item.artist ?? item.title,
             coverArt: item.coverArt,
+            serverId: item.serverId,
           };
           openContextMenu(x, y, artist, 'artist');
           return;
