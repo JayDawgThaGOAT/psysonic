@@ -2,22 +2,11 @@ import type { AuthState } from './authStoreTypes';
 import { generateId } from './authStoreHelpers';
 import { getQueueServerId, clearQueueServerForPlayback } from './playbackEngineBridge';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
+import { deriveLibraryBrowseServerIdsWithFallback } from '@/lib/library/libraryBrowseScope';
 
 type SetState = (
   partial: Partial<AuthState> | ((state: AuthState) => Partial<AuthState>),
 ) => void;
-
-function selectedServerIdsInOrder(
-  servers: AuthState['servers'],
-  selectedIds: readonly string[],
-  fallbackId: string | null,
-): string[] {
-  const selected = new Set(selectedIds);
-  const ordered = servers.filter(server => selected.has(server.id)).map(server => server.id);
-  if (ordered.length > 0 || servers.length === 0) return ordered;
-  const fallback = servers.find(server => server.id === fallbackId) ?? servers[0];
-  return fallback ? [fallback.id] : [];
-}
 
 /**
  * Server profile + connection lifecycle. `removeServer` is the
@@ -79,11 +68,11 @@ export function createServerProfileActions(set: SetState): Pick<
           servers: newServers,
           activeServerId,
           isLoggedIn: switchedAway ? false : s.isLoggedIn,
-          libraryBrowseServerIds: selectedServerIdsInOrder(
-            newServers,
-            s.libraryBrowseServerIds.filter(serverId => serverId !== id),
+          libraryBrowseServerIds: deriveLibraryBrowseServerIdsWithFallback({
+            servers: newServers,
             activeServerId,
-          ),
+            libraryBrowseServerIds: s.libraryBrowseServerIds.filter(serverId => serverId !== id),
+          }),
           musicFolders: switchedAway && activeServerId
             ? (foldersRest[activeServerId] ?? [])
             : s.musicFolders,
@@ -103,22 +92,16 @@ export function createServerProfileActions(set: SetState): Pick<
 
     setServers: (servers) => set(s => ({
       servers,
-      libraryBrowseServerIds: selectedServerIdsInOrder(
+      libraryBrowseServerIds: deriveLibraryBrowseServerIdsWithFallback({
         servers,
-        s.libraryBrowseServerIds,
-        s.activeServerId,
-      ),
+        activeServerId: s.activeServerId,
+        libraryBrowseServerIds: s.libraryBrowseServerIds,
+      }),
       libraryBrowseScopeVersion: s.libraryBrowseScopeVersion + 1,
     })),
     setActiveServer: (id) => set(s => ({
       activeServerId: id,
       musicFolders: s.musicFoldersByServer[id] ?? [],
-      ...(s.libraryBrowseServerIds.length <= 1
-        ? {
-            libraryBrowseServerIds: [id],
-            libraryBrowseScopeVersion: s.libraryBrowseScopeVersion + 1,
-          }
-        : {}),
     })),
     setLoggedIn: (v) => set({ isLoggedIn: v }),
     setConnecting: (v) => set({ isConnecting: v }),

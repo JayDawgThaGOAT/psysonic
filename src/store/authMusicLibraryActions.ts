@@ -4,6 +4,7 @@ import {
   runMusicLibraryCatalogReloadHandler,
   scheduleMusicLibraryFilterVersionBump,
 } from './musicLibraryFilterNotify';
+import { deriveLibraryBrowseServerIdsWithFallback } from '@/lib/library/libraryBrowseScope';
 
 type SetState = (
   partial: Partial<AuthState> | ((state: AuthState) => Partial<AuthState>),
@@ -35,11 +36,6 @@ function collapseServerSelection(folders: MusicFolder[], libraryIds: string[]): 
   }
   const selected = new Set(libraryIds);
   return folders.every(folder => selected.has(folder.id)) ? [] : libraryIds;
-}
-
-function selectedServerIdsInOrder(state: AuthState, ids: Iterable<string>): string[] {
-  const selected = new Set(ids);
-  return state.servers.filter(server => selected.has(server.id)).map(server => server.id);
 }
 
 function deferMusicLibraryCatalogReload(get: GetState, set: SetState, serverId: string): void {
@@ -175,7 +171,11 @@ export function createMusicLibraryActions(set: SetState, get: GetState): Pick<
       if (selected) current.add(serverId);
       else current.delete(serverId);
       if (current.size === 0 && s.servers.length > 0) return;
-      const next = selectedServerIdsInOrder(s, current);
+      const next = deriveLibraryBrowseServerIdsWithFallback({
+        servers: s.servers,
+        activeServerId: s.activeServerId,
+        libraryBrowseServerIds: [...current],
+      });
       if (next.length === s.libraryBrowseServerIds.length
         && next.every((id, index) => id === s.libraryBrowseServerIds[index])) return;
       set(state => ({

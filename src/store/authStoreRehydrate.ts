@@ -28,6 +28,7 @@ import type {
   WindowButtonStyle,
 } from './authStoreTypes';
 import { migrateLegacyLastfm, sanitizeAccounts } from '../music-network';
+import { deriveLibraryBrowseServerIdsWithFallback } from '@/lib/library/libraryBrowseScope';
 
 /**
  * Computes the post-rehydration patch for the auth store. Runs all
@@ -265,13 +266,11 @@ export function computeAuthStoreRehydration(state: AuthState): Partial<AuthState
       ? rawBrowseServerIds.filter((id): id is string => typeof id === 'string' && serverIds.has(id))
       : [],
   );
-  let libraryBrowseServerIds = state.servers
-    .filter(server => selectedBrowseIds.has(server.id))
-    .map(server => server.id);
-  if (libraryBrowseServerIds.length === 0 && state.servers.length > 0) {
-    const fallback = state.servers.find(server => server.id === state.activeServerId) ?? state.servers[0];
-    libraryBrowseServerIds = fallback ? [fallback.id] : [];
-  }
+  const libraryBrowseServerIds = deriveLibraryBrowseServerIdsWithFallback({
+    servers: state.servers,
+    activeServerId: state.activeServerId,
+    libraryBrowseServerIds: [...selectedBrowseIds],
+  });
   const rawFoldersByServer = (state as { musicFoldersByServer?: unknown }).musicFoldersByServer;
   const musicFoldersByServer = Object.fromEntries(
     Object.entries(rawFoldersByServer && typeof rawFoldersByServer === 'object' ? rawFoldersByServer : {})

@@ -87,13 +87,13 @@ describe('setActiveServer', () => {
     expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b]);
   });
 
-  it('moves a singleton Library scope with the active server', () => {
+  it('keeps a singleton Library scope independent of the active server', () => {
     const { a, b } = addThree();
     useAuthStore.setState({ activeServerId: a, libraryBrowseServerIds: [a] });
 
     useAuthStore.getState().setActiveServer(b);
     expect(useAuthStore.getState().activeServerId).toBe(b);
-    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([b]);
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a]);
   });
 
   it('preserves an explicit multi-server Library scope when active server changes', () => {
