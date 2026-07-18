@@ -22,7 +22,8 @@ pub(crate) const KEY_SEP: char = '\u{001f}';
 /// Bump when cluster-key derivation changes; stored in `cluster.cluster_meta.norm_version`.
 /// v2: locale-aware folding (ß→ss, æ→ae, œ→oe, Romanian ș/ț, Cyrillic ё/й).
 /// v3: artist keys use the canonical artist entity name when the track has an artist id.
-pub const NORM_VERSION: &str = "3";
+/// v4: physical albums use one canonical or server-qualified album key.
+pub const NORM_VERSION: &str = "4";
 
 /// Normalize one identity field. Returns `None` when input is empty/whitespace-only
 /// or when normalization strips everything (punctuation-only, etc.).

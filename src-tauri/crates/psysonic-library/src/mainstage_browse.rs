@@ -396,6 +396,19 @@ mod tests {
             .unwrap();
     }
 
+    fn insert_artist(store: &LibraryStore, server_id: &str) {
+        store
+            .with_conn_mut("test.mainstage_artist", |conn| {
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, synced_at) VALUES (?1, ?2, 'Artist', 1) \
+                     ON CONFLICT(server_id, id) DO NOTHING",
+                    params![server_id, format!("artist-{server_id}")],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
     #[test]
     fn new_releases_are_globally_ordered_and_exclude_null_created_at() {
         let store = LibraryStore::open_in_memory();
@@ -563,6 +576,8 @@ mod tests {
                 track("s2", "t-later", "Shared", "later-id", "l2", Some(500)),
             ])
             .unwrap();
+        insert_artist(&store, "s1");
+        insert_artist(&store, "s2");
         ensure_cluster_keys_built(&store, "s1").unwrap();
         ensure_cluster_keys_built(&store, "s2").unwrap();
 
@@ -700,6 +715,8 @@ mod tests {
                 track("s2", "t-later", "Shared", "later-id", "l2", Some(500)),
             ])
             .unwrap();
+        insert_artist(&store, "s1");
+        insert_artist(&store, "s2");
         ensure_cluster_keys_built(&store, "s1").unwrap();
         ensure_cluster_keys_built(&store, "s2").unwrap();
         store

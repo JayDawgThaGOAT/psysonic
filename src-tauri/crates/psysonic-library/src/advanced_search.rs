@@ -3683,6 +3683,23 @@ mod tests {
 
     fn seed_and_rebuild(store: &LibraryStore, rows: &[TrackRow]) {
         TrackRepository::new(store).upsert_batch(rows).unwrap();
+        store
+            .with_conn_mut("test.seed_scoped_artists", |conn| {
+                for row in rows {
+                    let (Some(artist_id), Some(artist)) =
+                        (row.artist_id.as_deref(), row.artist.as_deref())
+                    else {
+                        continue;
+                    };
+                    conn.execute(
+                        "INSERT INTO artist (server_id, id, name, synced_at) VALUES (?1, ?2, ?3, 1) \
+                         ON CONFLICT(server_id, id) DO NOTHING",
+                        rusqlite::params![&row.server_id, artist_id, artist],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
         crate::identity::rebuild_cluster_keys(store, None).unwrap();
     }
 

@@ -864,6 +864,17 @@ mod tests {
                 },
             ])
             .unwrap();
+        store
+            .with_conn_mut("test.multi_scope_artists", |conn| {
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, synced_at) VALUES \
+                     ('s1', 'ar-a', 'Shared Artist', 1), \
+                     ('s1', 'ar-b', 'Shared Artist', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
         rebuild_cluster_keys(&store, None).unwrap();
 
         let scopes = vec![

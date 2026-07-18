@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::store::LibraryStore;
 
 use super::attach::CLUSTER_SCHEMA;
-use super::keys::build_track_cluster_keys;
+use super::keys::{build_album_key, build_track_cluster_keys};
 use super::norm::{norm_part, NORM_VERSION};
 
 const UPSERT_CLUSTER_KEY_SQL: &str = "
@@ -71,8 +71,15 @@ type SourceTrackRow = (
     String,
     Option<String>,
     String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
     i64,
 );
+
+fn concrete_physical_album_key(server_id: &str, album_id: &str) -> String {
+    format!("physical:{}:{server_id}:{album_id}", server_id.len())
+}
 
 /// Rebuild identity keys for one server or all servers. Returns rows upserted.
 pub fn rebuild_cluster_keys(
@@ -80,17 +87,48 @@ pub fn rebuild_cluster_keys(
     server_id: Option<&str>,
 ) -> Result<u64, String> {
     store.with_conn_mut("identity.rebuild_cluster_keys", |conn| {
+        // `norm_version` is global. A stale per-server request must rebuild every
+        // server before stamping the new version, otherwise untouched keys would
+        // be stranded under the new global marker.
+        let server_id = if server_id.is_some() && cluster_rebuild_needed(conn)? {
+            None
+        } else {
+            server_id
+        };
         let tx = conn.transaction()?;
-        let mut select = String::from(
-            "SELECT t.server_id, COALESCE(t.library_id, ''), t.id, t.artist, ar.name, t.title, \
-                    t.album_artist, t.album, t.duration_sec \
+        let album_server_filter = if server_id.is_some() {
+            " AND source.server_id = ?1"
+        } else {
+            ""
+        };
+        let track_server_filter = if server_id.is_some() {
+            " AND t.server_id = ?1"
+        } else {
+            ""
+        };
+        let select = format!(
+            "WITH physical_album AS MATERIALIZED ( \
+               SELECT source.server_id, source.album_id, \
+                      CASE WHEN COUNT(*) = COUNT(ar_source.id) \
+                             AND COUNT(DISTINCT source.artist_id) = 1 \
+                           THEN MAX(ar_source.name) END AS canonical_album_artist, \
+                      MAX(source.album) AS canonical_album \
+               FROM track source \
+               LEFT JOIN artist ar_source \
+                 ON ar_source.server_id = source.server_id AND ar_source.id = source.artist_id \
+               WHERE source.deleted = 0 \
+                 AND source.album_id IS NOT NULL AND source.album_id != ''{album_server_filter} \
+               GROUP BY source.server_id, source.album_id \
+             ) \
+             SELECT t.server_id, COALESCE(t.library_id, ''), t.id, t.artist, ar.name, t.title, \
+                    t.album_artist, t.album, t.album_id, physical_album.canonical_album_artist, \
+                    physical_album.canonical_album, t.duration_sec \
              FROM track t \
              LEFT JOIN artist ar ON ar.server_id = t.server_id AND ar.id = t.artist_id \
-             WHERE t.deleted = 0",
+             LEFT JOIN physical_album \
+               ON physical_album.server_id = t.server_id AND physical_album.album_id = t.album_id \
+             WHERE t.deleted = 0{track_server_filter}"
         );
-        if server_id.is_some() {
-            select.push_str(" AND t.server_id = ?1");
-        }
         // Stream rows straight from the `track` SELECT into the sidecar UPSERT
         // (both statements borrow the same tx; the SELECT reads `track`, the
         // UPSERT writes the attached `cluster` table, so they don't contend).
@@ -111,6 +149,9 @@ pub fn rebuild_cluster_keys(
                 title,
                 album_artist,
                 album,
+                album_id,
+                canonical_album_artist,
+                canonical_album,
                 duration_sec,
             ) = map_source_track_row(row)?;
             let mut keys = build_track_cluster_keys(
@@ -124,6 +165,13 @@ pub fn rebuild_cluster_keys(
                 .filter(|name| !name.trim().is_empty())
                 .or(artist.as_deref())
                 .and_then(norm_part);
+            if let Some(album_id) = album_id.as_deref().filter(|id| !id.trim().is_empty()) {
+                keys.album_key = canonical_album_artist
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .and_then(|name| build_album_key(Some(name), canonical_album.as_deref().unwrap_or(&album)))
+                    .or_else(|| Some(concrete_physical_album_key(&server_id, album_id)));
+            }
             upsert.execute(params![
                 server_id,
                 library_id,
@@ -218,6 +266,9 @@ fn map_source_track_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SourceTrack
         row.get(6)?,
         row.get(7)?,
         row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
     ))
 }
 
@@ -294,6 +345,33 @@ mod tests {
             synced_at: 1,
             raw_json: "{}".into(),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn physical_album_track_row(
+        server: &str,
+        id: &str,
+        title: &str,
+        artist: &str,
+        artist_id: &str,
+        album: &str,
+        album_id: &str,
+        album_artist: &str,
+        library_id: &str,
+    ) -> TrackRow {
+        let mut row = track_row(
+            server,
+            id,
+            title,
+            Some(artist),
+            album,
+            Some(album_artist),
+            200,
+            library_id,
+        );
+        row.artist_id = Some(artist_id.into());
+        row.album_id = Some(album_id.into());
+        row
     }
 
     #[test]
@@ -383,6 +461,87 @@ mod tests {
                 .unwrap();
             assert_eq!(row.2.as_deref(), Some("andromida"));
         }
+    }
+
+    #[test]
+    fn rebuild_canonicalizes_unambiguous_physical_album_artist() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[physical_album_track_row(
+                "s1",
+                "t1",
+                "The Ecstasy of Gold",
+                "Metallica",
+                "artist-1",
+                "S&M2",
+                "album-1",
+                "Metallica & San Francisco Symphony",
+                "lib-a",
+            )])
+            .unwrap();
+        store
+            .with_conn_mut("test.canonical_album_artist", |conn| {
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, synced_at) \
+                     VALUES ('s1', 'artist-1', 'Metallica', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        rebuild_cluster_keys(&store, None).unwrap();
+
+        let row = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s1", "t1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.1, build_album_key(Some("Metallica"), "S&M2"));
+    }
+
+    #[test]
+    fn rebuild_keeps_ambiguous_physical_album_concrete() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                physical_album_track_row(
+                    "s1", "t1", "One", "Artist A", "artist-a", "Split", "album-1",
+                    "Various Artists", "lib-a",
+                ),
+                physical_album_track_row(
+                    "s1", "t2", "Two", "Artist B", "artist-b", "Split", "album-1",
+                    "Various Artists", "lib-a",
+                ),
+            ])
+            .unwrap();
+        store
+            .with_conn_mut("test.ambiguous_album_artist", |conn| {
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, synced_at) VALUES \
+                     ('s1', 'artist-a', 'Artist A', 1), \
+                     ('s1', 'artist-b', 'Artist B', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        rebuild_cluster_keys(&store, None).unwrap();
+
+        let first = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s1", "t1"))
+            .unwrap()
+            .unwrap()
+            .1
+            .unwrap();
+        let second = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s1", "t2"))
+            .unwrap()
+            .unwrap()
+            .1
+            .unwrap();
+        assert_eq!(first, second);
+        assert!(first.starts_with("physical:2:s1:album-1"));
     }
 
     #[test]
@@ -635,6 +794,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(s2_keys, 1);
+    }
+
+    #[test]
+    fn stale_per_server_rebuild_refreshes_all_servers_before_stamping_version() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track_row("s1", "t1", "One", Some("A"), "Al", None, 1, "lib"),
+                track_row("s2", "t2", "Two", Some("B"), "Al", None, 2, "lib"),
+            ])
+            .unwrap();
+        rebuild_cluster_keys(&store, None).unwrap();
+        store
+            .with_conn_mut("test.stale_per_server", |conn| {
+                conn.execute(
+                    "UPDATE track SET title = 'Updated' WHERE server_id = 's2' AND id = 't2'",
+                    [],
+                )?;
+                conn.execute(
+                    "UPDATE cluster.cluster_meta SET value = 'stale' WHERE key = 'norm_version'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+
+        let rebuilt = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s2", "t2"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rebuilt.0,
+            build_track_cluster_keys(Some("B"), "Updated", "Al", None).cluster_key
+        );
+        assert!(!store.with_read_conn(cluster_rebuild_needed).unwrap());
     }
 
     #[test]
