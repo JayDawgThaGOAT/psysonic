@@ -23,6 +23,7 @@ import {
   getArtistForServer,
   getArtistInfoForServer,
   getArtistsForServer,
+  getTopSongsForServer,
 } from '@/lib/api/subsonicArtists';
 
 const artist = { id: 'artist-1', name: 'Artist' };
@@ -80,5 +81,35 @@ describe('explicit-server artist wrappers', () => {
       expect.objectContaining({ id: 'artist-1', count: 9 }),
       5678,
     );
+  });
+
+  it('loads a bounded Top Songs candidate set for one explicit server', async () => {
+    apiForServerMock.mockResolvedValue({
+      topSongs: {
+        song: [
+          { id: 'top-1', title: 'First' },
+          { id: 'top-2', title: 'Second' },
+        ],
+      },
+    });
+
+    const songs = await getTopSongsForServer('srv-top', 'Artist', {
+      requestCount: 20,
+      limit: 20,
+      timeout: 4321,
+      libraryIds: ['lib-a'],
+      filterToLibrary: false,
+    });
+
+    expect(apiForServerMock).toHaveBeenCalledWith(
+      'srv-top',
+      'getTopSongs.view',
+      { artist: 'Artist', count: 20, musicFolderId: ['lib-a'] },
+      4321,
+    );
+    expect(songs).toEqual([
+      { id: 'top-1', title: 'First', serverId: 'srv-top' },
+      { id: 'top-2', title: 'Second', serverId: 'srv-top' },
+    ]);
   });
 });

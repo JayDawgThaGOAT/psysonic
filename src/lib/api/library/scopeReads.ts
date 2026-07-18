@@ -94,6 +94,8 @@ export interface LibraryScopeArtistDetailRequest {
   serverId: string;
   /** Skip tracks when the caller needs only artist metadata and discography. */
   includeTracks?: boolean;
+  /** Return a bounded personal-play-count fallback for the Top Tracks section. */
+  topTracksLimit?: number;
 }
 
 export interface LibraryScopeAlbumDetailResponse {
@@ -105,6 +107,8 @@ export interface LibraryScopeArtistDetailResponse {
   artist: LibraryArtistDto;
   albums: LibraryAlbumDto[];
   tracks: LibraryTrackDto[];
+  topTracksServerId?: string | null;
+  topTracksFingerprint?: string | null;
 }
 
 function mapScopePairServerId(pair: LibraryScopePair, profileServerId: string): LibraryScopePair {
@@ -298,5 +302,9 @@ export function libraryScopeArtistDetail(
     },
     albums: mapAlbumsServerId(response.albums, serverId),
     tracks: mapTracksServerId(response.tracks, serverId),
+    topTracksServerId: response.topTracksServerId
+      ? mapServerIdFromIndexKey(response.topTracksServerId, serverId)
+      : null,
+    topTracksFingerprint: response.topTracksFingerprint ?? null,
   }));
 }

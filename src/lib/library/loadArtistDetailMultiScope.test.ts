@@ -65,6 +65,8 @@ describe('tryLoadArtistDetailMultiScope', () => {
         trackDto({ id: 'low', playCount: 1 }),
         trackDto({ id: 'high', playCount: 99 }),
       ],
+      topTracksServerId: 'srv-2',
+      topTracksFingerprint: 'tracks-v1',
     });
 
     const scopes = [
@@ -80,10 +82,13 @@ describe('tryLoadArtistDetailMultiScope', () => {
       ],
       artistId: 'art-1',
       serverId: 'srv-1',
+      topTracksLimit: 5,
     });
     expect(result?.artist).toMatchObject({ id: 'art-1', name: 'Merged Artist' });
     expect(result?.albums).toHaveLength(1);
     expect(result?.topSongs.map(s => s.id)).toEqual(['high', 'low']);
+    expect(result?.topTracksServerId).toBe('srv-2');
+    expect(result?.topTracksFingerprint).toBe('tracks-v1');
   });
 
   it('returns null when the merged artist anchor is missing', async () => {

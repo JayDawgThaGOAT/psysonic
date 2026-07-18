@@ -5,9 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAuthStore } from '@/store/authStore';
 
 const tryLoadArtistDetailMultiScopeMock = vi.fn();
+const loadScopedArtistTopSongsMock = vi.fn();
 
 vi.mock('@/lib/library/loadArtistDetailMultiScope', () => ({
   tryLoadArtistDetailMultiScope: (...args: unknown[]) => tryLoadArtistDetailMultiScopeMock(...args),
+}));
+
+vi.mock('@/lib/library/loadScopedArtistTopSongs', () => ({
+  loadScopedArtistTopSongs: (...args: unknown[]) => loadScopedArtistTopSongsMock(...args),
+}));
+
+vi.mock('@/lib/network/subsonicNetworkGuard', () => ({
+  shouldAttemptSubsonicForServer: () => true,
 }));
 
 vi.mock('@/lib/api/subsonicArtists');
@@ -23,7 +32,9 @@ vi.mock('@/lib/hooks/useConnectionStatus', () => ({
   useConnectionStatus: () => ({ status: 'connected' }),
 }));
 
-import { getArtist, getArtistForServer, getArtistInfo, getTopSongs } from '@/lib/api/subsonicArtists';
+import {
+  getArtist, getArtistForServer, getArtistInfo, getTopSongs, getTopSongsForServer,
+} from '@/lib/api/subsonicArtists';
 import { loadArtistFromLibraryIndex } from '@/features/offline';
 import { search } from '@/lib/api/subsonicSearch';
 import { useArtistDetailData } from './useArtistDetailData';
@@ -35,7 +46,9 @@ function routerWrapper({ children }: { children: React.ReactNode }) {
 describe('useArtistDetailData — multi-library selection', () => {
   beforeEach(() => {
     tryLoadArtistDetailMultiScopeMock.mockReset();
+    loadScopedArtistTopSongsMock.mockReset();
     vi.mocked(getTopSongs).mockResolvedValue([]);
+    vi.mocked(getTopSongsForServer).mockResolvedValue([]);
     vi.mocked(getArtistInfo).mockResolvedValue({} as Awaited<ReturnType<typeof getArtistInfo>>);
     vi.mocked(search).mockResolvedValue({ songs: [], albums: [], artists: [] });
     useAuthStore.setState({
@@ -79,6 +92,59 @@ describe('useArtistDetailData — multi-library selection', () => {
     expect(result.current.artist).toMatchObject({ id: 'art-1', name: 'Merged' });
     expect(result.current.albums).toHaveLength(1);
     expect(result.current.topSongs.map(s => s.id)).toEqual(['trk-high', 'trk-low']);
+  });
+
+  it('renders local detail while one server Top Songs request remains pending', async () => {
+    let resolveTopSongs!: (songs: Array<{ id: string; title: string }>) => void;
+    loadScopedArtistTopSongsMock.mockImplementation(() => new Promise(resolve => {
+      resolveTopSongs = resolve;
+    }));
+    tryLoadArtistDetailMultiScopeMock.mockResolvedValue({
+      artist: { id: 'art-1', name: 'Merged' },
+      albums: [{ id: 'alb-1', name: 'Album' }],
+      topSongs: [{ id: 'fallback', title: 'Fallback' }],
+      topTracksServerId: 'srv-2',
+      topTracksFingerprint: 'tracks-v1',
+    });
+
+    const { result } = renderHook(() => useArtistDetailData('art-1'), { wrapper: routerWrapper });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.artist?.name).toBe('Merged');
+    expect(result.current.topSongsLoading).toBe(true);
+    expect(result.current.topSongs.map(song => song.id)).toEqual(['fallback']);
+    expect(loadScopedArtistTopSongsMock).toHaveBeenCalledWith({
+      artistName: 'Merged',
+      sourceServerId: 'srv-2',
+      scopes: [
+        { serverId: 'srv-1', libraryId: 'lib-a' },
+        { serverId: 'srv-2', libraryId: 'lib-b' },
+      ],
+      localFallback: [{ id: 'fallback', title: 'Fallback' }],
+      tracksFingerprint: 'tracks-v1',
+    });
+
+    resolveTopSongs([{ id: 'global', title: 'Global' }]);
+    await waitFor(() => expect(result.current.topSongsLoading).toBe(false));
+    expect(result.current.topSongs.map(song => song.id)).toEqual(['global']);
+  });
+
+  it('keeps local Top Tracks when the optional ranking request fails', async () => {
+    loadScopedArtistTopSongsMock.mockRejectedValue(new TypeError('invalid song metadata'));
+    tryLoadArtistDetailMultiScopeMock.mockResolvedValue({
+      artist: { id: 'art-1', name: 'Merged' },
+      albums: [{ id: 'alb-1', name: 'Album' }],
+      topSongs: [{ id: 'fallback', title: 'Fallback' }],
+      topTracksServerId: 'srv-2',
+      topTracksFingerprint: 'tracks-v1',
+    });
+
+    const { result } = renderHook(() => useArtistDetailData('art-1'), { wrapper: routerWrapper });
+
+    await waitFor(() => expect(loadScopedArtistTopSongsMock).toHaveBeenCalledOnce());
+    await waitFor(() => expect(result.current.topSongsLoading).toBe(false));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.topSongs.map(song => song.id)).toEqual(['fallback']);
   });
 
   it('loads via the authoritative scope when one folder is selected', async () => {

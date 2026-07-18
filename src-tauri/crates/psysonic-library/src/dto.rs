@@ -962,6 +962,10 @@ pub struct LibraryScopeArtistDetailRequest {
     /// the extra scoped track query.
     #[serde(default = "default_true")]
     pub include_tracks: bool,
+    /// When set, return only the highest personal-play-count tracks. The
+    /// artist page uses this as a bounded fallback while server Top Songs load.
+    #[serde(default)]
+    pub top_tracks_limit: Option<u32>,
 }
 
 /// `library_scope_album_detail` response.
@@ -979,6 +983,12 @@ pub struct LibraryScopeArtistDetailResponse {
     pub artist: LibraryArtistDto,
     pub albums: Vec<LibraryAlbumDto>,
     pub tracks: Vec<LibraryTrackDto>,
+    /// Server with the broadest scoped catalog for this artist. Present only
+    /// for bounded Top Tracks requests.
+    pub top_tracks_server_id: Option<String>,
+    /// Stable hash of the scoped artist tracks used to invalidate Top Songs
+    /// rankings only when that catalog slice changes.
+    pub top_tracks_fingerprint: Option<String>,
 }
 
 /// `library_search_cross_server` response (§5.5B / §5.9).

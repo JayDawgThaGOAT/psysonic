@@ -85,8 +85,8 @@ export interface SubsonicSong {
   albumArtist?: string;
   /** OpenSubsonic: single-string album-artist for display (mirrors `albumArtists` joined). */
   displayAlbumArtist?: string;
-  /** ISRC code when available (e.g., Navidrome) */
-  isrc?: string;
+  /** ISRC code; OpenSubsonic/Navidrome may return a string array. */
+  isrc?: string | string[];
   /** Times the track has been played, surfaced by Navidrome's Subsonic API. */
   playCount?: number;
   /** ISO datetime of the last play, surfaced by Navidrome (OpenSubsonic). */

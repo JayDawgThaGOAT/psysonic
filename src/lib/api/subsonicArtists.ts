@@ -159,19 +159,42 @@ export async function getTopSongs(artist: string): Promise<SubsonicSong[]> {
   return getTopSongsForServer(activeServerId, artist);
 }
 
-export async function getTopSongsForServer(serverId: string, artist: string): Promise<SubsonicSong[]> {
+export interface GetTopSongsForServerOptions {
+  /** Number requested from the server before local scope validation. */
+  requestCount?: number;
+  /** Maximum returned to the caller. */
+  limit?: number;
+  timeout?: number;
+  /** Explicit browse folders; useful when the Library page scope differs from the legacy filter. */
+  libraryIds?: string[];
+  /** Disable the legacy single-folder filter when the caller validates against the local index. */
+  filterToLibrary?: boolean;
+}
+
+export async function getTopSongsForServer(
+  serverId: string,
+  artist: string,
+  options: GetTopSongsForServerOptions = {},
+): Promise<SubsonicSong[]> {
   try {
-    const { musicLibraryFilterByServer } = useAuthStore.getState();
-    const scoped = musicLibraryFilterByServer[serverId] && musicLibraryFilterByServer[serverId] !== 'all';
-    const topCount = scoped ? 20 : 5;
+    const libraryIds = options.libraryIds ?? librarySelectionForServer(serverId);
+    const scoped = libraryIds.length > 0;
+    const limit = options.limit ?? 5;
+    const requestCount = Math.max(limit, options.requestCount ?? (scoped ? 20 : 5));
+    const libraryParams = options.libraryIds
+      ? (libraryIds.length > 0 ? { musicFolderId: libraryIds } : {})
+      : libraryFilterParamsForServer(serverId);
     const data = await apiForServer<{ topSongs: { song: SubsonicSong[] } }>(
       serverId,
       'getTopSongs.view',
-      { artist, count: topCount, ...libraryFilterParamsForServer(serverId) },
+      { artist, count: requestCount, ...libraryParams },
+      options.timeout,
     );
     const raw = data.topSongs?.song ?? [];
-    const filtered = await filterSongsToServerLibrary(raw, serverId);
-    return filtered.slice(0, 5);
+    const filtered = options.filterToLibrary === false
+      ? raw
+      : await filterSongsToServerLibrary(raw, serverId);
+    return filtered.slice(0, limit).map(song => ({ ...song, serverId }));
   } catch {
     return [];
   }

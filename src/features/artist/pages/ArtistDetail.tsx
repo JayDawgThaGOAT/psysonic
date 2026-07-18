@@ -50,7 +50,7 @@ export default function ArtistDetail() {
   const losslessOnly = searchParams.get('lossless') === '1';
   const {
     artist, setArtist, albums, topSongs, info, featuredAlbums,
-    loading, artistInfoLoading, featuredLoading,
+    loading, topSongsLoading, artistInfoLoading, featuredLoading,
     isStarred, setIsStarred,
   } = useArtistDetailData(id, { losslessOnly });
   const [radioLoading, setRadioLoading] = useState(false);
@@ -247,7 +247,7 @@ export default function ArtistDetail() {
   const sectionHasData = (id: ArtistSectionId): boolean => {
     switch (id) {
       case 'bio':       return !!info?.biography;
-      case 'topTracks': return topSongs.length > 0;
+      case 'topTracks': return topSongsLoading || topSongs.length > 0;
       case 'similar':   return showSimilarSection;
       case 'albums':    return true; // always renders (empty state included)
       case 'featured':  return featuredLoading || featuredAlbums.length > 0;
@@ -315,6 +315,7 @@ export default function ArtistDetail() {
             <ArtistDetailTopTracks
               key="topTracks"
               topSongs={topSongs}
+              loading={topSongsLoading}
               albums={albums}
               marginTop={sectionMt('topTracks')}
               playTopSongWithContinuation={playTopSongWithContinuation}

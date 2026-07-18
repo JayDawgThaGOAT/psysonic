@@ -5,6 +5,8 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params_from_iter, OptionalExtension};
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::album_compilation_filter::pick_album_group_artist;
 use crate::artist_sort::{sort_key_for_display_name, DEFAULT_IGNORED_ARTICLES};
@@ -1886,6 +1888,7 @@ fn fetch_scope_deduped_tracks_for_artist_key(
     artist_key: Option<&str>,
     anchor_server: &str,
     anchor_artist_id: &str,
+    top_tracks_limit: Option<u32>,
 ) -> rusqlite::Result<Vec<LibraryTrackDto>> {
     let (scope_cte, scope_binds) = scope_cte_sql(scopes);
     let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
@@ -1895,6 +1898,11 @@ fn fetch_scope_deduped_tracks_for_artist_key(
     );
     let cols = aliased_track_columns("t");
     let plain_cols = plain_track_columns_sql();
+    let order_and_limit = if top_tracks_limit.is_some() {
+        "ORDER BY play_count DESC NULLS LAST, played_at DESC NULLS LAST, title COLLATE NOCASE ASC LIMIT ?"
+    } else {
+        "ORDER BY album COLLATE NOCASE ASC, track_number ASC NULLS LAST, title COLLATE NOCASE ASC"
+    };
     let sql = format!(
         "{cte}, \
          ranked AS ( \
@@ -1902,8 +1910,82 @@ fn fetch_scope_deduped_tracks_for_artist_key(
                   ROW_NUMBER() OVER (PARTITION BY {TRACK_DEDUP_KEY} ORDER BY {priority} ASC, t.id ASC) AS rn \
            {scoped} AND t.artist_id IS NOT NULL {key_filter} \
          ) \
-         SELECT {plain_cols} FROM ranked WHERE rn = 1 \
-         ORDER BY album COLLATE NOCASE ASC, track_number ASC NULLS LAST, title COLLATE NOCASE ASC",
+         SELECT {plain_cols} FROM ranked WHERE rn = 1 {order_and_limit}",
+        scoped = scoped,
+    );
+    let mut binds = scope_binds;
+    if let Some(key) = artist_key {
+        binds.push(SqlValue::Text(key.to_string()));
+    } else {
+        binds.push(SqlValue::Text(anchor_server.to_string()));
+        binds.push(SqlValue::Text(anchor_artist_id.to_string()));
+    }
+    if let Some(limit) = top_tracks_limit {
+        binds.push(SqlValue::Integer(i64::from(limit.clamp(1, 50))));
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(binds.iter()), |r| {
+            Ok(LibraryTrackDto::from_row(&row_to_track_row(r)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn fetch_top_tracks_server_id(
+    conn: &rusqlite::Connection,
+    scopes: &[LibraryScopePair],
+    artist_key: Option<&str>,
+    anchor_server: &str,
+    anchor_artist_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    let (scope_cte, scope_binds) = scope_cte_sql(scopes);
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        artist_key.map(|_| "artist_key"),
+        "AND t.server_id = ? AND t.artist_id = ? AND ck.artist_key IS NULL",
+    );
+    let sql = format!(
+        "{cte}, \
+         server_counts AS ( \
+           SELECT t.server_id, COUNT(DISTINCT {TRACK_DEDUP_KEY}) AS track_count, \
+                  MIN({priority}) AS best_pr \
+           {scoped} AND t.artist_id IS NOT NULL {key_filter} \
+           GROUP BY t.server_id \
+         ) \
+         SELECT server_id FROM server_counts \
+         ORDER BY track_count DESC, best_pr ASC, server_id ASC LIMIT 1",
+        scoped = scoped,
+    );
+    let mut binds = scope_binds;
+    if let Some(key) = artist_key {
+        binds.push(SqlValue::Text(key.to_string()));
+    } else {
+        binds.push(SqlValue::Text(anchor_server.to_string()));
+        binds.push(SqlValue::Text(anchor_artist_id.to_string()));
+    }
+    conn.query_row(&sql, params_from_iter(binds.iter()), |row| row.get(0))
+        .optional()
+}
+
+fn fetch_top_tracks_fingerprint(
+    conn: &rusqlite::Connection,
+    scopes: &[LibraryScopePair],
+    artist_key: Option<&str>,
+    anchor_server: &str,
+    anchor_artist_id: &str,
+) -> rusqlite::Result<String> {
+    let (scope_cte, scope_binds) = scope_cte_sql(scopes);
+    let (cte, scoped, key_filter, _) = keyed_detail_track_source(
+        scope_cte,
+        artist_key.map(|_| "artist_key"),
+        "AND t.server_id = ? AND t.artist_id = ? AND ck.artist_key IS NULL",
+    );
+    let sql = format!(
+        "{cte} \
+         SELECT t.server_id, t.id, t.library_id, t.title, t.album_id, t.duration_sec \
+         {scoped} AND t.artist_id IS NOT NULL {key_filter} \
+         ORDER BY t.server_id ASC, t.id ASC, t.library_id ASC",
         scoped = scoped,
     );
     let mut binds = scope_binds;
@@ -1914,12 +1996,21 @@ fn fetch_scope_deduped_tracks_for_artist_key(
         binds.push(SqlValue::Text(anchor_artist_id.to_string()));
     }
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map(params_from_iter(binds.iter()), |r| {
-            Ok(LibraryTrackDto::from_row(&row_to_track_row(r)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    let rows = stmt.query_map(params_from_iter(binds.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+    let mut hasher = DefaultHasher::new();
+    for row in rows {
+        row?.hash(&mut hasher);
+    }
+    Ok(format!("{:016x}", hasher.finish()))
 }
 
 /// `library_scope_artist_detail` — resolve anchor → `artist_key`, aggregate albums + tracks.
@@ -1965,14 +2056,40 @@ pub fn artist_detail(
                 artist_key.as_deref(),
                 server_id,
                 artist_id,
+                request.top_tracks_limit,
             )?
         } else {
             Vec::new()
+        };
+        let (top_tracks_server_id, top_tracks_fingerprint) = if request.top_tracks_limit.is_some() {
+            let source_server_id = fetch_top_tracks_server_id(
+                conn,
+                scopes,
+                artist_key.as_deref(),
+                server_id,
+                artist_id,
+            )?;
+            let fingerprint = if source_server_id.is_some() {
+                Some(fetch_top_tracks_fingerprint(
+                    conn,
+                    scopes,
+                    artist_key.as_deref(),
+                    server_id,
+                    artist_id,
+                )?)
+            } else {
+                None
+            };
+            (source_server_id, fingerprint)
+        } else {
+            (None, None)
         };
         Ok(LibraryScopeArtistDetailResponse {
             artist,
             albums,
             tracks,
+            top_tracks_server_id,
+            top_tracks_fingerprint,
         })
     })
 }
@@ -2078,6 +2195,7 @@ mod tests {
                 artist_id: "art1".into(),
                 server_id: "s1".into(),
                 include_tracks: false,
+                top_tracks_limit: None,
             },
         )
         .unwrap();
@@ -2093,11 +2211,144 @@ mod tests {
                 artist_id: "art1".into(),
                 server_id: "s1".into(),
                 include_tracks: true,
+                top_tracks_limit: None,
             },
         )
         .unwrap();
         assert_eq!(with_tracks.tracks.len(), 1);
         assert_eq!(with_tracks.tracks[0].id, "t1");
+    }
+
+    #[test]
+    fn artist_detail_bounds_top_tracks_and_selects_broadest_server() {
+        let store = LibraryStore::open_in_memory();
+        let mut rows = vec![
+            track(
+                "s1",
+                "s1-low",
+                "Local Low",
+                Some("Artist"),
+                "One",
+                "s1-alb",
+                Some("s1-art"),
+                180,
+                "lib-a",
+                None,
+                None,
+                None,
+            ),
+            track(
+                "s1",
+                "s1-mid",
+                "Local Mid",
+                Some("Artist"),
+                "One",
+                "s1-alb",
+                Some("s1-art"),
+                181,
+                "lib-a",
+                None,
+                None,
+                None,
+            ),
+            track(
+                "s2",
+                "s2-top",
+                "Global Top",
+                Some("Artist"),
+                "Two",
+                "s2-alb",
+                Some("s2-art"),
+                182,
+                "lib-b",
+                None,
+                None,
+                None,
+            ),
+            track(
+                "s2",
+                "s2-second",
+                "Global Second",
+                Some("Artist"),
+                "Two",
+                "s2-alb",
+                Some("s2-art"),
+                183,
+                "lib-b",
+                None,
+                None,
+                None,
+            ),
+            track(
+                "s2",
+                "s2-low",
+                "Global Low",
+                Some("Artist"),
+                "Two",
+                "s2-alb",
+                Some("s2-art"),
+                184,
+                "lib-b",
+                None,
+                None,
+                None,
+            ),
+        ];
+        for (row, play_count) in rows.iter_mut().zip([5, 10, 100, 50, 1]) {
+            row.play_count = Some(play_count);
+        }
+        seed_and_rebuild(&store, &rows);
+
+        let response = artist_detail(
+            &store,
+            &LibraryScopeArtistDetailRequest {
+                scopes: vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")],
+                artist_id: "s1-art".into(),
+                server_id: "s1".into(),
+                include_tracks: true,
+                top_tracks_limit: Some(2),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.top_tracks_server_id.as_deref(), Some("s2"));
+        let fingerprint = response.top_tracks_fingerprint.clone().unwrap();
+        assert_eq!(response.tracks.len(), 2);
+        assert_eq!(response.tracks[0].id, "s2-top");
+        assert_eq!(response.tracks[1].id, "s2-second");
+
+        seed_and_rebuild(
+            &store,
+            &[track(
+                "s2",
+                "s2-new",
+                "New Track",
+                Some("Artist"),
+                "Two",
+                "s2-alb",
+                Some("s2-art"),
+                185,
+                "lib-b",
+                None,
+                None,
+                None,
+            )],
+        );
+        let updated = artist_detail(
+            &store,
+            &LibraryScopeArtistDetailRequest {
+                scopes: vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")],
+                artist_id: "s1-art".into(),
+                server_id: "s1".into(),
+                include_tracks: true,
+                top_tracks_limit: Some(2),
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            updated.top_tracks_fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
     }
 
     #[test]

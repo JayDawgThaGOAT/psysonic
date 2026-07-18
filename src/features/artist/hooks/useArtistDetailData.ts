@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { search } from '@/lib/api/subsonicSearch';
-import { getArtist, getArtistForServer, getArtistInfo, getTopSongs } from '@/lib/api/subsonicArtists';
+import {
+  getArtist, getArtistForServer, getArtistInfo, getTopSongs, getTopSongsForServer,
+} from '@/lib/api/subsonicArtists';
 import type {
   SubsonicAlbum, SubsonicArtist, SubsonicArtistInfo, SubsonicSong,
 } from '@/lib/api/subsonicTypes';
@@ -15,6 +17,8 @@ import { runLocalArtistLosslessBrowse } from '@/lib/library/browseTextSearch';
 import { isLosslessSuffix } from '@/lib/library/losslessFormats';
 import { tryLoadArtistDetailMultiScope } from '@/lib/library/loadArtistDetailMultiScope';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { loadScopedArtistTopSongs } from '@/lib/library/loadScopedArtistTopSongs';
+import { shouldAttemptSubsonicForServer } from '@/lib/network/subsonicNetworkGuard';
 
 export interface UseArtistDetailDataOptions {
   /** When true, albums and top tracks are limited to lossless containers (local index preferred). */
@@ -29,6 +33,7 @@ export interface ArtistDetailDataResult {
   info: SubsonicArtistInfo | null;
   featuredAlbums: SubsonicAlbum[];
   loading: boolean;
+  topSongsLoading: boolean;
   artistInfoLoading: boolean;
   featuredLoading: boolean;
   isStarred: boolean;
@@ -74,6 +79,7 @@ export function useArtistDetailData(
   const [topSongs, setTopSongs] = useState<SubsonicSong[]>([]);
   const [infoEntry, setInfoEntry] = useState<{ id: string; value: SubsonicArtistInfo | null } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [topSongsLoading, setTopSongsLoading] = useState(false);
   const [isStarred, setIsStarred] = useState(false);
   const [artistInfoLoading, setArtistInfoLoading] = useState(false);
   const [featuredLoading, setFeaturedLoading] = useState(false);
@@ -86,6 +92,7 @@ export function useArtistDetailData(
     setLoading(true);
     setInfoEntry(null);
     setTopSongs([]);
+    setTopSongsLoading(false);
     setFeaturedAlbums([]);
 
     (async () => {
@@ -96,7 +103,9 @@ export function useArtistDetailData(
           return;
         }
         if (serverId && currentBrowseScope.pairs.length > 0) {
-          const multi = await tryLoadArtistDetailMultiScope(currentBrowseScope.pairs, serverId, id);
+          const multi = losslessOnly
+            ? await tryLoadArtistDetailMultiScope(currentBrowseScope.pairs, serverId, id, null)
+            : await tryLoadArtistDetailMultiScope(currentBrowseScope.pairs, serverId, id);
           if (cancelled) return;
           if (multi) {
             setArtist(multi.artist);
@@ -104,6 +113,27 @@ export function useArtistDetailData(
             setAlbums(multi.albums);
             setTopSongs(multi.topSongs);
             setLoading(false);
+            if (
+              !losslessOnly
+              && multi.topTracksServerId
+              && multi.topTracksFingerprint
+              && shouldAttemptSubsonicForServer(multi.topTracksServerId)
+            ) {
+              setTopSongsLoading(true);
+              try {
+                const ranked = await loadScopedArtistTopSongs({
+                  artistName: multi.artist.name,
+                  sourceServerId: multi.topTracksServerId,
+                  scopes: currentBrowseScope.pairs,
+                  localFallback: multi.topSongs,
+                  tracksFingerprint: multi.topTracksFingerprint,
+                }).catch(() => multi.topSongs);
+                if (cancelled) return;
+                setTopSongs(ranked);
+              } finally {
+                if (!cancelled) setTopSongsLoading(false);
+              }
+            }
             return;
           }
           setLoading(false);
@@ -156,7 +186,13 @@ export function useArtistDetailData(
         setIsStarred(!!artistData.artist.starred);
         setLoading(false);
 
-        const songsData = await getTopSongs(artistData.artist.name).catch(() => [] as SubsonicSong[]);
+        const canLoadTopSongs = !serverId || shouldAttemptSubsonicForServer(serverId);
+        if (!canLoadTopSongs) return;
+        setTopSongsLoading(true);
+        const songsData = await (serverId
+          ? getTopSongsForServer(serverId, artistData.artist.name)
+          : getTopSongs(artistData.artist.name)
+        ).catch(() => [] as SubsonicSong[]);
         if (cancelled) return;
         let nextSongs = songsData ?? [];
         if (losslessOnly) {
@@ -164,6 +200,7 @@ export function useArtistDetailData(
         }
         setAlbums(nextAlbums);
         setTopSongs(nextSongs);
+        setTopSongsLoading(false);
       } catch (err) {
         if (cancelled) return;
         // Network `getArtist` can fail for an id that is a valid card link but
@@ -189,6 +226,7 @@ export function useArtistDetailData(
           } catch { /* ignore */ }
         }
         console.error(err);
+        setTopSongsLoading(false);
         setLoading(false);
       }
     })();
@@ -273,7 +311,7 @@ export function useArtistDetailData(
 
   return {
     artist, setArtist, albums, topSongs, info, featuredAlbums,
-    loading, artistInfoLoading, featuredLoading,
+    loading, topSongsLoading, artistInfoLoading, featuredLoading,
     isStarred, setIsStarred,
     losslessOnly,
   };

@@ -252,12 +252,15 @@ describe('libraryScopeArtistDetail', () => {
         },
         albums: [],
         tracks: [],
+        topTracksServerId: 's2.example',
+        topTracksFingerprint: 'tracks-v1',
       };
     });
-    await libraryScopeArtistDetail('profile-s1', {
+    const response = await libraryScopeArtistDetail('profile-s1', {
       scopes,
       artistId: 'ar-1',
       serverId: 'profile-s1',
+      topTracksLimit: 5,
     });
     expect(captured).toEqual({
       request: {
@@ -267,7 +270,10 @@ describe('libraryScopeArtistDetail', () => {
         ],
         artistId: 'ar-1',
         serverId: 's1.example',
+        topTracksLimit: 5,
       },
     });
+    expect(response.topTracksServerId).toBe('profile-s2');
+    expect(response.topTracksFingerprint).toBe('tracks-v1');
   });
 });

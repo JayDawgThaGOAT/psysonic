@@ -9,6 +9,8 @@ export interface ArtistDetailMultiScopePayload {
   artist: SubsonicArtist;
   albums: SubsonicAlbum[];
   topSongs: SubsonicSong[];
+  topTracksServerId: string | null;
+  topTracksFingerprint: string | null;
 }
 
 /**
@@ -19,12 +21,14 @@ export async function tryLoadArtistDetailMultiScope(
   scopes: LibraryScopePair[],
   serverId: string,
   artistId: string,
+  topTracksLimit: number | null = 5,
 ): Promise<ArtistDetailMultiScopePayload | null> {
   try {
     const response = await libraryScopeArtistDetail(serverId, {
       scopes,
       artistId,
       serverId,
+      ...(topTracksLimit == null ? {} : { topTracksLimit }),
     });
     if (!response.artist?.id) return null;
     return {
@@ -33,6 +37,8 @@ export async function tryLoadArtistDetailMultiScope(
       topSongs: [...response.tracks.map(trackToSong)].sort(
         (a, b) => (b.playCount ?? 0) - (a.playCount ?? 0),
       ),
+      topTracksServerId: response.topTracksServerId ?? null,
+      topTracksFingerprint: response.topTracksFingerprint ?? null,
     };
   } catch {
     return null;
