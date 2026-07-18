@@ -8,6 +8,7 @@ import { renderPresetIcon, useEnrichmentPrimary } from '@/music-network/ui';
 import StarRating from '@/ui/StarRating';
 import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/AddToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 export default function QueueItemContextItems(props: ContextMenuItemsProps) {
   const {
@@ -61,7 +62,9 @@ export default function QueueItemContextItems(props: ContextMenuItemsProps) {
                 </div>
               )}
               {song.artistId && (
-                <div className="context-menu-item" onClick={() => handleAction(() => navigateLibrary(`/artist/${song.artistId}`))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => navigateLibrary(
+                  buildArtistDetailPath(song.artistId!, { serverId: song.serverId }),
+                ))}>
                   <User size={14} /> {t('contextMenu.goToArtist')}
                 </div>
               )}

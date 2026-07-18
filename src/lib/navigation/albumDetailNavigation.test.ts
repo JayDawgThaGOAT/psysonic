@@ -146,6 +146,19 @@ describe('albumDetailNavigation', () => {
     });
   });
 
+  it('navigates to an owned artist while merging and replacing query scope', () => {
+    const navigate = vi.fn();
+    navigateToArtistDetail(
+      navigate,
+      { pathname: '/artists', search: '?letter=A', hash: '', state: null },
+      'art-1',
+      { serverId: 'srv-b', search: 'lossless=1&server=stale&server=older' },
+    );
+    expect(navigate).toHaveBeenCalledWith('/artist/art-1?lossless=1&server=srv-b', {
+      state: { returnTo: '/artists?letter=A' },
+    });
+  });
+
   it('navigates to composer with returnTo snapshot from Composers browse', () => {
     const navigate = vi.fn();
     navigateToComposerDetail(

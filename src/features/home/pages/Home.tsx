@@ -33,7 +33,7 @@ import { useConnectionStatus } from '@/lib/hooks/useConnectionStatus';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { useOfflineBrowseReloadToken } from '@/features/offline';
 import { useDevOfflineBrowseStore } from '@/features/offline';
-import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import {
   deriveHomeFeedScope,
@@ -662,8 +662,7 @@ export default function Home() {
                       key={`${a.serverId ?? ''}:${a.id}`}
                       className="artist-ext-link"
                       onClick={() => {
-                        const query = appendServerQuery(undefined, a.serverId);
-                        navigate(`/artist/${a.id}${query ? `?${query}` : ''}`);
+                        navigate(buildArtistDetailPath(a.id, { serverId: a.serverId }));
                       }}
                     >
                       {a.name}

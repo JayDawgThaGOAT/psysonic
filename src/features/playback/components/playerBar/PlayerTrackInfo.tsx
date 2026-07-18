@@ -22,6 +22,7 @@ import {
 } from '@/features/playback/store/playerBarLayoutStore';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineActionPolicy } from '@/features/offline';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   currentTrack: Track | null;
@@ -164,7 +165,9 @@ export function PlayerTrackInfo({
             <OpenArtistRefInline
               refs={displayArtistRefs}
               fallbackName={displayArtist}
-              onGoArtist={id => navigate(`/artist/${id}`)}
+              onGoArtist={id => navigate(buildArtistDetailPath(id, {
+                serverId: currentTrack?.serverId,
+              }))}
               as="none"
               linkTag="span"
               linkClassName="player-artist-link"
@@ -179,7 +182,9 @@ export function PlayerTrackInfo({
               : displayArtist}
             className="player-track-artist"
             style={{ cursor: !isRadio && !showPreviewMeta && currentTrack?.artistId ? 'pointer' : 'default' }}
-            onClick={() => !isRadio && !showPreviewMeta && currentTrack?.artistId && navigate(`/artist/${currentTrack.artistId}`)}
+            onClick={() => !isRadio && !showPreviewMeta && currentTrack?.artistId && navigate(
+              buildArtistDetailPath(currentTrack.artistId, { serverId: currentTrack.serverId }),
+            )}
           />
         )}
         {albumLine && (

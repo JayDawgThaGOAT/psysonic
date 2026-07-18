@@ -76,6 +76,26 @@ describe('copyEntityShareLink', () => {
     });
   });
 
+  it('uses an explicit secondary server without switching the active profile', async () => {
+    const activeId = useAuthStore.getState().addServer({
+      name: 'Active', url: 'https://active.test', username: 'u', password: 'p',
+    });
+    const ownerId = useAuthStore.getState().addServer({
+      name: 'Owner', url: 'https://owner.test', username: 'u', password: 'p',
+    });
+    useAuthStore.getState().setActiveServer(activeId);
+
+    await copyEntityShareLink('artist', 'artist-1', { serverId: ownerId });
+
+    const written = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0] as string;
+    expect(decodeSharePayloadFromText(written)).toEqual({
+      srv: 'https://owner.test',
+      k: 'artist',
+      id: 'artist-1',
+    });
+    expect(useAuthStore.getState().activeServerId).toBe(activeId);
+  });
+
   it('propagates a clipboard-failure return value (false)', async () => {
     const sid = useAuthStore.getState().addServer({
       name: 'Home', url: 'https://x.test', username: 'u', password: 'p',

@@ -5,24 +5,11 @@ import { useAuthStore } from '@/store/authStore';
 import { setTransitionMode, type TransitionMode } from '@/features/playback/utils/playback/playbackTransition';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
 import type { SubsonicOpenArtistRef } from '@/lib/api/subsonicTypes';
-import type { Track } from '@/lib/media/trackTypes';
+import { toMini, type MiniTrackInfo } from '@/features/miniPlayer/utils/miniTrackInfo';
+
+export type { MiniTrackInfo } from '@/features/miniPlayer/utils/miniTrackInfo';
 
 export const MINI_WINDOW_LABEL = 'mini';
-
-export interface MiniTrackInfo {
-  id: string;
-  title: string;
-  artist: string;
-  /** OpenSubsonic performer refs when the main queue carried them. */
-  artists?: SubsonicOpenArtistRef[];
-  album: string;
-  albumId?: string;
-  artistId?: string;
-  coverArt?: string;
-  duration?: number;
-  starred?: boolean;
-  year?: number;
-}
 
 export interface MiniSyncPayload {
   track: MiniTrackInfo | null;
@@ -44,22 +31,6 @@ export type MiniControlAction =
   | 'next'
   | 'prev'
   | 'show-main';
-
-function toMini(t: Track): MiniTrackInfo {
-  return {
-    id: t.id,
-    title: t.title,
-    artist: t.artist,
-    artists: Array.isArray(t.artists) && t.artists.length > 0 ? t.artists : undefined,
-    album: t.album,
-    albumId: t.albumId,
-    artistId: t.artistId,
-    coverArt: t.coverArt,
-    duration: t.duration,
-    starred: !!t.starred,
-    year: t.year,
-  };
-}
 
 /** Cap the queue pushed to the mini at ±100 tracks around the playing song — a
  *  50k Artist-Radio queue must not serialize in full over IPC on every push. The
@@ -109,9 +80,10 @@ export function initMiniPlayerBridgeOnMain(): () => void {
   let last = '';
   const push = () => {
     const payload = snapshot();
-    const queueIds = payload.queue.map(q => q.id).join(',');
+    const queueIds = payload.queue.map(q => `${q.serverId ?? ''}:${q.id}`).join(',');
     const key = [
       payload.track?.id ?? '',
+      payload.track?.serverId ?? '',
       payload.isPlaying,
       payload.track?.starred ?? '',
       (payload.track?.artists ?? []).map((a: SubsonicOpenArtistRef) => a.id ?? a.name).join('|'),

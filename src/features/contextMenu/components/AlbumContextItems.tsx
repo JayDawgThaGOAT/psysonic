@@ -9,6 +9,7 @@ import StarRating from '@/ui/StarRating';
 import { AlbumToPlaylistSubmenu } from '@/features/contextMenu/components/AlbumArtistToPlaylistSubmenu';
 import { MultiAlbumToPlaylistSubmenu } from '@/features/contextMenu/components/MultiAlbumToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 export default function AlbumContextItems(props: ContextMenuItemsProps) {
   const {
@@ -55,7 +56,9 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                 <ListPlus size={14} /> {t('contextMenu.enqueueAlbum')}
               </div>
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(`/artist/${album.artistId}`))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(
+                buildArtistDetailPath(album.artistId, { serverId: album.serverId }),
+              ))}>
                 <User size={14} /> {t('contextMenu.goToArtist')}
               </div>
               {offlinePolicy.canFavorite && (

@@ -26,6 +26,8 @@ import {
   resolveLiveSearchScopeGhost,
 } from '@/features/search/components/liveSearchScope';
 import { useLiveSearchScopeStore } from '@/store/liveSearchScopeStore';
+import { useAuthStore } from '@/store/authStore';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 export default function LiveSearch() {
   const { t } = useTranslation();
@@ -48,6 +50,7 @@ export default function LiveSearch() {
   const navigate = useNavigate();
   const navigateToAlbum = useNavigateToAlbum();
   const enqueue = usePlayerStore(state => state.enqueue);
+  const activeServerId = useAuthStore(s => s.activeServerId);
   const ctxIsOpen = usePlayerStore(state => state.contextMenu.isOpen);
   const ref = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -150,7 +153,11 @@ export default function LiveSearch() {
       },
     },
   ] : results ? [
-    ...(results.artists.map(a => ({ id: a.id, action: () => { navigate(`/artist/${a.id}`); setOpen(false); setQuery(''); } }))),
+    ...(results.artists.map(a => ({ id: a.id, action: () => {
+      navigate(buildArtistDetailPath(a.id, { serverId: a.serverId ?? activeServerId }));
+      setOpen(false);
+      setQuery('');
+    } }))),
     ...(results.albums.map(a => ({ id: a.id, action: () => { navigateToAlbum(a.id); setOpen(false); setQuery(''); } }))),
    ...(results.songs.map(s => ({ id: s.id, action: () => {
        const track = songToTrack(s);

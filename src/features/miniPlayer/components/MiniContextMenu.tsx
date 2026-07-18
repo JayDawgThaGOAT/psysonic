@@ -5,6 +5,7 @@ import { emit } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { Play, Trash2, Disc3, User, Heart, Info } from 'lucide-react';
 import type { MiniTrackInfo } from '@/features/miniPlayer/utils/miniPlayerBridge';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   x: number;
@@ -63,8 +64,9 @@ export default function MiniContextMenu({ x, y, track, index, onClose }: Props) 
     const next = !starred;
     setStarred(next);
     try {
-      if (next) await star(track.id, 'song');
-      else await unstar(track.id, 'song');
+      const meta = { serverId: track.serverId };
+      if (next) await star(track.id, 'song', meta);
+      else await unstar(track.id, 'song', meta);
     } catch {
       setStarred(!next);
     }
@@ -100,7 +102,9 @@ export default function MiniContextMenu({ x, y, track, index, onClose }: Props) 
       {track.artistId && (
         <div
           className="context-menu-item"
-          onClick={() => run(() => emit('mini:navigate', { to: `/artist/${track.artistId}` }))}
+          onClick={() => run(() => emit('mini:navigate', {
+            to: buildArtistDetailPath(track.artistId!, { serverId: track.serverId }),
+          }))}
         >
           <User size={14} /> {t('contextMenu.goToArtist')}
         </div>

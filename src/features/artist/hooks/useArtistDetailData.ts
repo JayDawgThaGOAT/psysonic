@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { search } from '@/lib/api/subsonicSearch';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
 import {
-  getArtist, getArtistForServer, getArtistInfo, getTopSongs, getTopSongsForServer,
+  getArtist, getArtistForServer, getArtistInfo, getArtistInfoForServer, getTopSongs, getTopSongsForServer,
 } from '@/lib/api/subsonicArtists';
 import type {
   SubsonicAlbum, SubsonicArtist, SubsonicArtistInfo, SubsonicSong,
@@ -249,7 +249,9 @@ export function useArtistDetailData(
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setArtistInfoLoading(true);
-    getArtistInfo(id, { similarArtistCount: audiomuseNavidromeEnabled ? 24 : undefined })
+    (serverId
+      ? getArtistInfoForServer(serverId, id, { similarArtistCount: audiomuseNavidromeEnabled ? 24 : undefined })
+      : getArtistInfo(id, { similarArtistCount: audiomuseNavidromeEnabled ? 24 : undefined }))
       .then(artistInfo => {
         if (!cancelled) setInfoEntry({ id, value: artistInfo ?? null });
       })
@@ -260,7 +262,7 @@ export function useArtistDetailData(
         if (!cancelled) setArtistInfoLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, audiomuseNavidromeEnabled, preferLocalArtist, browseScope.multiServer]);
+  }, [id, serverId, audiomuseNavidromeEnabled, preferLocalArtist, browseScope.multiServer]);
 
   useEffect(() => {
     if (!id || !artist || preferLocalArtist || browseScope.multiServer) return;
@@ -268,7 +270,9 @@ export function useArtistDetailData(
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setFeaturedLoading(true);
-    search(artist.name, { songCount: 500, artistCount: 0, albumCount: 0 })
+    (serverId
+      ? searchForServer(serverId, artist.name, { songCount: 500, artistCount: 0, albumCount: 0 })
+      : search(artist.name, { songCount: 500, artistCount: 0, albumCount: 0 }))
       .catch(() => ({ songs: [], albums: [], artists: [] }))
       .then(searchResults => {
         let featuredSongs = (searchResults.songs ?? []).filter(
@@ -305,7 +309,7 @@ export function useArtistDetailData(
         setFeaturedLoading(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artist?.id, libraryBrowseScopeVersion, losslessOnly, albums, preferLocalArtist, browseScope.multiServer]);
+  }, [artist?.id, libraryBrowseScopeVersion, losslessOnly, albums, preferLocalArtist, browseScope.multiServer, serverId]);
 
   const info = infoEntry && infoEntry.id === id ? infoEntry.value : null;
 

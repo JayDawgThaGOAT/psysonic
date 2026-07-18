@@ -33,6 +33,7 @@ import {
   resetLiveSearchScopeBackspaceState,
   resolveLiveSearchScopeGhost,
 } from '@/features/search/components/liveSearchScope';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 const STORAGE_KEY = 'psysonic_recent_searches';
 const MAX_RECENT = 6;
@@ -116,6 +117,7 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
   const navigate = useNavigate();
   const location = useLocation();
   const enqueue = usePlayerStore(s => s.enqueue);
+  const activeServerId = useAuthStore(s => s.activeServerId);
 
   const query = useLiveSearchScopeStore(s => s.query);
   const setQuery = useLiveSearchScopeStore(s => s.setQuery);
@@ -368,7 +370,13 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
               <div className="mobile-search-section">
                 <div className="mobile-search-section-label">{t('search.artists')}</div>
                 {results!.artists.map(a => (
-                  <button key={a.id} className="mobile-search-item" onClick={() => goTo(`/artist/${a.id}`)}>
+                  <button
+                    key={a.id}
+                    className="mobile-search-item"
+                    onClick={() => goTo(buildArtistDetailPath(a.id, {
+                      serverId: a.serverId ?? activeServerId,
+                    }))}
+                  >
                     <MobileSearchArtistThumb artist={a} />
                     <div className="mobile-search-item-info">
                       <span className="mobile-search-item-title">{a.name}</span>

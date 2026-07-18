@@ -1,4 +1,9 @@
-import { api, libraryFilterParams } from '@/lib/api/subsonicClient';
+import {
+  api,
+  apiForServer,
+  libraryFilterParams,
+  libraryFilterParamsForServer,
+} from '@/lib/api/subsonicClient';
 import { searchQueryIsFtsSafe } from '@/lib/library/searchQueryFtsSafe';
 import type {
   SearchResults,
@@ -51,6 +56,40 @@ export async function search(
     artists: filterSearchArtistsWithNoAlbums(r.artist ?? []),
     albums: r.album ?? [],
     songs: r.song ?? [],
+  };
+}
+
+export async function searchForServer(
+  serverId: string,
+  query: string,
+  options?: {
+    albumCount?: number;
+    artistCount?: number;
+    songCount?: number;
+    timeout?: number;
+  },
+): Promise<SearchResults> {
+  if (!query.trim() || !searchQueryIsFtsSafe(query)) {
+    return { artists: [], albums: [], songs: [] };
+  }
+  const data = await apiForServer<{
+    searchResult3: {
+      artist?: SubsonicArtist[];
+      album?: SubsonicAlbum[];
+      song?: SubsonicSong[];
+    };
+  }>(serverId, 'search3.view', {
+    query,
+    artistCount: options?.artistCount ?? 5,
+    albumCount: options?.albumCount ?? 5,
+    songCount: options?.songCount ?? 10,
+    ...libraryFilterParamsForServer(serverId),
+  }, options?.timeout ?? 15000);
+  const r = data.searchResult3 ?? {};
+  return {
+    artists: filterSearchArtistsWithNoAlbums(r.artist ?? []).map(artist => ({ ...artist, serverId })),
+    albums: (r.album ?? []).map(album => ({ ...album, serverId })),
+    songs: (r.song ?? []).map(song => ({ ...song, serverId })),
   };
 }
 

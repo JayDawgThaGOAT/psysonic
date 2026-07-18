@@ -13,7 +13,7 @@ import { useThemeStore } from '@/store/themeStore';
 import { useDragDrop } from '@/lib/dnd/DragDropContext';
 import { useOrbitSongRowBehavior } from '@/features/orbit';
 import { songToTrack } from '@/lib/media/songToTrack';
-import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { appendServerQuery, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 import { APP_MAIN_SCROLL_VIEWPORT_ID } from '@/constants/appScroll';
 import { useElementClientHeightById } from '@/lib/hooks/useResizeClientHeight';
 import { SORTABLE_COLUMNS } from '@/features/favorites/hooks/useFavoritesSongFiltering';
@@ -137,8 +137,7 @@ export default function FavoritesSongsTracklist({
     rate: (song, r) => latest.current.handleRate(song, r),
     remove: (song) => latest.current.removeSong(song),
     navArtist: (artistId, serverId) => {
-      const query = appendServerQuery(undefined, serverId);
-      latest.current.navigate(query ? `/artist/${artistId}?${query}` : `/artist/${artistId}`);
+      latest.current.navigate(buildArtistDetailPath(artistId, { serverId }));
     },
     navAlbum: (albumId, serverId) => {
       const query = appendServerQuery(undefined, serverId);

@@ -118,7 +118,10 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                 </div>
               )}
               {song.artistId && (
-                <div className="context-menu-item" onClick={() => handleAction(() => navigateToArtist(song.artistId!))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => navigateToArtist(
+                  song.artistId!,
+                  { serverId: song.serverId },
+                ))}>
                   <User size={14} /> {t('contextMenu.goToArtist')}
                 </div>
               )}
@@ -266,7 +269,10 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                 </div>
               )}
               {song.artistId && (
-                <div className="context-menu-item" onClick={() => handleAction(() => navigateToArtist(song.artistId!))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => navigateToArtist(
+                  song.artistId!,
+                  { serverId: song.serverId },
+                ))}>
                   <User size={14} /> {t('contextMenu.goToArtist')}
                 </div>
               )}

@@ -14,6 +14,8 @@ import {
   OP_SIMILAR_TRACKS,
 } from '@/lib/serverCapabilities/catalog';
 import { resolveCallRoutesForServer } from '@/lib/serverCapabilities/storeView';
+import { connectBaseUrlForServer } from '@/lib/server/serverEndpoint';
+import { findServerByIdOrIndexKey } from '@/lib/server/serverLookup';
 import type {
   SubsonicAlbum,
   SubsonicArtist,
@@ -270,12 +272,22 @@ export async function fetchSimilarTracksRouted(songId: string, count = 50): Prom
 }
 
 export async function uploadArtistImage(id: string, file: File): Promise<void> {
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) throw new Error('No active server');
+  return uploadArtistImageForServer(serverId, id, file);
+}
+
+export async function uploadArtistImageForServer(
+  serverId: string,
+  id: string,
+  file: File,
+): Promise<void> {
   // Navidrome-specific endpoint — handled in Rust to bypass browser CORS restrictions.
-  const { getBaseUrl, getActiveServer } = useAuthStore.getState();
-  const server = getActiveServer();
-  const baseUrl = getBaseUrl();
+  const server = findServerByIdOrIndexKey(serverId);
+  if (!server) throw new Error('Server not found');
+  const baseUrl = connectBaseUrlForServer(server);
   const buffer = await file.arrayBuffer();
   const fileBytes = Array.from(new Uint8Array(buffer));
-  const res = await commands.uploadArtistImage(baseUrl, id, server?.username ?? '', server?.password ?? '', fileBytes, file.type || 'image/jpeg');
+  const res = await commands.uploadArtistImage(baseUrl, id, server.username, server.password, fileBytes, file.type || 'image/jpeg');
   if (res.status === 'error') throw new Error(res.error);
 }

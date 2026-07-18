@@ -23,7 +23,6 @@ export interface PlaylistRowCallbacks {
   toggleStar: (song: SubsonicSong, e: React.MouseEvent) => void;
   rate: (songId: string, rating: number) => void;
   remove: (realIdx: number) => void;
-  navArtist: (artistId: string) => void;
   navAlbum: (albumId: string) => void;
 }
 

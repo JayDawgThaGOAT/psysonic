@@ -48,7 +48,6 @@ import {
   getArtistBrowseTraceSnapshot,
   subscribeArtistBrowseTrace,
 } from '@/lib/library/artistBrowseDebug';
-import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
@@ -113,7 +112,7 @@ export default function Artists() {
   const PAGE_SIZE = showArtistImages ? 50 : 100; // Smaller with images to reduce I/O
   const navigateToArtist = useNavigateToArtist();
   const openArtist = useCallback((artistId: string, ownerServerId?: string) => {
-    navigateToArtist(artistId, { search: appendServerQuery(undefined, ownerServerId) });
+    navigateToArtist(artistId, { serverId: ownerServerId });
   }, [navigateToArtist]);
   const location = useLocation();
   const navigate = useNavigate();

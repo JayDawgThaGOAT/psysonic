@@ -33,10 +33,10 @@ vi.mock('@/lib/hooks/useConnectionStatus', () => ({
 }));
 
 import {
-  getArtist, getArtistForServer, getArtistInfo, getTopSongs, getTopSongsForServer,
+  getArtist, getArtistForServer, getArtistInfo, getArtistInfoForServer, getTopSongs, getTopSongsForServer,
 } from '@/lib/api/subsonicArtists';
 import { loadArtistFromLibraryIndex } from '@/features/offline';
-import { search } from '@/lib/api/subsonicSearch';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
 import { useArtistDetailData } from './useArtistDetailData';
 
 function routerWrapper({ children }: { children: React.ReactNode }) {
@@ -50,7 +50,9 @@ describe('useArtistDetailData — multi-library selection', () => {
     vi.mocked(getTopSongs).mockResolvedValue([]);
     vi.mocked(getTopSongsForServer).mockResolvedValue([]);
     vi.mocked(getArtistInfo).mockResolvedValue({} as Awaited<ReturnType<typeof getArtistInfo>>);
+    vi.mocked(getArtistInfoForServer).mockResolvedValue({} as Awaited<ReturnType<typeof getArtistInfoForServer>>);
     vi.mocked(search).mockResolvedValue({ songs: [], albums: [], artists: [] });
+    vi.mocked(searchForServer).mockResolvedValue({ songs: [], albums: [], artists: [] });
     useAuthStore.setState({
       activeServerId: 'srv-1',
       servers: [

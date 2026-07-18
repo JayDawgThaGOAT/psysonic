@@ -22,6 +22,7 @@ import { tooltipAttrs } from '@/ui/tooltipAttrs';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
 import { deriveAlbumGenreTags } from '@/lib/library/genreTags';
 import { genreColor } from '@/lib/library/genreColor';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 /** True when the album artist label means "no single artist" — `getArtistInfo`
  *  has nothing meaningful to return for these, so the Artist Bio entry is hidden.
@@ -149,6 +150,7 @@ interface AlbumInfo {
 
 interface AlbumHeaderProps {
   info: AlbumInfo;
+  serverId?: string;
   /** OpenSubsonic album credits (derived from album + songs). */
   headerArtistRefs: SubsonicOpenArtistRef[];
   songs: SubsonicSong[];
@@ -179,6 +181,7 @@ interface AlbumHeaderProps {
 
 export default function AlbumHeader({
   info,
+  serverId,
   headerArtistRefs,
   songs,
   coverRef,
@@ -298,7 +301,7 @@ export default function AlbumHeader({
                 <OpenArtistRefInline
                   refs={headerArtistRefs}
                   fallbackName={info.artist}
-                  onGoArtist={id => navigate(`/artist/${id}`)}
+                  onGoArtist={id => navigate(buildArtistDetailPath(id, { serverId }))}
                   linkClassName="album-detail-artist-link"
                 />
               </p>

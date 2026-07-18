@@ -111,7 +111,11 @@ function SongRow({ song, showBpm }: Props) {
             <span
               className={a.id ? 'track-artist-link' : ''}
               style={{ cursor: a.id ? 'pointer' : 'default' }}
-              onClick={(e) => { if (a.id) { e.stopPropagation(); navigateToArtist(a.id!); } }}
+              onClick={(e) => {
+                if (!a.id) return;
+                e.stopPropagation();
+                navigateToArtist(a.id, { serverId: song.serverId });
+              }}
             >{a.name ?? song.artist}</span>
           </React.Fragment>
         ))}

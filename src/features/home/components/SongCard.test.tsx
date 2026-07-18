@@ -55,7 +55,7 @@ describe('SongCard', () => {
     expect(screen.getByText('Apocalyptica')).toHaveClass('track-artist-link');
     expect(screen.getByText('Joe Duplantier')).toHaveClass('track-artist-link');
     await user.click(screen.getByText('Joe Duplantier'));
-    expect(navigateToArtist).toHaveBeenCalledWith('a2', { search: undefined });
+    expect(navigateToArtist).toHaveBeenCalledWith('a2', { serverId: undefined });
   });
 
   it('scopes covers and detail navigation to the song owner', async () => {
@@ -74,7 +74,7 @@ describe('SongCard', () => {
     );
 
     await user.click(screen.getByText('A'));
-    expect(navigateToArtist).toHaveBeenCalledWith('a1', { search: 'server=srv-2' });
+    expect(navigateToArtist).toHaveBeenCalledWith('a1', { serverId: 'srv-2' });
 
     await user.click(screen.getByRole('button', { name: /to album/i }));
     expect(navigateToAlbum).toHaveBeenCalledWith('al1', { search: 'server=srv-2' });

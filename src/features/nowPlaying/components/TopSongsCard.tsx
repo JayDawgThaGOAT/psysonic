@@ -3,17 +3,19 @@ import { useTranslation } from 'react-i18next';
 import { ExternalLink, Play, TrendingUp } from 'lucide-react';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { formatTrackTime } from '@/lib/format/formatDuration';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface TopSongsCardProps {
   artistName: string;
   artistId?: string;
+  serverId?: string;
   songs: SubsonicSong[];
   currentTrackId: string;
   onNavigate: (path: string) => void;
   onPlay: (song: SubsonicSong) => void;
 }
 
-const TopSongsCard = memo(function TopSongsCard({ artistName, artistId, songs, currentTrackId, onNavigate, onPlay }: TopSongsCardProps) {
+const TopSongsCard = memo(function TopSongsCard({ artistName, artistId, serverId, songs, currentTrackId, onNavigate, onPlay }: TopSongsCardProps) {
   const { t } = useTranslation();
   const top = songs.slice(0, 8);
   if (top.length === 0) return null;
@@ -26,7 +28,7 @@ const TopSongsCard = memo(function TopSongsCard({ artistName, artistId, songs, c
           {t('nowPlaying.topSongs', { defaultValue: 'Most played by this artist' })}
         </h3>
         {artistId && (
-          <button className="np-card-link" onClick={() => onNavigate(`/artist/${artistId}`)}>
+          <button className="np-card-link" onClick={() => onNavigate(buildArtistDetailPath(artistId, { serverId }))}>
             {t('nowPlaying.goToArtist')} <ExternalLink size={12} />
           </button>
         )}

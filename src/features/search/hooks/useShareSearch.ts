@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useNavigateToAlbum } from '@/features/album';
+import { useNavigateToArtist } from '@/features/artist';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/store/authStore';
 import {
@@ -20,9 +21,16 @@ export function useShareSearch(query: string, onSuccess?: () => void) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const navigateToAlbum = useNavigateToAlbum();
+  const navigateToArtist = useNavigateToArtist();
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const shareMatch = useMemo(() => parseShareSearchText(query), [query]);
+  const shareServerId = useMemo(() => {
+    if (!shareMatch || shareMatch.type === 'unsupported' || shareMatch.type === 'navidrome-public') {
+      return null;
+    }
+    return findServerIdForShareUrl(servers, shareMatch.payload.srv);
+  }, [shareMatch, servers]);
   const shareServerLabel = useMemo(
     () => shareServerOriginLabel(shareMatch, servers, activeServerId),
     [shareMatch, servers, activeServerId],
@@ -31,12 +39,12 @@ export function useShareSearch(query: string, onSuccess?: () => void) {
     if (!shareMatch || shareMatch.type === 'unsupported' || shareMatch.type === 'navidrome-public') {
       return null;
     }
-    const serverId = findServerIdForShareUrl(servers, shareMatch.payload.srv);
+    const serverId = shareServerId;
     if (!serverId || serverId === activeServerId) return null;
     return servers.find(s => s.id === serverId)
       ?? servers.find(s => serverIndexKeyFromUrl(s.url) === serverId)
       ?? null;
-  }, [shareMatch, servers, activeServerId]);
+  }, [shareMatch, servers, activeServerId, shareServerId]);
   const preview = useShareSearchPreview(shareMatch);
   const navidromeRef = shareMatch?.type === 'navidrome-public' ? shareMatch.publicShareRef : null;
   const navidromePreview = useNavidromePublicSharePreview(navidromeRef);
@@ -76,9 +84,9 @@ export function useShareSearch(query: string, onSuccess?: () => void) {
   const openShareArtist = useCallback(() => {
     if (shareMatch?.type !== 'artist' || !preview.shareArtist) return;
     if (!activateShareSearchServer(shareMatch.payload.srv, t)) return;
-    navigate(`/artist/${preview.shareArtist.id}`);
+    navigateToArtist(preview.shareArtist.id, { serverId: shareServerId });
     onSuccess?.();
-  }, [shareMatch, preview.shareArtist, navigate, t, onSuccess]);
+  }, [shareMatch, preview.shareArtist, navigateToArtist, shareServerId, t, onSuccess]);
 
   const openShareComposer = useCallback(() => {
     if (shareMatch?.type !== 'composer' || !preview.shareComposer) return;

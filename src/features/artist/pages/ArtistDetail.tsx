@@ -48,6 +48,8 @@ export default function ArtistDetail() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const losslessOnly = searchParams.get('lossless') === '1';
+  const authActiveServerId = useAuthStore(s => s.activeServerId);
+  const activeServerId = readDetailServerId(searchParams, authActiveServerId) ?? '';
   const {
     artist, setArtist, albums, topSongs, info, featuredAlbums,
     loading, topSongsLoading, artistInfoLoading, featuredLoading,
@@ -56,7 +58,12 @@ export default function ArtistDetail() {
   const [radioLoading, setRadioLoading] = useState(false);
   const [playAllLoading, setPlayAllLoading] = useState(false);
   const [openedLink, setOpenedLink] = useState<string | null>(null);
-  const { similarArtists, similarLoading } = useArtistSimilarArtists(artist, info, artistInfoLoading);
+  const { similarArtists, similarLoading } = useArtistSimilarArtists(
+    artist,
+    info,
+    artistInfoLoading,
+    activeServerId,
+  );
   const [uploading, setUploading] = useState(false);
   const [similarCollapsed, setSimilarCollapsed] = useState(true);
   const [coverRevision, setCoverRevision] = useState(0);
@@ -65,8 +72,6 @@ export default function ArtistDetail() {
 
   const playTrack = usePlayerStore(state => state.playTrack);
   const enqueue = usePlayerStore(state => state.enqueue);
-  const authActiveServerId = useAuthStore(s => s.activeServerId);
-  const activeServerId = readDetailServerId(searchParams, authActiveServerId) ?? '';
   const audiomuseNavidromeEnabled = useAuthStore(
     s => !!(activeServerId && s.audiomuseNavidromeByServer[activeServerId]),
   );
@@ -121,7 +126,7 @@ export default function ArtistDetail() {
 
   const handleShareArtist = () => {
     if (!id || !artist) return;
-    return runArtistShare({ artist, t });
+    return runArtistShare({ artist, serverId: activeServerId, t });
   };
 
   const playTopSongWithContinuation = (startIndex: number) => runArtistDetailPlayTopSong({
@@ -134,7 +139,7 @@ export default function ArtistDetail() {
   });
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => runArtistImageUpload({
-    e, artist, t, setUploading, setCoverRevision,
+    e, artist, serverId: activeServerId, t, setUploading, setCoverRevision,
   });
 
   // Cover URLs — must run every render (before early returns) or hook order breaks.
@@ -234,6 +239,7 @@ export default function ArtistDetail() {
     id: sa.id,
     name: sa.name,
     albumCount: sa.albumCount,
+    serverId: 'serverId' in sa && typeof sa.serverId === 'string' ? sa.serverId : activeServerId,
   }));
   const showAudiomuseSimilar = audiomuseNavidromeEnabled && serverSimilarArtists.length > 0;
   const showNetworkSimilar =
@@ -334,6 +340,7 @@ export default function ArtistDetail() {
               serverSimilarArtists={serverSimilarArtists}
               similarCollapsed={similarCollapsed}
               setSimilarCollapsed={setSimilarCollapsed}
+              serverId={activeServerId}
             />
           );
 

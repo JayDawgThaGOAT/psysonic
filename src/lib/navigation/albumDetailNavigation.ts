@@ -12,6 +12,10 @@ import {
   peekPersistedAdvancedSearchLeaveSnapshot,
   saveAdvancedSearchLeaveSnapshot,
 } from '@/lib/navigation/advancedSearchScrollSnapshot';
+import {
+  buildArtistDetailPath,
+  type ArtistDetailPathOptions,
+} from '@/lib/navigation/detailServerScope';
 
 export type AlbumDetailLocationState = {
   returnTo?: string;
@@ -186,13 +190,13 @@ export function navigateToArtistDetail(
   navigate: NavigateFunction,
   location: Pick<Location, 'pathname' | 'search' | 'hash' | 'state'>,
   artistId: string,
-  opts?: { search?: string },
+  opts?: ArtistDetailPathOptions,
 ): void {
   saveSearchLeaveIfNeeded(location);
   const returnTo = buildReturnTo(location);
-  const raw = opts?.search ?? '';
-  const qs = raw ? (raw.startsWith('?') ? raw : `?${raw}`) : '';
-  navigate(`/artist/${artistId}${qs}`, { state: { returnTo } satisfies AlbumDetailLocationState });
+  navigate(buildArtistDetailPath(artistId, opts), {
+    state: { returnTo } satisfies AlbumDetailLocationState,
+  });
 }
 
 export function navigateToComposerDetail(

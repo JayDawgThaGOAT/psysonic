@@ -272,6 +272,7 @@ export default function NowPlaying() {
                 artistId: currentTrack.artistId,
                 albumId: currentTrack.albumId,
                 userRating: currentTrack.userRating,
+                serverId: currentTrack.serverId ?? playbackServerId,
               }}
               artistRefs={trackArtistRefs.length > 0 ? trackArtistRefs : undefined}
               genre={songMeta?.genre ?? undefined}
@@ -309,6 +310,7 @@ export default function NowPlaying() {
                     <TopSongsCard
                       artistName={artistName}
                       artistId={artistId}
+                      serverId={currentTrack.serverId ?? playbackServerId}
                       songs={topSongs}
                       currentTrackId={currentTrack.id}
                       onNavigate={stableNavigate}
@@ -321,6 +323,7 @@ export default function NowPlaying() {
                       artistName={artistName}
                       artistId={artistId}
                       artistInfo={effectiveArtistInfo}
+                      serverId={currentTrack.serverId ?? playbackServerId}
                       artistTabs={artistTabs}
                       onNavigate={stableNavigate}
                     />
@@ -328,6 +331,7 @@ export default function NowPlaying() {
                   case 'discography': return (
                     <DiscographyCard
                       artistId={artistId}
+                      serverId={currentTrack.serverId ?? playbackServerId}
                       albums={discography}
                       currentAlbumId={albumId}
                       onNavigate={stableNavigate}

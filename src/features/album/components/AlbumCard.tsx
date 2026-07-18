@@ -23,7 +23,7 @@ import { useDragDrop } from '@/lib/dnd/DragDropContext';
 import { isAlbumRecentlyAdded } from '@/features/album/utils/albumRecency';
 import { albumArtistDisplayName, deriveAlbumArtistRefs } from '@/features/album/utils/deriveAlbumHeaderArtistRefs';
 import { coverServerScopeForServerId } from '@/cover/serverScope';
-import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { appendServerQuery, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface AlbumCardProps {
   album: SubsonicAlbum;
@@ -224,7 +224,7 @@ function AlbumCard({
           <OpenArtistRefInline
             refs={artistRefs}
             fallbackName={artistLabel}
-            onGoArtist={id => navigate(`/artist/${id}`)}
+            onGoArtist={id => navigate(buildArtistDetailPath(id, { serverId: album.serverId }))}
             as="none"
             linkTag="span"
             linkClassName="track-artist-link"

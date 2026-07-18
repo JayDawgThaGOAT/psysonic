@@ -417,6 +417,7 @@ const handleShuffleAll = () => {
     <div className="album-detail animate-fade-in">
       <AlbumHeader
         info={info}
+        serverId={info.serverId ?? serverId}
         headerArtistRefs={headerArtistRefs}
         songs={songs}
         coverRef={albumCoverRefResolved}

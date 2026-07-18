@@ -160,7 +160,6 @@ export default function PlaylistTracklist({
     toggleStar: (song, e) => latest.current.handleToggleStar(song, e),
     rate: (songId, r) => latest.current.handleRate(songId, r),
     remove: (rIdx) => latest.current.removeSong(rIdx),
-    navArtist: (artistId) => latest.current.navigate(`/artist/${artistId}`),
     navAlbum: (albumId) => latest.current.navigate(`/album/${albumId}`),
   }), []);
 

@@ -5,6 +5,7 @@ import type { SubsonicArtistInfo } from '@/lib/api/subsonicTypes';
 import { isRealArtistImage } from '@/cover/isRealArtistImage';
 import { sanitizeHtml } from '@/features/nowPlaying/utils/nowPlayingHelpers';
 import CachedImage from '@/ui/CachedImage';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 export interface ArtistCardTab {
   id?: string;
@@ -16,6 +17,7 @@ interface ArtistCardProps {
   artistName: string;
   artistId?: string;
   artistInfo: SubsonicArtistInfo | null;
+  serverId?: string;
   /** When more than one entry, render picker tabs (Now Playing multi-artist tracks). */
   artistTabs?: ArtistCardTab[];
   /** When omitted the "Go to Artist" link and similar-artist chip click handlers do nothing — used on /artist/:id where the user is already there. */
@@ -57,7 +59,7 @@ function entryHasContent(
 }
 
 const ArtistCard = memo(function ArtistCard({
-  artistName, artistId, artistInfo, artistTabs, onNavigate, coverFallback,
+  artistName, artistId, artistInfo, serverId, artistTabs, onNavigate, coverFallback,
   hideArtistName = false, hideSimilar = false,
 }: ArtistCardProps) {
   const { t } = useTranslation();
@@ -105,7 +107,10 @@ const ArtistCard = memo(function ArtistCard({
       <div className="np-card-header">
         <h3 className="np-card-title">{t('nowPlaying.aboutArtist')}</h3>
         {activeArtistId && onNavigate && (
-          <button className="np-card-link" onClick={() => onNavigate(`/artist/${activeArtistId}`)}>
+          <button className="np-card-link" onClick={() => onNavigate(buildArtistDetailPath(
+            activeArtistId,
+            { serverId },
+          ))}>
             {t('nowPlaying.goToArtist')} <ExternalLink size={12} />
           </button>
         )}
@@ -162,7 +167,7 @@ const ArtistCard = memo(function ArtistCard({
           <div className="np-dash-chip-row">
             {similar.slice(0, 12).map((a, idx) => (
               <span key={`${a.id}-${idx}`} className="np-chip"
-                onClick={() => a.id && onNavigate?.(`/artist/${a.id}`)}
+                onClick={() => a.id && onNavigate?.(buildArtistDetailPath(a.id, { serverId }))}
                 data-tooltip={t('nowPlaying.goToArtist')}>
                 {a.name}
               </span>

@@ -1,8 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { apiForServerMock, librarySelectionMock } = vi.hoisted(() => ({
+const {
+  apiForServerMock,
+  librarySelectionMock,
+  uploadArtistImageMock,
+  findServerMock,
+} = vi.hoisted(() => ({
   apiForServerMock: vi.fn(),
   librarySelectionMock: vi.fn<() => string[]>(() => []),
+  uploadArtistImageMock: vi.fn(),
+  findServerMock: vi.fn(),
+}));
+
+vi.mock('@/generated/bindings', () => ({
+  commands: { uploadArtistImage: uploadArtistImageMock },
+}));
+
+vi.mock('@/lib/server/serverLookup', () => ({
+  findServerByIdOrIndexKey: findServerMock,
+}));
+
+vi.mock('@/lib/server/serverEndpoint', () => ({
+  connectBaseUrlForServer: (server: { url: string }) => server.url,
 }));
 
 vi.mock('@/lib/api/subsonicClient', () => ({
@@ -24,6 +43,7 @@ import {
   getArtistInfoForServer,
   getArtistsForServer,
   getTopSongsForServer,
+  uploadArtistImageForServer,
 } from '@/lib/api/subsonicArtists';
 
 const artist = { id: 'artist-1', name: 'Artist' };
@@ -34,6 +54,8 @@ describe('explicit-server artist wrappers', () => {
     apiForServerMock.mockReset();
     librarySelectionMock.mockReset();
     librarySelectionMock.mockReturnValue([]);
+    uploadArtistImageMock.mockReset();
+    findServerMock.mockReset();
   });
 
   it('preserves multi-folder fan-out, timeout, deduplication, and stamping', async () => {
@@ -111,5 +133,31 @@ describe('explicit-server artist wrappers', () => {
       { id: 'top-1', title: 'First', serverId: 'srv-top' },
       { id: 'top-2', title: 'Second', serverId: 'srv-top' },
     ]);
+  });
+
+  it('uploads an artist image with the explicit server credentials', async () => {
+    findServerMock.mockReturnValue({
+      id: 'srv-owner',
+      url: 'https://owner.test',
+      username: 'owner-user',
+      password: 'owner-pass',
+    });
+    uploadArtistImageMock.mockResolvedValue({ status: 'ok', data: null });
+    const file = {
+      type: 'image/png',
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    } as File;
+
+    await uploadArtistImageForServer('srv-owner', 'artist-1', file);
+
+    expect(findServerMock).toHaveBeenCalledWith('srv-owner');
+    expect(uploadArtistImageMock).toHaveBeenCalledWith(
+      'https://owner.test',
+      'artist-1',
+      'owner-user',
+      'owner-pass',
+      [1, 2, 3],
+      'image/png',
+    );
   });
 });

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { SubsonicArtist } from '@/lib/api/subsonicTypes';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   marginTop: string;
@@ -14,12 +15,13 @@ interface Props {
   serverSimilarArtists: SubsonicArtist[];
   similarCollapsed: boolean;
   setSimilarCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
+  serverId: string;
 }
 
 export default function ArtistDetailSimilarArtists({
   marginTop, showAudiomuseSimilar, showNetworkSimilar,
   similarLoading, similarArtists, serverSimilarArtists,
-  similarCollapsed, setSimilarCollapsed,
+  similarCollapsed, setSimilarCollapsed, serverId,
 }: Props) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -54,7 +56,9 @@ export default function ArtistDetailSimilarArtists({
               <button
                 key={`${a.id}-${i}`}
                 className="artist-ext-link"
-                onClick={() => navigate(`/artist/${a.id}`)}
+                onClick={() => navigate(buildArtistDetailPath(a.id, {
+                  serverId: a.serverId ?? serverId,
+                }))}
               >
                 {a.name}
               </button>

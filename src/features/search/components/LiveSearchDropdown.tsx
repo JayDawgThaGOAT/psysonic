@@ -15,6 +15,8 @@ import {
   LiveSearchArtistThumb,
 } from '@/features/search/components/liveSearchResultThumbs';
 import type { useShareSearch } from '@/features/search/hooks/useShareSearch';
+import { useAuthStore } from '@/store/authStore';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 export type LiveSearchSource = 'local' | 'network';
 
@@ -43,6 +45,7 @@ export default function LiveSearchDropdown({
   const { t } = useTranslation();
   const query = useLiveSearchScopeStore(s => s.query);
   const setQuery = useLiveSearchScopeStore(s => s.setQuery);
+  const activeServerId = useAuthStore(s => s.activeServerId);
   const navigate = useNavigate();
   const navigateToAlbum = useNavigateToAlbum();
   const enqueue = usePlayerStore(state => state.enqueue);
@@ -138,7 +141,11 @@ export default function LiveSearchDropdown({
                 const isCtxActive = ctxIsOpen && ctxType === 'artist' && ctxItemId === a.id;
                 return (
                   <button key={a.id} className={`search-result-item${activeIndex === i ? ' active' : ''}${isCtxActive ? ' context-active' : ''}`}
-                    onClick={() => { navigate(`/artist/${a.id}`); setOpen(false); setQuery(''); }}
+                    onClick={() => {
+                      navigate(buildArtistDetailPath(a.id, { serverId: a.serverId ?? activeServerId }));
+                      setOpen(false);
+                      setQuery('');
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       openContextMenu(e.clientX, e.clientY, a, 'artist');

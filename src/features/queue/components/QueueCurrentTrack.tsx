@@ -19,6 +19,7 @@ import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
 import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   currentTrack: Track;
@@ -233,7 +234,9 @@ export function QueueCurrentTrack({
             <OpenArtistRefInline
               refs={artistRefs}
               fallbackName={currentTrack.artist}
-              onGoArtist={id => navigate(`/artist/${id}`)}
+              onGoArtist={id => navigate(buildArtistDetailPath(id, {
+                serverId: currentTrack.serverId,
+              }))}
               as="none"
               linkTag="span"
               linkClassName="is-link"

@@ -16,6 +16,7 @@ import { formatLastSeen } from '@/lib/format/userMgmtHelpers';
 import i18n from '@/lib/i18n';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 type ContextMenuFn = (
   x: number,
@@ -147,7 +148,11 @@ export const TrackRow = React.memo(function TrackRow({
                 <span
                   className={`track-artist${a.id ? ' track-artist-link' : ''}`}
                   style={{ cursor: a.id ? 'pointer' : 'default' }}
-                  onClick={e => { if (a.id) { e.stopPropagation(); navigate(`/artist/${a.id}`); } }}
+                  onClick={e => {
+                    if (!a.id) return;
+                    e.stopPropagation();
+                    navigate(buildArtistDetailPath(a.id, { serverId: song.serverId }));
+                  }}
                 >
                   {a.name ?? song.artist}
                 </span>

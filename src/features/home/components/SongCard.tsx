@@ -153,9 +153,7 @@ function SongCard({
           <OpenArtistRefInline
             refs={artistRefs}
             fallbackName={song.artist}
-            onGoArtist={id => navigateToArtist(id, {
-              search: appendServerQuery(undefined, song.serverId),
-            })}
+            onGoArtist={id => navigateToArtist(id, { serverId: song.serverId })}
             as="none"
             linkTag="span"
             linkClassName="track-artist-link"

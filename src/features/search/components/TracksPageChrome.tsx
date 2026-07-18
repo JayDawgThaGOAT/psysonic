@@ -149,7 +149,7 @@ export default function TracksPageChrome({
               <OpenArtistRefInline
                 refs={heroArtistRefs}
                 fallbackName={hero.artist}
-                onGoArtist={id => navigateToArtist(id)}
+                onGoArtist={id => navigateToArtist(id, { serverId: hero.serverId ?? activeServerId })}
                 as="none"
                 linkTag="span"
                 linkClassName="track-artist-link"
