@@ -9,6 +9,7 @@ import GenreFilterBar from '@/ui/GenreFilterBar';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 import { useOfflineStore } from '@/features/offline';
 import { useDownloadModalStore } from '@/features/offline';
 import { downloadZip } from '@/lib/api/downloadZip';
@@ -53,6 +54,7 @@ export default function NewReleases() {
   const { t } = useTranslation();
   const perfFlags = usePerfProbeFlags();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const unavailableServerIds = useUnavailableServerIds();
   const auth = useAuthStore();
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
@@ -63,13 +65,14 @@ export default function NewReleases() {
       libraryBrowseServerIds: auth.libraryBrowseServerIds,
       musicFoldersByServer: auth.musicFoldersByServer,
       libraryBrowseSelectionByServer: auth.libraryBrowseSelectionByServer,
-    })
+    }, unavailableServerIds)
   ), [
     auth.activeServerId,
     auth.libraryBrowseSelectionByServer,
     auth.libraryBrowseServerIds,
     auth.musicFoldersByServer,
     auth.servers,
+    unavailableServerIds,
   ]);
   const downloadAlbum = useOfflineStore(s => s.downloadAlbum);
   const requestDownloadFolder = useDownloadModalStore(s => s.requestFolder);

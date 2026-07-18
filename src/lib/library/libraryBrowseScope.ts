@@ -1,3 +1,5 @@
+import { getUnavailableServerIds } from '@/lib/network/serverReachability';
+
 export interface LibraryBrowseScopePair {
   serverId: string;
   libraryId: string;
@@ -55,13 +57,26 @@ export function deriveLibraryBrowseServerIdsWithFallback(
   return fallback ? [fallback.id] : [];
 }
 
+export function deriveEffectiveLibraryBrowseServerIds(
+  state: LibraryBrowseServerOrderSource,
+  unavailableServerIds: ReadonlySet<string> = getUnavailableServerIds(),
+): string[] {
+  return deriveLibraryBrowseServerIdsWithFallback(state)
+    .filter(serverId => !unavailableServerIds.has(serverId));
+}
+
 /** Ordered concrete source pairs used only by Library pages and search. */
-export function deriveLibraryBrowseScope(state: LibraryBrowseScopeSource): LibraryBrowseScope {
+export function deriveLibraryBrowseScope(
+  state: LibraryBrowseScopeSource,
+  unavailableServerIds: ReadonlySet<string> = getUnavailableServerIds(),
+): LibraryBrowseScope {
   const orderedServerIds = deriveOrderedLibraryBrowseServerIds(state);
+  const effectiveServerIds = orderedServerIds
+    .filter(serverId => !unavailableServerIds.has(serverId));
   const pairs: LibraryBrowseScopePair[] = [];
   const fingerprintEntries: Array<[string, string[]]> = [];
 
-  for (const serverId of orderedServerIds) {
+  for (const serverId of effectiveServerIds) {
     const folders = state.musicFoldersByServer[serverId] ?? [];
     const selection = state.libraryBrowseSelectionByServer[serverId] ?? [];
     const libraryIds = selection.length > 0
@@ -75,12 +90,14 @@ export function deriveLibraryBrowseScope(state: LibraryBrowseScopeSource): Libra
   }
 
   return {
-    anchorServerId: orderedServerIds[0]
-      ?? deriveLibraryBrowseServerIdsWithFallback(state)[0]
+    anchorServerId: effectiveServerIds[0]
+      ?? (orderedServerIds.length === 0
+        ? deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds)[0]
+        : undefined)
       ?? null,
     pairs,
     fingerprint: fingerprintEntries.length > 0 ? JSON.stringify(fingerprintEntries) : '',
-    multiServer: orderedServerIds.length > 1,
+    multiServer: effectiveServerIds.length > 1,
   };
 }
 

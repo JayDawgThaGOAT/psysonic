@@ -43,6 +43,7 @@ import { useNowPlayingTrayTitle } from '@/app/hooks/useNowPlayingTrayTitle';
 import { usePrefetchReleaseNotes } from '@/app/hooks/usePrefetchReleaseNotes';
 import { useTrayMenuI18n } from '@/app/hooks/useTrayMenuI18n';
 import { useServerCapabilitiesProbe } from '@/app/hooks/useServerCapabilitiesProbe';
+import { useLibraryServerReachability } from '@/app/hooks/useLibraryServerReachability';
 import { useMusicFoldersDiscovery } from '@/app/hooks/useMusicFoldersDiscovery';
 import { useQueueResizer } from '@/features/queue';
 import { useGlobalDndAndSelectionBlockers } from '@/lib/hooks/useGlobalDndAndSelectionBlockers';
@@ -96,6 +97,7 @@ export function AppShell() {
   usePlaybackRateOrbitSync();
   useTrayMenuI18n();
   useServerCapabilitiesProbe();
+  useLibraryServerReachability();
   useMusicFoldersDiscovery();
   useAccumulatedUsage();
   const isFullscreenOpen = usePlayerStore(s => s.isFullscreenOpen);

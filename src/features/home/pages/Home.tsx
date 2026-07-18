@@ -34,7 +34,8 @@ import { useOfflineBrowseContext } from '@/features/offline';
 import { useOfflineBrowseReloadToken } from '@/features/offline';
 import { useDevOfflineBrowseStore } from '@/features/offline';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
-import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 import {
   deriveHomeFeedScope,
   loadHomeChronologicalFeed,
@@ -113,17 +114,35 @@ export default function Home() {
   const musicFoldersByServer = useAuthStore(s => s.musicFoldersByServer);
   const libraryBrowseSelectionByServer = useAuthStore(s => s.libraryBrowseSelectionByServer);
   const scopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const unavailableServerIds = useUnavailableServerIds();
   const { serverIds, scopeKey } = useMemo(() => deriveHomeFeedScope({
     servers,
     activeServerId,
     libraryBrowseServerIds,
     libraryBrowseSelectionByServer,
-  }), [activeServerId, libraryBrowseSelectionByServer, libraryBrowseServerIds, servers]);
+  }, unavailableServerIds), [
+    activeServerId,
+    libraryBrowseSelectionByServer,
+    libraryBrowseServerIds,
+    servers,
+    unavailableServerIds,
+  ]);
   const { anchorServerId, pairs: scopes } = useMemo(
-    () => getLibraryBrowseScope(),
-    // The injected browse-scope source reads these store values outside React.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeServerId, libraryBrowseSelectionByServer, libraryBrowseServerIds, musicFoldersByServer, servers],
+    () => deriveLibraryBrowseScope({
+      servers,
+      activeServerId,
+      libraryBrowseServerIds,
+      musicFoldersByServer,
+      libraryBrowseSelectionByServer,
+    }, unavailableServerIds),
+    [
+      activeServerId,
+      libraryBrowseSelectionByServer,
+      libraryBrowseServerIds,
+      musicFoldersByServer,
+      servers,
+      unavailableServerIds,
+    ],
   );
   const connStatus = useConnectionStatus().status;
   const devForceOffline = useDevOfflineBrowseStore(s => s.forceOffline);

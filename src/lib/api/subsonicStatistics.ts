@@ -12,6 +12,7 @@ import type {
   StatisticsOverviewData,
   SubsonicAlbum,
 } from '@/lib/api/subsonicTypes';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
 
 /** Cache TTL for statistics page aggregates — same 7-minute window as
  *  the rating prefetch cache in subsonicRatings.ts. */
@@ -26,9 +27,7 @@ export function statisticsPageCacheKey(prefix: string): string | null {
 
 export function statisticsIndexScopes(): LibraryStatisticsScope[] {
   const state = useAuthStore.getState();
-  const selectedServerIds = state.libraryBrowseServerIds.length > 0
-    ? state.libraryBrowseServerIds
-    : (state.activeServerId ? [state.activeServerId] : []);
+  const selectedServerIds = deriveEffectiveLibraryBrowseServerIds(state);
   return selectedServerIds.map(serverId => ({
     serverId,
     libraryIds: state.libraryBrowseSelectionByServer[serverId] ?? [],

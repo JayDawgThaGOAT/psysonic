@@ -39,6 +39,7 @@ import {
   luckyMixLibraryCandidates,
   pickLuckyMixTarget,
 } from '@/features/randomMix/utils/luckyMixLibraryPick';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
 import { switchActiveServer } from '@/utils/server/switchActiveServer';
 
 /**
@@ -71,10 +72,11 @@ export async function buildAndPlayLuckyMix(): Promise<void> {
   const albumDebug = (albums: SubsonicAlbum[]) =>
     albums.map(a => ({ id: a.id, name: a.name, artist: a.artist, playCount: a.playCount ?? 0 }));
   const activeServerId = auth.activeServerId;
+  const effectiveLibraryServerIds = deriveEffectiveLibraryBrowseServerIds(auth);
   const available = isLuckyMixAvailable({
     activeServerId,
     audiomuseByServer: auth.audiomuseNavidromeByServer,
-    libraryBrowseServerIds: auth.libraryBrowseServerIds,
+    libraryBrowseServerIds: effectiveLibraryServerIds,
     showLuckyMixMenu:  auth.showLuckyMixMenu,
   });
   const mixRatingCfg = getMixMinRatingsConfigFromAuth();
@@ -123,7 +125,7 @@ export async function buildAndPlayLuckyMix(): Promise<void> {
   try {
     const candidates = luckyMixLibraryCandidates({
       servers: auth.servers,
-      libraryBrowseServerIds: auth.libraryBrowseServerIds,
+      libraryBrowseServerIds: effectiveLibraryServerIds,
       musicFoldersByServer: auth.musicFoldersByServer,
       libraryBrowseSelectionByServer: auth.libraryBrowseSelectionByServer,
       audiomuseByServer: auth.audiomuseNavidromeByServer,

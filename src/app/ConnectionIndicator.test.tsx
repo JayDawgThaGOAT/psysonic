@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import { resetAuthStore } from '@/test/helpers/storeReset';
 import { useAuthStore } from '@/store/authStore';
 import { DragDropProvider } from '@/lib/dnd/DragDropContext';
 import ConnectionIndicator from './ConnectionIndicator';
+import { setServerReachability } from '@/lib/network/serverReachability';
 
 const switchActiveServerMock = vi.fn();
 
@@ -82,5 +83,22 @@ describe('ConnectionIndicator Library server selection', () => {
 
     expect(switchActiveServerMock).toHaveBeenCalledWith(expect.objectContaining({ id: b }));
     expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([b]);
+  });
+
+  it('crosses out the selected count while an unavailable server is outside the effective scope', () => {
+    const { a, b } = setupServers();
+    useAuthStore.setState({ libraryBrowseServerIds: [a, b] });
+    setServerReachability(b, 'unavailable');
+
+    renderIndicator();
+
+    expect(screen.getByText('2 servers').tagName).toBe('DEL');
+    expect(screen.getByText('1 servers')).toBeInTheDocument();
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b]);
+
+    act(() => setServerReachability(b, 'available'));
+
+    expect(screen.getByText('2 servers').tagName).toBe('SPAN');
+    expect(screen.queryByText('1 servers')).not.toBeInTheDocument();
   });
 });

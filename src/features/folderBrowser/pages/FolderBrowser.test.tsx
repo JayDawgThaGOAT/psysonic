@@ -3,6 +3,10 @@ import { act, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import { useAuthStore } from '@/store/authStore';
+import {
+  resetServerReachabilitySnapshot,
+  setServerReachability,
+} from '@/lib/network/serverReachability';
 
 const libraryScopeListArtistsMock = vi.fn();
 const libraryScopeArtistDetailMock = vi.fn();
@@ -51,6 +55,7 @@ function deferred<T>() {
 
 describe('FolderBrowser', () => {
   beforeEach(() => {
+    resetServerReachabilitySnapshot();
     libraryScopeListArtistsMock.mockReset();
     libraryScopeArtistDetailMock.mockReset();
     libraryScopeAlbumDetailMock.mockReset();
@@ -120,6 +125,16 @@ describe('FolderBrowser', () => {
       expect.objectContaining({ id: 'track-a', serverId: 'server-a', duration: 60 }),
       [expect.objectContaining({ id: 'track-a', serverId: 'server-a', duration: 60 })],
     );
+  });
+
+  it('hides folders from a confirmed unavailable selected server', async () => {
+    setServerReachability('server-b', 'unavailable');
+
+    renderWithProviders(<FolderBrowser />, { route: '/folders' });
+
+    expect(await screen.findByRole('button', { name: 'Alpha - Library A' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Beta - Library B' })).not.toBeInTheDocument();
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual(['server-a', 'server-b']);
   });
 
   it('keeps equal server-local artist ids distinct in one column', async () => {

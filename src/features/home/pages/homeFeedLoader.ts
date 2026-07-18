@@ -7,7 +7,7 @@ import {
 } from '@/lib/api/library/scopeReads';
 import { albumToAlbum } from '@/lib/library/advancedSearchLocal';
 import { runLocalRandomArtists, runLocalRandomSongs } from '@/lib/library/browseTextSearch';
-import { deriveLibraryBrowseServerIdsWithFallback } from '@/lib/library/libraryBrowseScope';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
 import { shuffleArray } from '@/lib/util/shuffleArray';
 import type { HomeFeedOffsets, HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
 
@@ -133,8 +133,11 @@ const mainstageFeeds = {
   recentlyPlayed: 'recentlyPlayed',
 } as const;
 
-export function deriveHomeFeedScope(source: HomeScopeSource): HomeFeedScope {
-  const serverIds = deriveLibraryBrowseServerIdsWithFallback(source);
+export function deriveHomeFeedScope(
+  source: HomeScopeSource,
+  unavailableServerIds?: ReadonlySet<string>,
+): HomeFeedScope {
+  const serverIds = deriveEffectiveLibraryBrowseServerIds(source, unavailableServerIds);
   const scopeKey = JSON.stringify(serverIds.map(serverId => [
     serverId,
     source.libraryBrowseSelectionByServer[serverId] ?? [],

@@ -7,11 +7,17 @@ import {
   statisticsPageCacheKey,
 } from '@/lib/api/subsonicStatistics';
 import { getArtistsAcrossLibraries } from '@/lib/api/subsonicArtists';
+import {
+  resetServerReachabilitySnapshot,
+  setServerReachability,
+} from '@/lib/network/serverReachability';
 
 const apiMock = vi.fn();
 const indexStatisticsMock = vi.fn();
 const indexMostPlayedMock = vi.fn();
 const getAlbumListForServerMock = vi.fn();
+
+beforeEach(resetServerReachabilitySnapshot);
 
 vi.mock('@/lib/api/subsonicLibrary', () => ({
   getAlbumListForServer: (...args: unknown[]) => getAlbumListForServerMock(...args),
@@ -85,6 +91,10 @@ describe('fetchStatisticsLibraryAggregates', () => {
     getAlbumListForServerMock.mockReset();
     useAuthStore.setState({
       activeServerId: 'stats-a',
+      servers: [
+        { id: 'stats-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'stats-b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
       libraryBrowseServerIds: ['stats-a', 'stats-b'],
       libraryBrowseSelectionByServer: { 'stats-a': ['rock'], 'stats-b': [] },
     });
@@ -117,6 +127,24 @@ describe('fetchStatisticsLibraryAggregates', () => {
     expect(indexStatisticsMock).toHaveBeenCalledWith([
       { serverId: 'stats-a', libraryIds: ['rock'] },
       { serverId: 'stats-b', libraryIds: [] },
+    ]);
+  });
+
+  it('omits confirmed unavailable servers from index aggregates', async () => {
+    setServerReachability('stats-b', 'unavailable');
+    indexStatisticsMock.mockResolvedValue({
+      artistCount: 1,
+      albumCount: 2,
+      songCount: 3,
+      playtimeSec: 4,
+      genres: [],
+      formats: [],
+    });
+
+    await fetchStatisticsLibraryAggregates();
+
+    expect(indexStatisticsMock).toHaveBeenCalledWith([
+      { serverId: 'stats-a', libraryIds: ['rock'] },
     ]);
   });
 });

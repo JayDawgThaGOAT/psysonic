@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useAuthStore } from '@/store/authStore';
 import { resetAuthStore } from '@/test/helpers/storeReset';
-import { deriveLibraryBrowseScope, getLibraryBrowseScope } from './libraryBrowseScope';
+import {
+  deriveEffectiveLibraryBrowseServerIds,
+  deriveLibraryBrowseScope,
+  getLibraryBrowseScope,
+} from './libraryBrowseScope';
 
 beforeEach(resetAuthStore);
 
@@ -45,6 +49,46 @@ describe('getLibraryBrowseScope', () => {
     expect(scope.anchorServerId).toBe('primary');
     expect(scope.multiServer).toBe(true);
     expect(scope.fingerprint).toBe(JSON.stringify([['primary', []], ['active', []]]));
+  });
+
+  it('excludes confirmed unavailable servers without changing persisted membership', () => {
+    const state = {
+      servers: [{ id: 'primary' }, { id: 'secondary' }],
+      activeServerId: 'primary',
+      libraryBrowseServerIds: ['primary', 'secondary'],
+      musicFoldersByServer: {
+        primary: [{ id: 'primary-music' }],
+        secondary: [{ id: 'secondary-music' }],
+      },
+      libraryBrowseSelectionByServer: {},
+    };
+
+    expect(deriveEffectiveLibraryBrowseServerIds(state, new Set(['primary'])))
+      .toEqual(['secondary']);
+    expect(deriveLibraryBrowseScope(state, new Set(['primary']))).toEqual({
+      anchorServerId: 'secondary',
+      pairs: [{ serverId: 'secondary', libraryId: 'secondary-music' }],
+      fingerprint: JSON.stringify([['secondary', ['secondary-music']]]),
+      multiServer: false,
+    });
+    expect(state.libraryBrowseServerIds).toEqual(['primary', 'secondary']);
+  });
+
+  it('returns an empty effective scope when every selected server is unavailable', () => {
+    const scope = deriveLibraryBrowseScope({
+      servers: [{ id: 'a' }, { id: 'b' }],
+      activeServerId: 'a',
+      libraryBrowseServerIds: ['a', 'b'],
+      musicFoldersByServer: { a: [{ id: 'a1' }], b: [{ id: 'b1' }] },
+      libraryBrowseSelectionByServer: {},
+    }, new Set(['a', 'b']));
+
+    expect(scope).toEqual({
+      anchorServerId: null,
+      pairs: [],
+      fingerprint: '',
+      multiServer: false,
+    });
   });
 
   it('falls back defensively when persisted membership has no valid server', () => {

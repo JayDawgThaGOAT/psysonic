@@ -31,8 +31,12 @@ import SidebarPerfProbeModal from '@/features/sidebar/components/SidebarPerfProb
 import SidebarNavBody from '@/features/sidebar/components/SidebarNavBody';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import { libraryScopeCacheKeyForServer } from '@/lib/api/subsonicClient';
-import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import {
+  deriveEffectiveLibraryBrowseServerIds,
+  deriveLibraryBrowseScope,
+} from '@/lib/library/libraryBrowseScope';
 import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 
 const EMPTY_LIBRARY_IDS: string[] = [];
 
@@ -106,8 +110,14 @@ export default function Sidebar({
   }, [playlistsRaw]);
   const [sidebarViewportEl, setSidebarViewportEl] = useState<HTMLDivElement | null>(null);
   const isSidebarScrolling = useSidebarScrollVisible(sidebarViewportEl);
+  const unavailableServerIds = useUnavailableServerIds();
+  const effectiveLibraryBrowseServerIds = useMemo(() => deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId: serverId || null,
+    libraryBrowseServerIds,
+  }, unavailableServerIds), [libraryBrowseServerIds, serverId, servers, unavailableServerIds]);
   const libraryGroups = useMemo(() => {
-    const selectedServers = new Set(libraryBrowseServerIds);
+    const selectedServers = new Set(effectiveLibraryBrowseServerIds);
     return servers
       .filter(server => selectedServers.has(server.id))
       .map(server => ({
@@ -117,7 +127,7 @@ export default function Sidebar({
           ?? (server.id === serverId ? musicFolders : []),
         selectedLibraryIds: libraryBrowseSelectionByServer[server.id] ?? EMPTY_LIBRARY_IDS,
       }));
-  }, [libraryBrowseServerIds, servers, musicFoldersByServer, serverId, musicFolders, libraryBrowseSelectionByServer]);
+  }, [effectiveLibraryBrowseServerIds, servers, musicFoldersByServer, serverId, musicFolders, libraryBrowseSelectionByServer]);
   const selectableLibraryCount = libraryGroups.reduce((count, group) => count + group.folders.length, 0);
   const showLibraryPicker = !isCollapsed
     && isLoggedIn
@@ -208,12 +218,13 @@ export default function Sidebar({
     libraryBrowseServerIds,
     musicFoldersByServer,
     libraryBrowseSelectionByServer,
-  }), [
+  }, unavailableServerIds), [
     libraryBrowseSelectionByServer,
     libraryBrowseServerIds,
     musicFoldersByServer,
     serverId,
     servers,
+    unavailableServerIds,
   ]);
   const newReleasesUnreadCount = useSidebarNewReleasesUnread({
     anchorServerId: newReleasesScope.anchorServerId,

@@ -65,6 +65,13 @@ describe('homeFeedLoader pure helpers', () => {
       servers: [{ id: 'a' }, { id: 'c' }], activeServerId: 'c',
       libraryBrowseServerIds: [], libraryBrowseSelectionByServer: { c: [] },
     }).serverIds).toEqual(['c']);
+    expect(deriveHomeFeedScope({
+      servers: [{ id: 'b' }, { id: 'a' }], activeServerId: 'b',
+      libraryBrowseServerIds: ['b', 'a'], libraryBrowseSelectionByServer: { a: [], b: [] },
+    }, new Set(['b']))).toEqual({
+      serverIds: ['a'],
+      scopeKey: JSON.stringify([['a', []]]),
+    });
   });
 
   it('advances only the requested cursor by raw row counts', () => {

@@ -54,6 +54,7 @@ export default function Statistics() {
   const enrichmentPrimaryId = useAuthStore(s => s.enrichmentPrimaryId);
   const enrichmentLabel = useEnrichmentPrimaryLabel() ?? '';
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const [recent, setRecent] = useState<SubsonicAlbum[]>([]);
   const [frequent, setFrequent] = useState<SubsonicAlbum[]>([]);
   const [highest, setHighest] = useState<SubsonicAlbum[]>([]);
@@ -113,7 +114,7 @@ export default function Statistics() {
         });
       })
       .catch(() => setOverviewLoading(false));
-  }, [musicLibraryFilterVersion, offlineBrowseActive, isPlayerStats]);
+  }, [musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseActive, isPlayerStats]);
 
   // Background: playtime, album/song counts, genre insights (cached per server+library like rating prefetch)
   useEffect(() => {
@@ -167,7 +168,7 @@ export default function Statistics() {
       }
     })();
     return () => { cancelled = true; };
-  }, [musicLibraryFilterVersion, offlineBrowseActive, isPlayerStats]);
+  }, [musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseActive, isPlayerStats]);
 
   useEffect(() => {
     if (offlineBrowseActive || isPlayerStats) return;

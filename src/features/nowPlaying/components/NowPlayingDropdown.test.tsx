@@ -5,6 +5,7 @@ import { resetAllStores } from '@/test/helpers/storeReset';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import NowPlayingDropdown from './NowPlayingDropdown';
+import { setServerReachability } from '@/lib/network/serverReachability';
 
 const { getNowPlayingForServersMock, coverScopes, navigateMock } = vi.hoisted(() => ({
   getNowPlayingForServersMock: vi.fn(),
@@ -102,6 +103,16 @@ describe('NowPlayingDropdown multi-server scope', () => {
 
     useAuthStore.setState({ libraryBrowseServerIds: ['b'] });
     await waitFor(() => expect(getNowPlayingForServersMock).toHaveBeenCalledWith(['b']));
+  });
+
+  it('omits a confirmed unavailable server from polling', async () => {
+    setServerReachability('b', 'unavailable');
+    getNowPlayingForServersMock.mockResolvedValue([]);
+
+    renderWithProviders(<NowPlayingDropdown />);
+
+    await waitFor(() => expect(getNowPlayingForServersMock).toHaveBeenCalledWith(['a']));
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual(['a', 'b']);
   });
 
   it('does not render a server heading for a single-server scope', async () => {

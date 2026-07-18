@@ -1,6 +1,7 @@
 import { pingWithCredentialsForProfile } from '@/lib/api/subsonic';
 import type { PingWithCredentialsResult } from '@/lib/api/subsonicTypes';
 import type { ServerProfile } from '@/store/authStoreTypes';
+import { setServerReachability } from '@/lib/network/serverReachability';
 import { serverProfileBaseUrl } from '@/lib/server/serverBaseUrl';
 
 export type ServerEndpointKind = 'local' | 'public';
@@ -303,7 +304,10 @@ export async function pickReachableBaseUrl(
 
   const promise = (async (): Promise<PickReachableResult> => {
     const ordered = serverAddressEndpoints(profile);
-    if (ordered.length === 0) return { ok: false, reason: 'unreachable' };
+    if (ordered.length === 0) {
+      setServerReachability(profile.id, 'unavailable');
+      return { ok: false, reason: 'unreachable' };
+    }
 
     const cached = connectCache.get(profile.id);
 
@@ -322,6 +326,7 @@ export async function pickReachableBaseUrl(
       if (ping.ok) {
         connectCache.set(profile.id, preferred.url);
         notifyConnectCacheChanged();
+        setServerReachability(profile.id, 'available');
         return { ok: true, baseUrl: preferred.url, endpoint: preferred, ping };
       }
     }
@@ -341,6 +346,7 @@ export async function pickReachableBaseUrl(
         const prev = connectCache.get(profile.id);
         connectCache.set(profile.id, endpoint.url);
         if (prev !== endpoint.url) notifyConnectCacheChanged();
+        setServerReachability(profile.id, 'available');
         return { ok: true, baseUrl: endpoint.url, endpoint, ping };
       }
     }
@@ -348,6 +354,7 @@ export async function pickReachableBaseUrl(
     // Every endpoint failed — drop any stale cache entry so the next probe
     // starts from the natural LAN-first order.
     if (connectCache.delete(profile.id)) notifyConnectCacheChanged();
+    setServerReachability(profile.id, 'unavailable');
     return { ok: false, reason: 'unreachable' };
   })();
 

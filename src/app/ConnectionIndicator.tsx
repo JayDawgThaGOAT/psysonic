@@ -14,6 +14,8 @@ import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 import { ReorderGripHandle } from '@/features/settings/components/ReorderGripHandle';
 import { useListReorderDnd } from '@/lib/hooks/useListReorderDnd';
 import { applyListReorderById } from '@/lib/util/listReorder';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 
 interface Props {
   status: ConnectionStatus;
@@ -30,6 +32,7 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
   const setLibraryBrowseServerExclusive = useAuthStore(s => s.setLibraryBrowseServerExclusive);
   const setLibraryBrowseServerSelected = useAuthStore(s => s.setLibraryBrowseServerSelected);
   const setServers = useAuthStore(s => s.setServers);
+  const unavailableServerIds = useUnavailableServerIds();
   const {
     ledVariant,
     localQueueSyncPaused,
@@ -50,6 +53,13 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
 
   const multi = servers.length > 1;
   const multiLibraryScope = libraryBrowseServerIds.length > 1;
+  const effectiveLibraryServerIds = deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId,
+    libraryBrowseServerIds,
+  }, unavailableServerIds);
+  const unavailableSelection = multiLibraryScope
+    && effectiveLibraryServerIds.length < libraryBrowseServerIds.length;
   const applyServerReorder = useCallback((draggedId: string, target: { id: string; before: boolean }) => {
     const next = applyListReorderById(serversRef.current, draggedId, target);
     if (next) setServers(next);
@@ -135,9 +145,17 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
   };
 
   const label = multiLibraryScope ? t('connection.multiServer') : (isLan ? 'LAN' : t('connection.extern'));
-  const displayedServerName = multiLibraryScope
-    ? t('sidebar.serverSelectionCount', { count: libraryBrowseServerIds.length })
-    : serverName;
+  const displayedServerName = multiLibraryScope ? (
+    unavailableSelection ? (
+      <>
+        <del className="connection-server-count--unavailable">
+          {t('sidebar.serverSelectionCount', { count: libraryBrowseServerIds.length })}
+        </del>
+        <span className="connection-server-count-arrow" aria-hidden>→</span>
+        <span>{t('sidebar.serverSelectionCount', { count: effectiveLibraryServerIds.length })}</span>
+      </>
+    ) : t('sidebar.serverSelectionCount', { count: libraryBrowseServerIds.length })
+  ) : serverName;
   const tooltip = pullInFlight
     ? t('connection.queuePulling')
     : ledVariant === 'queue-handoff'
@@ -180,7 +198,7 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
         >
           <span className="connection-type">{label}</span>
           <span className="connection-server" style={{ display: 'flex', alignItems: 'center', gap: 4, maxWidth: 120 }}>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayedServerName}</span>
+            <span className="connection-server-count">{displayedServerName}</span>
             {multi && (
               <ChevronDown size={12} className={menuOpen ? 'connection-indicator-chevron--open' : undefined} style={{ flexShrink: 0, opacity: 0.85 }} aria-hidden />
             )}

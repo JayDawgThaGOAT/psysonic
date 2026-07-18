@@ -2,11 +2,13 @@ import { TrackCoverArtImage } from '@/cover/TrackCoverArtImage';
 import { coverServerScopeForServerId } from '@/cover/serverScope';
 import { getNowPlayingForServers } from '@/lib/api/subsonicScrobble';
 import type { SubsonicNowPlaying } from '@/lib/api/subsonicTypes';
-import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { PlayCircle, Pause, User, Radio, RefreshCw } from 'lucide-react';
 import { nowPlayingPresence } from '@/features/nowPlaying/api/nowPlayingPresence';
 import { useAuthStore } from '@/store/authStore';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -22,7 +24,14 @@ export default function NowPlayingDropdown() {
   const isPlaying = usePlayerStore(s => s.isPlaying);
   const playbackServerKey = usePlayerStore(s => s.queueItems[s.queueIndex]?.serverId ?? s.queueServerId ?? '');
   const servers = useAuthStore(s => s.servers);
+  const activeServerId = useAuthStore(s => s.activeServerId);
   const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const unavailableServerIds = useUnavailableServerIds();
+  const effectiveLibraryServerIds = useMemo(() => deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId,
+    libraryBrowseServerIds,
+  }, unavailableServerIds), [activeServerId, libraryBrowseServerIds, servers, unavailableServerIds]);
   const [loading, setLoading] = useState(false);
   const [spinning, setSpinning] = useState(false);
   const triggerWrapRef = useRef<HTMLDivElement>(null);
@@ -74,7 +83,7 @@ export default function NowPlayingDropdown() {
     const requestSeq = ++requestSeqRef.current;
     if (!opts?.silent) setLoading(true);
     try {
-      const data = await getNowPlayingForServers(libraryBrowseServerIds);
+      const data = await getNowPlayingForServers(effectiveLibraryServerIds);
       if (requestSeq !== requestSeqRef.current) return;
       fetchedAtRef.current = Date.now();
       setNowPlaying(data);
@@ -83,7 +92,7 @@ export default function NowPlayingDropdown() {
     } finally {
       if (!opts?.silent && requestSeq === requestSeqRef.current) setLoading(false);
     }
-  }, [libraryBrowseServerIds]);
+  }, [effectiveLibraryServerIds]);
 
   const handleRefresh = () => {
     setSpinning(true);
@@ -154,7 +163,7 @@ export default function NowPlayingDropdown() {
   const playbackServerId = findServerByIdOrIndexKey(playbackServerKey)?.id ?? playbackServerKey;
   const ownUsernameByServer = new Map(servers.map(server => [server.id, server.username]));
   const serverLabelById = new Map(servers.map(server => [server.id, serverListDisplayLabel(server, servers)]));
-  const multiServerScope = libraryBrowseServerIds.length > 1;
+  const multiServerScope = effectiveLibraryServerIds.length > 1;
   const visible = nowPlaying.filter(entry => {
     if (entry.state === 'stopped') return false;
     const entryServerId = entry.serverId ?? '';
@@ -169,7 +178,7 @@ export default function NowPlayingDropdown() {
     if (rows) rows.push(entry);
     else visibleByServer.set(serverId, [entry]);
   }
-  const visibleGroups = libraryBrowseServerIds
+  const visibleGroups = effectiveLibraryServerIds
     .map(serverId => ({
       serverId,
       serverLabel: serverLabelById.get(serverId) ?? serverId,

@@ -18,6 +18,8 @@ import {
   libraryScopeArtistDetail,
   libraryScopeListArtists,
 } from '@/lib/api/library/scopeReads';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 
 export default function FolderBrowser() {
   const { t } = useTranslation();
@@ -38,14 +40,17 @@ export default function FolderBrowser() {
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const unavailableServerIds = useUnavailableServerIds();
   const musicFoldersByServer = useAuthStore(s => s.musicFoldersByServer);
   const libraryBrowseSelectionByServer = useAuthStore(s => s.libraryBrowseSelectionByServer);
   const visibleServers = useMemo(() => {
-    const serverIds = libraryBrowseServerIds.length > 0
-      ? new Set(libraryBrowseServerIds)
-      : new Set(activeServerId ? [activeServerId] : []);
+    const serverIds = new Set(deriveEffectiveLibraryBrowseServerIds({
+      servers,
+      activeServerId,
+      libraryBrowseServerIds,
+    }, unavailableServerIds));
     return servers.filter(server => serverIds.has(server.id));
-  }, [activeServerId, libraryBrowseServerIds, servers]);
+  }, [activeServerId, libraryBrowseServerIds, servers, unavailableServerIds]);
 
   const { wrapperRef, columnsViewportWidth } = useFolderBrowserScrolling({
     columns, keyboardPos, keyboardNavActive, setKeyboardNavActive,

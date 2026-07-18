@@ -1,4 +1,6 @@
 import { useAuthStore } from '@/store/authStore';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 
 /**
  * Whether "Lucky Mix" should be exposed as a navigable menu/card entry.
@@ -38,8 +40,20 @@ export function isLuckyMixAvailable(args: {
  */
 export function useLuckyMixAvailable(): boolean {
   const activeServerId    = useAuthStore(s => s.activeServerId);
+  const servers = useAuthStore(s => s.servers);
   const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const unavailableServerIds = useUnavailableServerIds();
   const audiomuseByServer = useAuthStore(s => s.audiomuseNavidromeByServer);
   const showLuckyMixMenu  = useAuthStore(s => s.showLuckyMixMenu);
-  return isLuckyMixAvailable({ activeServerId, libraryBrowseServerIds, audiomuseByServer, showLuckyMixMenu });
+  const effectiveLibraryServerIds = deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId,
+    libraryBrowseServerIds,
+  }, unavailableServerIds);
+  return isLuckyMixAvailable({
+    activeServerId,
+    libraryBrowseServerIds: effectiveLibraryServerIds,
+    audiomuseByServer,
+    showLuckyMixMenu,
+  });
 }

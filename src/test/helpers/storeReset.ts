@@ -26,6 +26,7 @@ import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
 import { usePreviewStore } from '@/features/playback/store/previewStore';
 import { useOrbitStore } from '@/features/orbit';
+import { resetServerReachabilitySnapshot } from '@/lib/network/serverReachability';
 
 const INITIAL_PLAYER_STATE = usePlayerStore.getState();
 const INITIAL_AUTH_STATE = useAuthStore.getState();
@@ -41,6 +42,7 @@ export function resetPlayerStore(): void {
 
 export function resetAuthStore(): void {
   useAuthStore.setState(INITIAL_AUTH_STATE, true);
+  resetServerReachabilitySnapshot();
 }
 
 export function resetPreviewStore(): void {
