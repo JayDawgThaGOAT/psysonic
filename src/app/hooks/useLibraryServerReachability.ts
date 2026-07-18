@@ -6,13 +6,15 @@ import {
 } from '@/lib/network/serverReachability';
 import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
+import { switchActiveServer } from '@/utils/server/switchActiveServer';
 
 const SERVER_REACHABILITY_POLL_MS = 120_000;
 
-/** Keep selected Library servers probed and invalidate browse reads when the effective scope changes. */
+/** Probe selected servers, align the active profile to scope priority, and invalidate effective reads. */
 export function useLibraryServerReachability(): void {
   const isLoggedIn = useAuthStore(state => state.isLoggedIn);
   const servers = useAuthStore(state => state.servers);
+  const activeServerId = useAuthStore(state => state.activeServerId);
   const libraryBrowseServerIds = useAuthStore(state => state.libraryBrowseServerIds);
   const unavailableServerIds = useUnavailableServerIds();
   const perfFlags = usePerfProbeFlags();
@@ -20,7 +22,40 @@ export function useLibraryServerReachability(): void {
     const selected = new Set(libraryBrowseServerIds);
     return servers.filter(server => selected.has(server.id));
   }, [libraryBrowseServerIds, servers]);
+  const effectiveLibraryServerIds = useMemo(() => deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId,
+    libraryBrowseServerIds,
+  }, unavailableServerIds), [activeServerId, libraryBrowseServerIds, servers, unavailableServerIds]);
+  const desiredActiveServerId = effectiveLibraryServerIds[0] ?? null;
+  const libraryBrowsePriorityKey = libraryBrowseServerIds.join('\u0000');
   const previousUnavailableServerIdsRef = useRef(unavailableServerIds);
+  const desiredActiveServerIdRef = useRef(desiredActiveServerId);
+  const activeSwitchInFlightRef = useRef(false);
+  // React Compiler refs rule: the in-flight loop must always observe the latest priority head.
+  // eslint-disable-next-line react-hooks/refs
+  desiredActiveServerIdRef.current = desiredActiveServerId;
+
+  useEffect(() => {
+    if (!isLoggedIn || !desiredActiveServerId || activeSwitchInFlightRef.current) return;
+    activeSwitchInFlightRef.current = true;
+
+    void (async () => {
+      try {
+        while (true) {
+          const targetId = desiredActiveServerIdRef.current;
+          const state = useAuthStore.getState();
+          if (!targetId || state.activeServerId === targetId) return;
+          const target = state.servers.find(server => server.id === targetId);
+          if (!target) return;
+          const switched = await switchActiveServer(target);
+          if (!switched && desiredActiveServerIdRef.current === targetId) return;
+        }
+      } finally {
+        activeSwitchInFlightRef.current = false;
+      }
+    })();
+  }, [desiredActiveServerId, isLoggedIn, libraryBrowsePriorityKey]);
 
   useEffect(() => {
     const previousUnavailableServerIds = previousUnavailableServerIdsRef.current;
