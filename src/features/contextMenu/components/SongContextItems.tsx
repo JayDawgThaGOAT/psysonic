@@ -8,18 +8,18 @@ import { getMusicNetworkRuntime } from '@/music-network';
 import { renderPresetIcon, useEnrichmentPrimary } from '@/music-network/ui';
 import type { Track } from '@/lib/media/trackTypes';
 import { useAuthStore } from '@/store/authStore';
-import { usePlaylistStore } from '@/features/playlist';
-import { usePlaylistMembershipStore } from '@/store/playlistMembershipStore';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { showToast } from '@/lib/dom/toast';
 import { suggestOrbitTrack, hostEnqueueToOrbit, evaluateOrbitSuggestGate, OrbitSuggestBlockedError } from '@/features/orbit';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 import StarRating from '@/ui/StarRating';
 import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/AddToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 
 export default function SongContextItems(props: ContextMenuItemsProps) {
   const {
-    type, item, playlistId, playlistSongIndex,
+    type, item, playlistId, playlistSongIndex, playlistSongRemove,
     playTrack, playNext, enqueue, closeContextMenu,
     networkLovedCache, setNetworkLovedForSong,
     openSongInfo, userRatingOverrides, setKeyboardRating, keyboardRating,
@@ -95,7 +95,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === song.id && (
-                    <AddToPlaylistSubmenu songIds={[song.id]} triggerId={song.id} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <AddToPlaylistSubmenu songIds={[song.id]} serverId={song.serverId} triggerId={song.id} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}
@@ -113,7 +113,10 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
               )}
               <div className="context-menu-divider" />
               {song.albumId && (
-                <div className="context-menu-item" onClick={() => handleAction(() => navigateToAlbum(song.albumId!))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => navigateToAlbum(
+                  song.albumId!,
+                  { search: appendServerQuery(undefined, song.serverId) },
+                ))}>
                   <Disc3 size={14} /> {t('contextMenu.openAlbum')}
                 </div>
               )}
@@ -135,10 +138,10 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
               )}
               {offlinePolicy.canFavorite && (
                 <div className="context-menu-item" onClick={() => handleAction(() => {
-                  queueSongStar(song.id, !isStarred(song.id, song.starred), song.serverId);
+                  queueSongStar(song.id, !isStarred(song.id, song.starred, song.serverId), song.serverId, { scopedOverride: true });
                 })}>
-                  <Heart size={14} fill={isStarred(song.id, song.starred) ? 'currentColor' : 'none'} />
-                  {isStarred(song.id, song.starred) ? t('contextMenu.unfavorite') : t('contextMenu.favorite')}
+                  <Heart size={14} fill={isStarred(song.id, song.starred, song.serverId) ? 'currentColor' : 'none'} />
+                  {isStarred(song.id, song.starred, song.serverId) ? t('contextMenu.unfavorite') : t('contextMenu.favorite')}
                 </div>
               )}
               {auth.enrichmentPrimaryId !== null && (() => {
@@ -167,32 +170,26 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                   <StarRating
                     value={keyboardRating?.kind === 'song' && keyboardRating.id === song.id
                       ? keyboardRating.value
-                      : userRatingOverrides[song.id] ?? song.userRating ?? 0}
-                    onChange={r => { setKeyboardRating({ kind: 'song', id: song.id, value: r }); applySongRating(song.id, r); }}
+                      : userRatingOverrides[ownedEntityKey(song)] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
+                    onChange={r => { setKeyboardRating({ kind: 'song', id: song.id, value: r }); applySongRating(song, r); }}
                     ariaLabel={t('albumDetail.ratingLabel')}
                   />
                 </div>
               )}
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('track', song.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('track', song.id, song.serverId))}>
                 <Share2 size={14} /> {t('contextMenu.shareLink')}
               </div>
               <div className="context-menu-item" onClick={() => handleAction(() => openSongInfo(song.id))}>
                 <Info size={14} /> {t('contextMenu.songInfo')}
               </div>
-              {offlinePolicy.canEditPlaylist && playlistId && playlistSongIndex !== undefined && (
+              {offlinePolicy.canEditPlaylist && playlistId && playlistSongIndex !== undefined && playlistSongRemove && (
                 <div className="context-menu-item" style={{ color: 'var(--danger)' }} onClick={() => handleAction(async () => {
-                  const { removePlaylistSongsAtIndices } = await import('@/lib/api/subsonicPlaylists');
                   const { showToast } = await import('@/lib/dom/toast');
-                  const { touchPlaylist } = usePlaylistStore.getState();
-                  const membership = usePlaylistMembershipStore.getState();
                   try {
-                    await removePlaylistSongsAtIndices(playlistId, [playlistSongIndex]);
-                    membership.removePlaylistSongIdsAtIndices(playlistId, [playlistSongIndex]);
-                    touchPlaylist(playlistId);
+                    await playlistSongRemove();
                     showToast(t('playlists.removeSuccess'), 3000, 'info');
                   } catch {
-                    membership.invalidatePlaylistSongIds(playlistId);
                     showToast(t('playlists.removeError'), 4000, 'error');
                   }
                 })}>
@@ -258,7 +255,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === song.id && (
-                    <AddToPlaylistSubmenu songIds={[song.id]} triggerId={song.id} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <AddToPlaylistSubmenu songIds={[song.id]} serverId={song.serverId} triggerId={song.id} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}
@@ -310,8 +307,8 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                   <StarRating
                     value={keyboardRating?.kind === 'song' && keyboardRating.id === song.id
                       ? keyboardRating.value
-                      : userRatingOverrides[song.id] ?? song.userRating ?? 0}
-                    onChange={r => { setKeyboardRating({ kind: 'song', id: song.id, value: r }); applySongRating(song.id, r); }}
+                      : userRatingOverrides[ownedEntityKey(song)] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
+                    onChange={r => { setKeyboardRating({ kind: 'song', id: song.id, value: r }); applySongRating(song, r); }}
                     ariaLabel={t('albumDetail.ratingLabel')}
                   />
                 </div>
@@ -327,7 +324,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                 <>
                   <div className="context-menu-divider" />
                   <div className="context-menu-item" style={{ color: 'var(--danger)' }} onClick={() => handleAction(() => {
-                    queueSongStar(song.id, false, song.serverId);
+                    queueSongStar(song.id, false, song.serverId, { scopedOverride: true });
                   })}>
                     <HeartCrack size={14} /> {t('contextMenu.unfavorite')}
                   </div>

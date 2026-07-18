@@ -16,15 +16,17 @@ interface Props {
   setGenreQuery: React.Dispatch<React.SetStateAction<string>>;
   editingSmartId: string | null;
   creatingSmartBusy: boolean;
+  genresReady: boolean;
   setCreatingSmart: React.Dispatch<React.SetStateAction<boolean>>;
   setEditingSmartId: React.Dispatch<React.SetStateAction<string | null>>;
   onSave: () => void;
+  onCancel: () => void;
 }
 
 export default function PlaylistsSmartEditor({
   smartFilters, setSmartFilters, availableGenres,
-  genreQuery, setGenreQuery, editingSmartId, creatingSmartBusy,
-  setCreatingSmart, setEditingSmartId, onSave,
+  genreQuery, setGenreQuery, editingSmartId, creatingSmartBusy, genresReady,
+  setCreatingSmart, setEditingSmartId, onSave, onCancel,
 }: Props) {
   const { t } = useTranslation();
 
@@ -182,6 +184,7 @@ export default function PlaylistsSmartEditor({
             type="button"
             className="btn btn-surface"
             onClick={() => {
+              onCancel();
               setCreatingSmart(false);
               setEditingSmartId(null);
               setSmartFilters(defaultSmartFilters);
@@ -190,7 +193,7 @@ export default function PlaylistsSmartEditor({
           >
             {t('playlists.cancel')}
           </button>
-          <button type="button" className="btn btn-primary" onClick={onSave} disabled={creatingSmartBusy}>
+          <button type="button" className="btn btn-primary" onClick={onSave} disabled={creatingSmartBusy || !genresReady}>
             <Plus size={15} /> {editingSmartId ? t('smartPlaylists.save') : t('smartPlaylists.create')}
           </button>
         </div>

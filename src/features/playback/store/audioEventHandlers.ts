@@ -513,7 +513,10 @@ export function handleAudioTrackSwitched(duration: number): void {
 
   const store = usePlayerStore.getState();
   if (store.currentTrack?.id) {
-    useAuthStore.getState().clearSkipStarManualCountForTrack(store.currentTrack.id);
+    useAuthStore.getState().clearSkipStarManualCountForTrack(
+      store.currentTrack.id,
+      store.currentTrack.serverId ?? store.queueServerId ?? undefined,
+    );
   }
 
   applyGaplessQueueAdvance({

@@ -1,6 +1,7 @@
 import { useLocalPlaybackStore } from '@/store/localPlaybackStore';
 import { useOfflineJobStore } from '@/features/offline';
 import { isOfflinePinComplete } from '@/features/offline';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export type ArtistOfflineStatus = 'none' | 'queued' | 'downloading' | 'cached';
 
@@ -19,21 +20,28 @@ export function useArtistOfflineState(
   albumIds: string[],
 ): UseArtistOfflineStateResult {
   useLocalPlaybackStore(s => s.entries);
+  const progressKey = ownedEntityKey({ id: artistId, serverId });
 
   const allPinned = albumIds.length > 0
     && albumIds.every(id => isOfflinePinComplete(id, serverId));
 
-  const bulkDone = useOfflineJobStore(s => (artistId ? s.bulkProgress[artistId]?.done : undefined));
-  const bulkTotal = useOfflineJobStore(s => (artistId ? s.bulkProgress[artistId]?.total : undefined));
+  const bulkDone = useOfflineJobStore(s => (artistId ? s.bulkProgress[progressKey]?.done : undefined));
+  const bulkTotal = useOfflineJobStore(s => (artistId ? s.bulkProgress[progressKey]?.total : undefined));
   const hasQueuedAlbums = useOfflineJobStore(s =>
     albumIds.length > 0
-    && albumIds.some(id => s.pinQueue.some(p => p.albumId === id && p.status === 'queued')),
+    && albumIds.some(id => s.pinQueue.some(
+      p => p.albumId === id && p.serverId === serverId && p.status === 'queued',
+    )),
   );
   const hasDownloadingAlbums = useOfflineJobStore(s =>
     albumIds.length > 0
     && albumIds.some(id =>
-      s.pinQueue.some(p => p.albumId === id && p.status === 'downloading')
-      || s.jobs.some(j => j.albumId === id && (j.status === 'queued' || j.status === 'downloading')),
+      s.pinQueue.some(p => p.albumId === id && p.serverId === serverId && p.status === 'downloading')
+      || s.jobs.some(j => (
+        j.albumId === id
+        && j.serverId === serverId
+        && (j.status === 'queued' || j.status === 'downloading')
+      )),
     ),
   );
 

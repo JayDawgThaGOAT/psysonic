@@ -4,15 +4,17 @@ import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/AddToPla
 
 interface AlbumProps {
   albumId: string;
+  serverId?: string;
   onDone: () => void;
   triggerId?: string;
 }
 
-export function AlbumToPlaylistSubmenu({ albumId, onDone, triggerId }: AlbumProps) {
+export function AlbumToPlaylistSubmenu({ albumId, serverId: ownerServerId, onDone, triggerId }: AlbumProps) {
   const [resolvedIds, setResolvedIds] = useState<string[] | null>(null);
+  const [resolvedServerId] = useState(() => resolveMediaServerId(ownerServerId) ?? undefined);
 
   useEffect(() => {
-    const serverId = resolveMediaServerId();
+    const serverId = resolvedServerId;
     if (!serverId) {
       // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -22,7 +24,7 @@ export function AlbumToPlaylistSubmenu({ albumId, onDone, triggerId }: AlbumProp
     resolveAlbum(serverId, albumId).then((data) => {
       setResolvedIds(data ? data.songs.map((s) => s.id) : []);
     }).catch(() => setResolvedIds([]));
-  }, [albumId]);
+  }, [albumId, resolvedServerId]);
 
   if (resolvedIds === null) {
     return (
@@ -32,21 +34,23 @@ export function AlbumToPlaylistSubmenu({ albumId, onDone, triggerId }: AlbumProp
     );
   }
   if (resolvedIds.length === 0) return null;
-  return <AddToPlaylistSubmenu songIds={resolvedIds} onDone={onDone} triggerId={triggerId} />;
+  return <AddToPlaylistSubmenu songIds={resolvedIds} serverId={resolvedServerId} onDone={onDone} triggerId={triggerId} />;
 }
 
 interface ArtistProps {
   artistId: string;
+  serverId?: string;
   onDone: () => void;
   triggerId?: string;
 }
 
-export function ArtistToPlaylistSubmenu({ artistId, onDone, triggerId }: ArtistProps) {
+export function ArtistToPlaylistSubmenu({ artistId, serverId: ownerServerId, onDone, triggerId }: ArtistProps) {
   const [resolvedIds, setResolvedIds] = useState<string[] | null>(null);
+  const [resolvedServerId] = useState(() => resolveMediaServerId(ownerServerId) ?? undefined);
 
   useEffect(() => {
     (async () => {
-      const serverId = resolveMediaServerId();
+      const serverId = resolvedServerId;
       if (!serverId) {
         setResolvedIds([]);
         return;
@@ -61,7 +65,7 @@ export function ArtistToPlaylistSubmenu({ artistId, onDone, triggerId }: ArtistP
       );
       setResolvedIds(albumSongs.flat().map(s => s.id));
     })().catch(() => setResolvedIds([]));
-  }, [artistId]);
+  }, [artistId, resolvedServerId]);
 
   if (resolvedIds === null) {
     return (
@@ -71,5 +75,5 @@ export function ArtistToPlaylistSubmenu({ artistId, onDone, triggerId }: ArtistP
     );
   }
   if (resolvedIds.length === 0) return null;
-  return <AddToPlaylistSubmenu songIds={resolvedIds} onDone={onDone} triggerId={triggerId} />;
+  return <AddToPlaylistSubmenu songIds={resolvedIds} serverId={resolvedServerId} onDone={onDone} triggerId={triggerId} />;
 }

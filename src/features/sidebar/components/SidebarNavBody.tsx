@@ -11,6 +11,7 @@ import SidebarLibraryPicker from '@/features/sidebar/components/SidebarLibraryPi
 import type { SidebarLibraryGroup } from '@/features/sidebar/components/SidebarLibraryPicker';
 import SidebarPlaylistsSection from '@/features/sidebar/components/SidebarPlaylistsSection';
 import SidebarActiveJobs from '@/features/sidebar/components/SidebarActiveJobs';
+import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
 
 interface NavDndState {
   section: 'library' | 'system';
@@ -31,8 +32,10 @@ interface Props {
   visibleSystemConfigs: SidebarItemConfig[];
   playlistsExpanded: boolean;
   setPlaylistsExpanded: (v: boolean) => void;
-  playlists: { id: string; name: string }[];
+  playlists: SubsonicPlaylist[];
   playlistsLoading: boolean;
+  multiServerPlaylistScope: boolean;
+  playlistFolderServerId: string | null;
   newReleasesUnreadCount: number;
   navDnd: NavDndState | null;
   navDndRowClass: (section: 'library' | 'system', id: string) => string;
@@ -60,6 +63,7 @@ export default function SidebarNavBody(props: Props) {
     visibleLibraryConfigs,
     visibleSystemConfigs,
     playlistsExpanded, setPlaylistsExpanded, playlists, playlistsLoading,
+    multiServerPlaylistScope, playlistFolderServerId,
     newReleasesUnreadCount, navDnd, navDndRowClass, handleNavRowPointerDown,
     isPlaying, hasNowPlayingTrack, nowPlayingAtTop, hasOfflineContent,
     activeJobsCount, activePinName, queuedPinCount, cancelAllDownloads,
@@ -141,7 +145,12 @@ export default function SidebarNavBody(props: Props) {
                 </button>
               </div>
               {playlistsExpanded && (
-                <SidebarPlaylistsSection playlists={playlists} playlistsLoading={playlistsLoading} />
+                <SidebarPlaylistsSection
+                  playlists={playlists}
+                  playlistsLoading={playlistsLoading}
+                  multiServerScope={multiServerPlaylistScope}
+                  folderServerId={playlistFolderServerId}
+                />
               )}
             </div>
           ) : isCollapsed ? (

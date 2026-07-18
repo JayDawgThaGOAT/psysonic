@@ -3,6 +3,8 @@ import { useAuthStore } from '@/store/authStore';
 import { shouldAttemptSubsonicForServer } from '@/lib/network/subsonicNetworkGuard';
 import { api, apiForServer } from '@/lib/api/subsonicClient';
 import type { SubsonicPlaylist, SubsonicSong } from '@/lib/api/subsonicTypes';
+import { findServerByIdOrIndexKey } from '@/lib/server/serverLookup';
+import { connectBaseUrlForServer } from '@/lib/server/serverEndpoint';
 
 /** Max song-id params per Subsonic GET call (auth + ~8 KiB URL ceiling). */
 export const PLAYLIST_SONG_ID_GET_BATCH = 150;
@@ -43,15 +45,23 @@ export function chunkRemovalIndicesForSubsonicGet(
   return batches;
 }
 
-function schedulePinnedPlaylistSync(playlistId: string): void {
+function schedulePinnedPlaylistSync(playlistId: string, serverId?: string): void {
   void import('@/features/offline')
-    .then(m => m.schedulePinnedPlaylistSync(playlistId))
+    .then(m => m.schedulePinnedPlaylistSync(playlistId, serverId))
     .catch(() => {});
 }
 
-async function clearPlaylistSongs(id: string, prevCount: number): Promise<void> {
+function callPlaylistApi<T>(
+  serverId: string | undefined,
+  endpoint: string,
+  params: Record<string, unknown>,
+): Promise<T> {
+  return serverId ? apiForServer<T>(serverId, endpoint, params) : api<T>(endpoint, params);
+}
+
+async function clearPlaylistSongs(id: string, prevCount: number, serverId?: string): Promise<void> {
   for (const indices of chunkIndicesForSubsonicGet(prevCount)) {
-    await api('updatePlaylist.view', { playlistId: id, songIndexToRemove: indices });
+    await callPlaylistApi(serverId, 'updatePlaylist.view', { playlistId: id, songIndexToRemove: indices });
   }
 }
 
@@ -63,6 +73,41 @@ export async function getPlaylists(includeOrbit = false): Promise<SubsonicPlayli
   // even into the Navidrome web client. Filter them out of every UI call;
   // orbit's own sweep passes `includeOrbit=true`.
   return includeOrbit ? all : all.filter(p => !p.name.startsWith('__psyorbit_'));
+}
+
+export async function getPlaylistsForServer(
+  serverId: string,
+  includeOrbit = false,
+): Promise<SubsonicPlaylist[]> {
+  if (!shouldAttemptSubsonicForServer(serverId)) throw new Error('Subsonic unavailable');
+  const data = await apiForServer<{ playlists: { playlist: SubsonicPlaylist[] } }>(
+    serverId,
+    'getPlaylists.view',
+    { _t: Date.now() },
+  );
+  const all = data.playlists?.playlist ?? [];
+  const visible = includeOrbit ? all : all.filter(p => !p.name.startsWith('__psyorbit_'));
+  return visible.map(playlist => ({ ...playlist, serverId }));
+}
+
+export interface PlaylistsForServersResult {
+  playlists: SubsonicPlaylist[];
+  failedServerIds: string[];
+}
+
+/** Aggregate playlists in server-priority order while retaining failed-owner metadata. */
+export async function getPlaylistsForServersSettled(serverIds: string[]): Promise<PlaylistsForServersResult> {
+  const uniqueServerIds = [...new Set(serverIds.filter(Boolean))];
+  const results = await Promise.allSettled(uniqueServerIds.map(serverId => getPlaylistsForServer(serverId)));
+  return {
+    playlists: results.flatMap(result => result.status === 'fulfilled' ? result.value : []),
+    failedServerIds: uniqueServerIds.filter((_serverId, index) => results[index]?.status === 'rejected'),
+  };
+}
+
+/** Aggregate playlists in server-priority order; one failed server does not hide the rest. */
+export async function getPlaylistsForServers(serverIds: string[]): Promise<SubsonicPlaylist[]> {
+  return (await getPlaylistsForServersSettled(serverIds)).playlists;
 }
 
 export async function getPlaylist(id: string): Promise<{ playlist: SubsonicPlaylist; songs: SubsonicSong[] }> {
@@ -84,41 +129,44 @@ export async function getPlaylistForServer(
     { id },
   );
   const { entry, ...playlist } = data.playlist;
-  return { playlist, songs: entry ?? [] };
+  return {
+    playlist: { ...playlist, serverId },
+    songs: (entry ?? []).map(song => ({ ...song, serverId })),
+  };
 }
 
-export async function createPlaylist(name: string, songIds?: string[]): Promise<SubsonicPlaylist> {
+export async function createPlaylist(name: string, songIds?: string[], serverId?: string): Promise<SubsonicPlaylist> {
   const params: Record<string, unknown> = { name };
   if (songIds && songIds.length > 0) {
     params.songId = songIds;
   }
-  const data = await api<{ playlist: SubsonicPlaylist }>('createPlaylist.view', params);
-  return data.playlist;
+  const data = await callPlaylistApi<{ playlist: SubsonicPlaylist }>(serverId, 'createPlaylist.view', params);
+  return serverId ? { ...data.playlist, serverId } : data.playlist;
 }
 
 /** Append tracks without re-sending the full playlist (avoids GET URL length limits). */
-export async function addSongsToPlaylist(id: string, songIdsToAdd: string[]): Promise<void> {
+export async function addSongsToPlaylist(id: string, songIdsToAdd: string[], serverId?: string): Promise<void> {
   if (songIdsToAdd.length === 0) return;
   for (const batch of chunkSongIdsForSubsonicGet(songIdsToAdd)) {
-    await api('updatePlaylist.view', { playlistId: id, songIdToAdd: batch });
+    await callPlaylistApi(serverId, 'updatePlaylist.view', { playlistId: id, songIdToAdd: batch });
   }
-  schedulePinnedPlaylistSync(id);
+  schedulePinnedPlaylistSync(id, serverId);
 }
 
 /** Remove tracks by 0-based playlist indices (batched for large playlists). */
-export async function removePlaylistSongsAtIndices(id: string, indices: number[]): Promise<void> {
+export async function removePlaylistSongsAtIndices(id: string, indices: number[], serverId?: string): Promise<void> {
   if (indices.length === 0) return;
   for (const batch of chunkRemovalIndicesForSubsonicGet(indices)) {
-    await api('updatePlaylist.view', { playlistId: id, songIndexToRemove: batch });
+    await callPlaylistApi(serverId, 'updatePlaylist.view', { playlistId: id, songIndexToRemove: batch });
   }
-  schedulePinnedPlaylistSync(id);
+  schedulePinnedPlaylistSync(id, serverId);
 }
 
-export async function updatePlaylist(id: string, songIds: string[], prevCount = 0): Promise<void> {
+export async function updatePlaylist(id: string, songIds: string[], prevCount = 0, serverId?: string): Promise<void> {
   if (songIds.length > 0) {
     if (songIds.length <= PLAYLIST_SONG_ID_GET_BATCH) {
       // createPlaylist with playlistId replaces the existing playlist's songs (Subsonic API 1.14+)
-      await api('createPlaylist.view', { playlistId: id, songId: songIds });
+      await callPlaylistApi(serverId, 'createPlaylist.view', { playlistId: id, songId: songIds });
     } else {
       // Lists over the GET batch cap can't replace atomically (URL length limit),
       // so we clear then re-append. A failure between the two steps leaves the
@@ -127,18 +175,18 @@ export async function updatePlaylist(id: string, songIds: string[], prevCount = 
       // for supporting playlists larger than one request can carry.
       let priorCount = prevCount;
       if (priorCount <= 0) {
-        const { songs } = await getPlaylist(id);
+        const { songs } = serverId ? await getPlaylistForServer(serverId, id) : await getPlaylist(id);
         priorCount = songs.length;
       }
       if (priorCount > 0) {
-        await clearPlaylistSongs(id, priorCount);
+        await clearPlaylistSongs(id, priorCount, serverId);
       }
-      await addSongsToPlaylist(id, songIds);
+      await addSongsToPlaylist(id, songIds, serverId);
     }
   } else if (prevCount > 0) {
-    await clearPlaylistSongs(id, prevCount);
+    await clearPlaylistSongs(id, prevCount, serverId);
   }
-  schedulePinnedPlaylistSync(id);
+  schedulePinnedPlaylistSync(id, serverId);
 }
 
 export async function updatePlaylistMeta(
@@ -146,21 +194,23 @@ export async function updatePlaylistMeta(
   name: string,
   comment: string,
   isPublic: boolean,
+  serverId?: string,
 ): Promise<void> {
-  await api('updatePlaylist.view', { playlistId: id, name, comment, public: isPublic });
+  await callPlaylistApi(serverId, 'updatePlaylist.view', { playlistId: id, name, comment, public: isPublic });
 }
 
-export async function uploadPlaylistCoverArt(id: string, file: File): Promise<void> {
+export async function uploadPlaylistCoverArt(id: string, file: File, serverId?: string): Promise<void> {
   // Navidrome-specific endpoint — handled in Rust to bypass browser CORS restrictions.
   const { getBaseUrl, getActiveServer } = useAuthStore.getState();
-  const server = getActiveServer();
-  const baseUrl = getBaseUrl();
+  const server = serverId ? findServerByIdOrIndexKey(serverId) : getActiveServer();
+  if (!server) throw new Error('Server unavailable');
+  const baseUrl = serverId ? connectBaseUrlForServer(server) : getBaseUrl();
   const buffer = await file.arrayBuffer();
   const fileBytes = Array.from(new Uint8Array(buffer));
   const res = await commands.uploadPlaylistCover(baseUrl, id, server?.username ?? '', server?.password ?? '', fileBytes, file.type || 'image/jpeg');
   if (res.status === 'error') throw new Error(res.error);
 }
 
-export async function deletePlaylist(id: string): Promise<void> {
-  await api('deletePlaylist.view', { id });
+export async function deletePlaylist(id: string, serverId?: string): Promise<void> {
+  await callPlaylistApi(serverId, 'deletePlaylist.view', { id });
 }

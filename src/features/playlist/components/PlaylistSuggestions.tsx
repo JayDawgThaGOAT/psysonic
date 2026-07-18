@@ -20,6 +20,8 @@ import { OptionalBrowseTrackRowCoverThumb } from '@/cover/TrackRowCoverThumb';
 import { COVER_ARTIST_TOP_TRACK_CSS_PX } from '@/cover/layoutSizes';
 import { useWarmTrackListAlbumCovers } from '@/cover/useWarmTrackListAlbumCovers';
 import { useTrackListCoverArtEnabled } from '@/cover/useTrackListCoverArtSettings';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 
 const PL_CENTERED = new Set(['favorite', 'rating', 'duration', 'playCount', 'bpm']);
 
@@ -113,11 +115,10 @@ export default function PlaylistSuggestions({
           </div>
 
           {filteredSuggestions.map((song, idx) => {
-            const isStarred = song.id in starredOverrides
-              ? !!starredOverrides[song.id]
-              : (starredSongs.has(song.id) || !!song.starred);
+            const isStarred = ownedOverrideValue(starredOverrides, song)
+              ?? (starredSongs.has(song.id) || !!song.starred);
             const ratingValue = ratings[song.id]
-              ?? userRatingOverrides[song.id]
+              ?? ownedOverrideValue(userRatingOverrides, song)
               ?? song.userRating
               ?? 0;
             return (
@@ -189,7 +190,12 @@ export default function PlaylistSuggestions({
                   case 'artist': return <PlaylistArtistCell key="artist" song={song} />;
                   case 'album': return (
                     <div key="album" className="track-artist-cell">
-                      <span className={`track-artist${song.albumId ? ' track-artist-link' : ''}`} style={{ cursor: song.albumId ? 'pointer' : 'default' }} onClick={e => { if (song.albumId) { e.stopPropagation(); navigate(`/album/${song.albumId}`); } }}>{song.album}</span>
+                      <span className={`track-artist${song.albumId ? ' track-artist-link' : ''}`} style={{ cursor: song.albumId ? 'pointer' : 'default' }} onClick={e => {
+                        if (!song.albumId) return;
+                        e.stopPropagation();
+                        const query = appendServerQuery(undefined, song.serverId);
+                        navigate(`/album/${song.albumId}${query ? `?${query}` : ''}`);
+                      }}>{song.album}</span>
                     </div>
                   );
                   case 'favorite': return (

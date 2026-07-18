@@ -6,6 +6,7 @@ import StarRating from '@/ui/StarRating';
 import { ArtistToPlaylistSubmenu } from '@/features/contextMenu/components/AlbumArtistToPlaylistSubmenu';
 import { MultiArtistToPlaylistSubmenu } from '@/features/contextMenu/components/MultiArtistToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export default function ArtistContextItems(props: ContextMenuItemsProps) {
   const {
@@ -39,7 +40,7 @@ export default function ArtistContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === `artist:${artist.id}` && (
-                    <ArtistToPlaylistSubmenu artistId={artist.id} triggerId={`artist:${artist.id}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <ArtistToPlaylistSubmenu artistId={artist.id} serverId={artist.serverId} triggerId={`artist:${artist.id}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}
@@ -51,8 +52,8 @@ export default function ArtistContextItems(props: ContextMenuItemsProps) {
                   <div className="context-menu-divider" />
                   {offlinePolicy.canFavorite && (
                     <div className="context-menu-item" onClick={() => handleAction(() => {
-                      const starred = isStarred(artist.id, artist.starred);
-                      setStarredOverride(artist.id, !starred);
+                      const starred = isStarred(artist.id, artist.starred, artist.serverId);
+                      setStarredOverride(ownedEntityKey(artist), !starred);
                       const meta = {
                         serverId: artist.serverId,
                         name: artist.name,
@@ -62,8 +63,8 @@ export default function ArtistContextItems(props: ContextMenuItemsProps) {
                         ? unstar(artist.id, 'artist', meta)
                         : star(artist.id, 'artist', meta);
                     })}>
-                      <Heart size={14} fill={isStarred(artist.id, artist.starred) ? 'currentColor' : 'none'} />
-                      {isStarred(artist.id, artist.starred) ? t('contextMenu.unfavoriteArtist') : t('contextMenu.favoriteArtist')}
+                      <Heart size={14} fill={isStarred(artist.id, artist.starred, artist.serverId) ? 'currentColor' : 'none'} />
+                      {isStarred(artist.id, artist.starred, artist.serverId) ? t('contextMenu.unfavoriteArtist') : t('contextMenu.favoriteArtist')}
                     </div>
                   )}
                   {offlinePolicy.canRate && (
@@ -94,6 +95,7 @@ export default function ArtistContextItems(props: ContextMenuItemsProps) {
         {type === 'multi-artist' && (() => {
           const artists = item as SubsonicArtist[];
           const artistIds = artists.map(a => a.id);
+          const artistServerIds = new Set(artists.map(a => a.serverId).filter(Boolean));
           const artistRatingDisabled = entityRatingSupport === 'track_only';
           const multiArtistRatingId = [...artistIds].sort().join('\x1e');
           const unifiedArtistRating = (() => {
@@ -108,7 +110,7 @@ export default function ArtistContextItems(props: ContextMenuItemsProps) {
                 {t('contextMenu.selectedArtists', { count: artists.length })}
               </div>
               <div className="context-menu-divider" />
-              {offlinePolicy.canAddToPlaylist && (
+              {offlinePolicy.canAddToPlaylist && artistServerIds.size <= 1 && (
                 <div
                   className={`context-menu-item context-menu-item--submenu ${playlistSubmenuOpen && playlistSongIds[0] === `multi-artist:${artistIds.join(',')}` ? 'active' : ''}`}
                   data-playlist-trigger-id={`multi-artist:${artistIds.join(',')}`}
@@ -118,7 +120,7 @@ export default function ArtistContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === `multi-artist:${artistIds.join(',')}` && (
-                    <MultiArtistToPlaylistSubmenu artistIds={artistIds} triggerId={`multi-artist:${artistIds.join(',')}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <MultiArtistToPlaylistSubmenu artists={artists} triggerId={`multi-artist:${artistIds.join(',')}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}

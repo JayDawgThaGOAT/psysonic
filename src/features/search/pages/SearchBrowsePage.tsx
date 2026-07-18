@@ -54,6 +54,7 @@ import {
   subscribeTrackBrowseTrace,
 } from '@/lib/library/trackBrowseDebug';
 import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
+import { filterStarredSearchResults } from '@/features/search/utils/filterStarredSearchResults';
 
 const MOOD_UI_ENABLED = OXIMEDIA_MOOD_SEARCH_ENABLED;
 
@@ -102,13 +103,7 @@ export default function SearchBrowsePage() {
   const filteredResults = useMemo<Results | null>(() => {
     if (!results) return null;
     if (!starredOnly) return results;
-    const isFav = (id: string, base: boolean | string | undefined) =>
-      id in starredOverrides ? !!starredOverrides[id] : !!base;
-    return {
-      artists: results.artists.filter(a => isFav(a.id, a.starred)),
-      albums: results.albums.filter(a => isFav(a.id, a.starred)),
-      songs: results.songs.filter(s => isFav(s.id, s.starred)),
-    };
+    return filterStarredSearchResults(results, starredOverrides);
   }, [results, starredOnly, starredOverrides]);
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(() => restoreStash?.hasSearched ?? false);

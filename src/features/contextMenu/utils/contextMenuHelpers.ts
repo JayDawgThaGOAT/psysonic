@@ -5,6 +5,17 @@ export function isSmartPlaylistName(name: string | undefined | null): boolean {
   return (name ?? '').toLowerCase().startsWith(SMART_PLAYLIST_PREFIX);
 }
 
+export function manualPlaylistTargetsForServer(
+  playlists: readonly SubsonicPlaylist[],
+  serverId: string | undefined,
+): SubsonicPlaylist[] {
+  if (!serverId) return [];
+  return playlists.filter(playlist => (
+    playlist.serverId === serverId
+    && !isSmartPlaylistName(playlist.name)
+  ));
+}
+
 export function sanitizeFilename(name: string): string {
   return name
     .replace(/[/\\?%*:|"<>]/g, '-')
@@ -22,4 +33,4 @@ export function shuffleArray<T>(arr: T[]): T[] {
   }
   return result;
 }
-
+import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';

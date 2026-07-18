@@ -124,7 +124,8 @@ export function queueSongStar(
   serverId?: string,
   options?: { scopedOverride?: boolean },
 ): void {
-  const overrideKey = options?.scopedOverride ? ownedEntityKey({ id, serverId }) : id;
+  const scopedOverride = options?.scopedOverride ?? Boolean(serverId);
+  const overrideKey = scopedOverride ? ownedEntityKey({ id, serverId }) : id;
   usePlayerStore.getState().setStarredOverride(overrideKey, starred);
   const t: Task = { kind: 'star', id, starred, serverId, overrideKey };
   const k = keyOf(t);
@@ -141,7 +142,8 @@ export function queueSongRating(
   serverId?: string,
   options?: { scopedOverride?: boolean },
 ): void {
-  const overrideKey = options?.scopedOverride ? ownedEntityKey({ id, serverId }) : id;
+  const scopedOverride = options?.scopedOverride ?? Boolean(serverId);
+  const overrideKey = scopedOverride ? ownedEntityKey({ id, serverId }) : id;
   usePlayerStore.getState().setUserRatingOverride(overrideKey, rating);
   const t: Task = { kind: 'rating', id, rating, serverId, overrideKey };
   const k = keyOf(t);

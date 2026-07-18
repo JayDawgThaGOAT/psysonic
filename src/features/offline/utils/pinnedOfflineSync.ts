@@ -258,7 +258,7 @@ export async function syncPinnedSourceIfNeeded(
   });
 
   const offline = useOfflineStore.getState();
-  if (offline.isAlbumDownloading(sourceId)) {
+  if (offline.isAlbumDownloading(sourceId, serverId)) {
     scheduleRetryWhileDownloading(sourceId, serverId, kind);
     return;
   }
@@ -274,7 +274,7 @@ export async function syncPinnedSourceIfNeeded(
     type: kind,
     artistProgressGroupId: options.artistProgressGroupId,
   });
-  if (!enqueued && offline.isAlbumDownloading(sourceId)) {
+  if (!enqueued && offline.isAlbumDownloading(sourceId, serverId)) {
     scheduleRetryWhileDownloading(sourceId, serverId, kind);
   }
 }

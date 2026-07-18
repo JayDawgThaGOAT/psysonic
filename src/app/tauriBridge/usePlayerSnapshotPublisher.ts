@@ -4,6 +4,7 @@ import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackP
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 /** Half-width of the CLI snapshot queue window (thin-state — like the mini
  *  bridge, the full 50k queue must not serialize over IPC on every change). */
@@ -27,10 +28,10 @@ export function usePlayerSnapshotPublisher() {
       const selected = sid ? (auth.musicLibraryFilterByServer[sid] ?? 'all') : 'all';
       const ct = s.currentTrack;
       const currentTrackUserRating =
-        ct != null ? (s.userRatingOverrides[ct.id] ?? ct.userRating ?? null) : null;
+        ct != null ? (ownedOverrideValue(s.userRatingOverrides, ct) ?? ct.userRating ?? null) : null;
       const currentTrackStarred =
         ct != null
-          ? (ct.id in s.starredOverrides ? s.starredOverrides[ct.id] : Boolean(ct.starred))
+          ? (ownedOverrideValue(s.starredOverrides, ct) ?? Boolean(ct.starred))
           : null;
       // Thin-state: resolve only a window around the playing track (resolver
       // cache → placeholder) instead of the whole 50k queue. `queue_length`

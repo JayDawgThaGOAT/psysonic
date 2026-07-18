@@ -9,6 +9,7 @@ import StarRating from '@/ui/StarRating';
 import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/AddToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export default function QueueItemContextItems(props: ContextMenuItemsProps) {
   const {
@@ -52,7 +53,7 @@ export default function QueueItemContextItems(props: ContextMenuItemsProps) {
                 <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                 <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                 {playlistSubmenuOpen && playlistSongIds[0] === song.id && (
-                  <AddToPlaylistSubmenu songIds={[song.id]} triggerId={song.id} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                  <AddToPlaylistSubmenu songIds={[song.id]} serverId={song.serverId} triggerId={song.id} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                 )}
               </div>
               <div className="context-menu-divider" />
@@ -77,10 +78,10 @@ export default function QueueItemContextItems(props: ContextMenuItemsProps) {
                 </div>
               )}
               <div className="context-menu-item" onClick={() => handleAction(() => {
-                queueSongStar(song.id, !isStarred(song.id, song.starred), song.serverId);
+                queueSongStar(song.id, !isStarred(song.id, song.starred, song.serverId), song.serverId, { scopedOverride: true });
               })}>
-                <Heart size={14} fill={isStarred(song.id, song.starred) ? 'currentColor' : 'none'} />
-                {isStarred(song.id, song.starred) ? t('contextMenu.unfavorite') : t('contextMenu.favorite')}
+                <Heart size={14} fill={isStarred(song.id, song.starred, song.serverId) ? 'currentColor' : 'none'} />
+                {isStarred(song.id, song.starred, song.serverId) ? t('contextMenu.unfavorite') : t('contextMenu.favorite')}
               </div>
               {auth.enrichmentPrimaryId !== null && (() => {
                 const loveKey = `${song.title}::${song.artist}`;
@@ -107,8 +108,8 @@ export default function QueueItemContextItems(props: ContextMenuItemsProps) {
                 <StarRating
                   value={keyboardRating?.kind === 'song' && keyboardRating.id === song.id
                     ? keyboardRating.value
-                    : userRatingOverrides[song.id] ?? song.userRating ?? 0}
-                  onChange={r => { setKeyboardRating({ kind: 'song', id: song.id, value: r }); applySongRating(song.id, r); }}
+                      : userRatingOverrides[ownedEntityKey(song)] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
+                  onChange={r => { setKeyboardRating({ kind: 'song', id: song.id, value: r }); applySongRating(song, r); }}
                   ariaLabel={t('albumDetail.ratingLabel')}
                 />
               </div>

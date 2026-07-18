@@ -31,10 +31,12 @@ vi.mock('@/features/orbit/utils/orbitBulkGuard', () => ({
 }));
 
 import QueuePanel from '@/features/queue/components/QueuePanel';
-import { fireEvent } from '@testing-library/react';
+import { act, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
+import { usePlaylistStore } from '@/features/playlist';
+import * as offlineApi from '@/features/offline';
 import { resetAllStores } from '@/test/helpers/storeReset';
 import { makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
 import { onInvoke, registerDefaultCoverInvokeHandlers } from '@/test/mocks/tauri';
@@ -47,6 +49,7 @@ beforeEach(() => {
     name: 'T', url: 'https://x.test', username: 'u', password: 'p',
   });
   useAuthStore.getState().setActiveServer(id);
+  usePlaylistStore.setState({ playlists: [], playlistsLoading: false, recentIds: [], lastModified: {} });
   registerDefaultCoverInvokeHandlers();
   onInvoke('audio_play', () => undefined);
   onInvoke('audio_pause', () => undefined);
@@ -201,6 +204,64 @@ describe('QueuePanel — toolbar', () => {
     const { getByLabelText } = renderWithProviders(<QueuePanel />);
     const shuffle = getByLabelText('Shuffle queue') as HTMLButtonElement;
     expect(shuffle.disabled).toBe(true);
+  });
+
+  it('closes a pending save modal when the queue is cleared', () => {
+    const track = makeTrack();
+    seedQueue([track], { index: 0, currentTrack: track });
+    const { getByLabelText, getByText, queryByRole } = renderWithProviders(<QueuePanel />);
+
+    fireEvent.click(getByLabelText('Playlist'));
+    fireEvent.click(getByText('Save Playlist'));
+    expect(queryByRole('dialog')).toBeInTheDocument();
+
+    fireEvent.click(getByLabelText('Clear queue'));
+    expect(queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the latest playlist load when an older request resolves last', async () => {
+    const serverId = useAuthStore.getState().activeServerId ?? undefined;
+    const playlistA = { id: 'a', serverId, name: 'Playlist A', songCount: 0, duration: 0, created: '', changed: '' };
+    const playlistB = { id: 'b', serverId, name: 'Playlist B', songCount: 0, duration: 0, created: '', changed: '' };
+    seedQueue([makeTrack({ id: 'existing', serverId })], { index: 0, currentTrack: makeTrack({ id: 'existing', serverId }) });
+    usePlaylistStore.setState({
+      playlists: [playlistA, playlistB],
+      fetchPlaylists: vi.fn(async () => undefined),
+    });
+    type ResolvedPlaylist = Awaited<ReturnType<typeof offlineApi.resolvePlaylist>>;
+    let resolveA!: (value: ResolvedPlaylist) => void;
+    let resolveB!: (value: ResolvedPlaylist) => void;
+    const resolveSpy = vi.spyOn(offlineApi, 'resolvePlaylist').mockImplementation((_serverId, playlistId) => {
+      if (playlistId === 'a') return new Promise(resolve => { resolveA = resolve; });
+      return new Promise(resolve => { resolveB = resolve; });
+    });
+
+    try {
+      const { container, getByLabelText, getByText, queryByText } = renderWithProviders(<QueuePanel />);
+      fireEvent.click(getByLabelText('Playlist'));
+      fireEvent.click(getByText('Load Playlist'));
+
+      await waitFor(() => expect(container.querySelectorAll('.modal-content .nav-btn')).toHaveLength(6));
+      const buttons = container.querySelectorAll<HTMLButtonElement>('.modal-content .nav-btn');
+      fireEvent.click(buttons[0]);
+      fireEvent.click(buttons[3]);
+
+      await act(async () => {
+        resolveB({ playlist: playlistB, songs: [] });
+        await Promise.resolve();
+      });
+      expect(getByText('Playlist B')).toBeInTheDocument();
+      expect(usePlayerStore.getState().queueItems).toEqual([]);
+
+      await act(async () => {
+        resolveA({ playlist: playlistA, songs: [] });
+        await Promise.resolve();
+      });
+      expect(getByText('Playlist B')).toBeInTheDocument();
+      expect(queryByText('Playlist A')).not.toBeInTheDocument();
+    } finally {
+      resolveSpy.mockRestore();
+    }
   });
 });
 

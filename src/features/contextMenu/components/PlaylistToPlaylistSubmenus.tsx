@@ -9,10 +9,12 @@ import {
 } from '@/features/playlist';
 import { usePlaylistMembershipStore } from '@/store/playlistMembershipStore';
 import { showToast } from '@/lib/dom/toast';
-import { isSmartPlaylistName } from '@/features/contextMenu/utils/contextMenuHelpers';
+import { manualPlaylistTargetsForServer } from '@/features/contextMenu/utils/contextMenuHelpers';
+import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 interface SingleProps {
-  playlist: { id: string; name: string };
+  playlist: SubsonicPlaylist;
   onDone: () => void;
   triggerId?: string;
 }
@@ -26,12 +28,12 @@ export function SinglePlaylistToPlaylistSubmenu({ playlist, onDone, triggerId }:
   const [flipLeft, setFlipLeft] = useState(false);
   const [flipUp, setFlipUp] = useState(false);
   const storePlaylists = usePlaylistStore((s) => s.playlists);
+  const ownerServerId = playlist.serverId;
 
   const allPlaylists = useMemo(() => {
-    return storePlaylists.filter(
-      (p) => p.id !== playlist.id && !isSmartPlaylistName(p.name),
-    );
-  }, [storePlaylists, playlist.id]);
+    return manualPlaylistTargetsForServer(storePlaylists, ownerServerId)
+      .filter(p => ownedEntityKey(p) !== ownedEntityKey(playlist));
+  }, [storePlaylists, ownerServerId, playlist]);
 
   useLayoutEffect(() => {
     if (subRef.current) {
@@ -46,12 +48,12 @@ export function SinglePlaylistToPlaylistSubmenu({ playlist, onDone, triggerId }:
   }, [creating]);
 
   const handleCreate = async () => {
-    if (!newName.trim()) return;
+    if (!newName.trim() || !ownerServerId) return;
     const createPlaylist = usePlaylistStore.getState().createPlaylist;
     try {
-      const newPl = await createPlaylist(newName.trim(), []);
+      const newPl = await createPlaylist(newName.trim(), [], ownerServerId);
       if (newPl?.id) {
-        await handleAddToNewPlaylist(newPl.id, newPl.name || newName.trim());
+        await handleAddToNewPlaylist(newPl.id, newPl.name || newName.trim(), newPl.serverId);
       }
       setCreating(false);
       setNewName('');
@@ -60,20 +62,23 @@ export function SinglePlaylistToPlaylistSubmenu({ playlist, onDone, triggerId }:
     }
   };
 
-  const handleAddToNewPlaylist = async (targetId: string, targetName: string) => {
+  const handleAddToNewPlaylist = async (targetId: string, targetName: string, targetServerId?: string) => {
     const touchPlaylist = usePlaylistStore.getState().touchPlaylist;
+    if (!ownerServerId || targetServerId !== ownerServerId) return;
 
     try {
-      const { getPlaylist } = await import('@/lib/api/subsonicPlaylists');
+      const { getPlaylistForServer } = await import('@/lib/api/subsonicPlaylists');
       const sourceIds = await resolvePlaylistSongIds(playlist.id, async () => {
-        const { songs } = await getPlaylist(playlist.id);
+        const { songs } = await getPlaylistForServer(ownerServerId, playlist.id);
         return songs.map(s => s.id);
-      });
+      }, ownerServerId);
       if (sourceIds.length > 0) {
-        const result = await addTracksToPlaylistWithDedup(targetId, targetName, sourceIds, t);
+        const result = await addTracksToPlaylistWithDedup(
+          targetId, targetName, sourceIds, t, targetServerId ?? ownerServerId,
+        );
         if (result.addedCount > 0) {
           showToast(t('playlists.createAndAddSuccess', { count: result.addedCount, playlist: targetName }), 3000, 'info');
-          touchPlaylist(targetId);
+          touchPlaylist(targetId, targetServerId);
         }
       }
       onDone();
@@ -83,21 +88,24 @@ export function SinglePlaylistToPlaylistSubmenu({ playlist, onDone, triggerId }:
     }
   };
 
-  const handleAdd = async (targetId: string, targetName: string) => {
+  const handleAdd = async (targetId: string, targetName: string, targetServerId?: string) => {
     const touchPlaylist = usePlaylistStore.getState().touchPlaylist;
+    if (!ownerServerId || targetServerId !== ownerServerId) return;
 
     try {
-      const { getPlaylist } = await import('@/lib/api/subsonicPlaylists');
+      const { getPlaylistForServer } = await import('@/lib/api/subsonicPlaylists');
       const sourceIds = await resolvePlaylistSongIds(playlist.id, async () => {
-        const { songs } = await getPlaylist(playlist.id);
+        const { songs } = await getPlaylistForServer(ownerServerId, playlist.id);
         return songs.map(s => s.id);
-      });
-      const result = await addTracksToPlaylistWithDedup(targetId, targetName, sourceIds, t);
+      }, ownerServerId);
+      const result = await addTracksToPlaylistWithDedup(
+        targetId, targetName, sourceIds, t, targetServerId ?? ownerServerId,
+      );
       if (result.outcome === 'skipped') {
         showToast(t('playlists.addToPlaylistNoNew', { playlist: targetName }), 3000, 'info');
       } else {
         showToast(t('playlists.addToPlaylistSuccess', { count: result.addedCount, playlist: targetName }), 3000, 'info');
-        touchPlaylist(targetId);
+        touchPlaylist(targetId, targetServerId);
       }
       onDone();
     } catch {
@@ -140,9 +148,9 @@ export function SinglePlaylistToPlaylistSubmenu({ playlist, onDone, triggerId }:
       )}
       {allPlaylists.map(pl => (
         <div
-          key={pl.id}
+          key={ownedEntityKey(pl)}
           className="context-menu-item"
-          onClick={() => handleAdd(pl.id, pl.name)}
+          onClick={() => handleAdd(pl.id, pl.name, pl.serverId)}
         >
           <ListMusic size={13} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pl.name}</span>
@@ -153,7 +161,7 @@ export function SinglePlaylistToPlaylistSubmenu({ playlist, onDone, triggerId }:
 }
 
 interface MultiProps {
-  playlists: { id: string; name: string }[];
+  playlists: SubsonicPlaylist[];
   onDone: () => void;
   triggerId?: string;
 }
@@ -167,13 +175,16 @@ export function MultiPlaylistToPlaylistSubmenu({ playlists, onDone, triggerId }:
   const [flipLeft, setFlipLeft] = useState(false);
   const [flipUp, setFlipUp] = useState(false);
   const storePlaylists = usePlaylistStore((s) => s.playlists);
+  const ownerServerId = useMemo(() => {
+    const first = playlists[0]?.serverId;
+    return first && playlists.every(playlist => playlist.serverId === first) ? first : undefined;
+  }, [playlists]);
 
   const allPlaylists = useMemo(() => {
-    const selectedIds = new Set(playlists.map(p => p.id));
-    return storePlaylists.filter(
-      (p) => !selectedIds.has(p.id) && !isSmartPlaylistName(p.name),
-    );
-  }, [storePlaylists, playlists]);
+    const selectedIds = new Set(playlists.map(ownedEntityKey));
+    return manualPlaylistTargetsForServer(storePlaylists, ownerServerId)
+      .filter(p => !selectedIds.has(ownedEntityKey(p)));
+  }, [storePlaylists, ownerServerId, playlists]);
 
   useLayoutEffect(() => {
     if (subRef.current) {
@@ -188,12 +199,12 @@ export function MultiPlaylistToPlaylistSubmenu({ playlists, onDone, triggerId }:
   }, [creating]);
 
   const handleCreate = async () => {
-    if (!newName.trim()) return;
+    if (!newName.trim() || !ownerServerId) return;
     const createPlaylist = usePlaylistStore.getState().createPlaylist;
     try {
-      const newPl = await createPlaylist(newName.trim(), []);
+      const newPl = await createPlaylist(newName.trim(), [], ownerServerId);
       if (newPl?.id) {
-        await handleMergeToNewPlaylist(newPl.id, newPl.name || newName.trim());
+        await handleMergeToNewPlaylist(newPl.id, newPl.name || newName.trim(), newPl.serverId);
       }
       setCreating(false);
       setNewName('');
@@ -202,45 +213,47 @@ export function MultiPlaylistToPlaylistSubmenu({ playlists, onDone, triggerId }:
     }
   };
 
-  const handleMergeToNewPlaylist = async (targetId: string, targetName: string) => {
+  const handleMergeToNewPlaylist = async (targetId: string, targetName: string, targetServerId?: string) => {
     const { addSongsToPlaylist } = await import('@/lib/api/subsonicPlaylists');
     const touchPlaylist = usePlaylistStore.getState().touchPlaylist;
     const membership = usePlaylistMembershipStore.getState();
+    if (!ownerServerId || targetServerId !== ownerServerId) return;
 
     try {
-      const idsToAdd = await collectMergeSongIds(targetId, playlists.map(p => p.id));
+      const idsToAdd = await collectMergeSongIds(targetId, playlists.map(p => p.id), ownerServerId);
       if (idsToAdd.length > 0) {
-        await addSongsToPlaylist(targetId, idsToAdd);
-        membership.appendPlaylistSongIds(targetId, idsToAdd);
-        touchPlaylist(targetId);
+        await addSongsToPlaylist(targetId, idsToAdd, ownerServerId);
+        membership.appendPlaylistSongIds(targetId, idsToAdd, ownerServerId);
+        touchPlaylist(targetId, ownerServerId);
         showToast(t('playlists.createAndAddSuccess', { count: idsToAdd.length, playlist: targetName }), 3000, 'info');
       }
       onDone();
     } catch {
-      membership.invalidatePlaylistSongIds(targetId);
+      membership.invalidatePlaylistSongIds(targetId, ownerServerId);
       showToast(t('playlists.mergeError'), 4000, 'error');
       onDone();
     }
   };
 
-  const handleMerge = async (targetId: string, targetName: string) => {
+  const handleMerge = async (targetId: string, targetName: string, targetServerId?: string) => {
     const { addSongsToPlaylist } = await import('@/lib/api/subsonicPlaylists');
     const touchPlaylist = usePlaylistStore.getState().touchPlaylist;
     const membership = usePlaylistMembershipStore.getState();
+    if (!ownerServerId || targetServerId !== ownerServerId) return;
 
     try {
-      const idsToAdd = await collectMergeSongIds(targetId, playlists.map(p => p.id));
+      const idsToAdd = await collectMergeSongIds(targetId, playlists.map(p => p.id), ownerServerId);
       if (idsToAdd.length > 0) {
-        await addSongsToPlaylist(targetId, idsToAdd);
-        membership.appendPlaylistSongIds(targetId, idsToAdd);
-        touchPlaylist(targetId);
+        await addSongsToPlaylist(targetId, idsToAdd, ownerServerId);
+        membership.appendPlaylistSongIds(targetId, idsToAdd, ownerServerId);
+        touchPlaylist(targetId, ownerServerId);
         showToast(t('playlists.mergeSuccess', { count: idsToAdd.length, playlist: targetName }), 3000, 'info');
       } else {
         showToast(t('playlists.mergeNoNewSongs'), 3000, 'info');
       }
       onDone();
     } catch {
-      membership.invalidatePlaylistSongIds(targetId);
+      membership.invalidatePlaylistSongIds(targetId, ownerServerId);
       showToast(t('playlists.mergeError'), 4000, 'error');
       onDone();
     }
@@ -280,9 +293,9 @@ export function MultiPlaylistToPlaylistSubmenu({ playlists, onDone, triggerId }:
       )}
       {allPlaylists.map(pl => (
         <div
-          key={pl.id}
+          key={ownedEntityKey(pl)}
           className="context-menu-item"
-          onClick={() => handleMerge(pl.id, pl.name)}
+          onClick={() => handleMerge(pl.id, pl.name, pl.serverId)}
         >
           <ListMusic size={13} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pl.name}</span>

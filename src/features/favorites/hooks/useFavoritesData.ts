@@ -20,6 +20,7 @@ import {
   emitFavoritesBrowseDebug,
   favoritesBrowseTimed,
 } from '@/lib/library/favoritesBrowseDebug';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export interface FavoritesDataResult {
   albums: SubsonicAlbum[];
@@ -142,7 +143,7 @@ export function useFavoritesData(): FavoritesDataResult {
   const topFavoriteArtists = useMemo<TopFavoriteArtist[]>(() => {
     const counts = new Map<string, TopFavoriteArtist>();
     for (const s of songs) {
-      if (starredOverrides[s.id] === false) continue;
+      if (ownedOverrideValue(starredOverrides, s) === false) continue;
       const key = topArtistKey(s);
       if (!key) continue;
       const existing = counts.get(key);

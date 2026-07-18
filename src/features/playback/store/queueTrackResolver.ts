@@ -8,6 +8,7 @@ import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 import { trackToSong } from '@/lib/library/advancedSearchLocal';
 import { libraryIsReady } from '@/lib/library/libraryReady';
 import { NAVIDROME_PUBLIC_SHARE_SERVER_ID } from '@/lib/share/navidromePublicSharePlayback';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 /**
  * Queue track resolver (thin-state phase 2). Resolves `QueueItemRef`s to full
@@ -129,14 +130,14 @@ export function mergeDirectShareUrls(track: Track, ref: QueueItemRef): Track {
 /** Merge session star/rating overrides (F4) onto a resolved track. */
 export function applyQueueOverrides(track: Track): Track {
   const s = usePlayerStore.getState();
-  const hasStar = track.id in s.starredOverrides;
-  const hasRating = track.id in s.userRatingOverrides;
-  if (!hasStar && !hasRating) return track;
+  const starred = ownedOverrideValue(s.starredOverrides, track);
+  const rating = ownedOverrideValue(s.userRatingOverrides, track);
+  if (starred === undefined && rating === undefined) return track;
   const next = { ...track };
-  if (hasStar) {
-    next.starred = s.starredOverrides[track.id] ? (track.starred ?? new Date().toISOString()) : undefined;
+  if (starred !== undefined) {
+    next.starred = starred ? (track.starred ?? new Date().toISOString()) : undefined;
   }
-  if (hasRating) next.userRating = s.userRatingOverrides[track.id];
+  if (rating !== undefined) next.userRating = rating;
   return next;
 }
 

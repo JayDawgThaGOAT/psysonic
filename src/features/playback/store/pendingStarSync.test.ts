@@ -96,6 +96,8 @@ describe('pendingStarSync', () => {
 
   it('passes serverId through to star/unstar for cross-server favorites', async () => {
     queueSongStar('t1', true, 'srv-b');
+    expect(usePlayerStore.getState().starredOverrides['srv-b:t1']).toBe(true);
+    expect(usePlayerStore.getState().starredOverrides.t1).toBeUndefined();
     await vi.runAllTimersAsync();
     expect(starMock).toHaveBeenCalledWith('t1', 'song', { serverId: 'srv-b' });
   });
@@ -136,9 +138,13 @@ describe('pendingStarSync', () => {
   });
 
   it('routes scoped ratings to the owner and clears only its composite override', async () => {
+    const ownedTrack = { ...track('shared'), serverId: 'srv-b' };
+    seedQueueResolver('srv-b', [ownedTrack]);
+    usePlayerStore.setState({ currentTrack: ownedTrack });
     queueSongRating('shared', 5, 'srv-b', { scopedOverride: true });
     expect(usePlayerStore.getState().userRatingOverrides['srv-b:shared']).toBe(5);
     expect(usePlayerStore.getState().userRatingOverrides.shared).toBeUndefined();
+    expect(usePlayerStore.getState().currentTrack?.userRating).toBe(5);
 
     await vi.runAllTimersAsync();
 

@@ -10,6 +10,7 @@ import { AlbumToPlaylistSubmenu } from '@/features/contextMenu/components/AlbumA
 import { MultiAlbumToPlaylistSubmenu } from '@/features/contextMenu/components/MultiAlbumToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export default function AlbumContextItems(props: ContextMenuItemsProps) {
   const {
@@ -63,8 +64,8 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
               </div>
               {offlinePolicy.canFavorite && (
                 <div className="context-menu-item" onClick={() => handleAction(() => {
-                  const starred = isStarred(album.id, album.starred);
-                  setStarredOverride(album.id, !starred);
+                  const starred = isStarred(album.id, album.starred, album.serverId);
+                  setStarredOverride(ownedEntityKey(album), !starred);
                   const meta = {
                     serverId: album.serverId,
                     name: album.name,
@@ -75,8 +76,8 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   };
                   return starred ? unstar(album.id, 'album', meta) : star(album.id, 'album', meta);
                 })}>
-                  <Heart size={14} fill={isStarred(album.id, album.starred) ? 'currentColor' : 'none'} />
-                  {isStarred(album.id, album.starred) ? t('contextMenu.unfavoriteAlbum') : t('contextMenu.favoriteAlbum')}
+                  <Heart size={14} fill={isStarred(album.id, album.starred, album.serverId) ? 'currentColor' : 'none'} />
+                  {isStarred(album.id, album.starred, album.serverId) ? t('contextMenu.unfavoriteAlbum') : t('contextMenu.favoriteAlbum')}
                 </div>
               )}
               {offlinePolicy.canRate && (
@@ -117,7 +118,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === `album:${album.id}` && (
-                    <AlbumToPlaylistSubmenu albumId={album.id} triggerId={`album:${album.id}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <AlbumToPlaylistSubmenu albumId={album.id} serverId={album.serverId} triggerId={`album:${album.id}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}
@@ -128,6 +129,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
         {type === 'multi-album' && (() => {
           const albums = item as SubsonicAlbum[];
           const albumIds = albums.map(a => a.id);
+          const albumServerIds = new Set(albums.map(a => a.serverId).filter(Boolean));
           const albumRatingDisabled = entityRatingSupport === 'track_only';
           const multiAlbumRatingId = [...albumIds].sort().join('\x1e');
           const unifiedAlbumRating = (() => {
@@ -155,7 +157,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
               })}>
                 <ListPlus size={14} /> {t('contextMenu.enqueueAlbums', { count: albums.length })}
               </div>
-              {offlinePolicy.canAddToPlaylist && (
+              {offlinePolicy.canAddToPlaylist && albumServerIds.size <= 1 && (
                 <div
                   className={`context-menu-item context-menu-item--submenu ${playlistSubmenuOpen && playlistSongIds[0] === `multi-album:${albumIds.join(',')}` ? 'active' : ''}`}
                   data-playlist-trigger-id={`multi-album:${albumIds.join(',')}`}
@@ -165,7 +167,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === `multi-album:${albumIds.join(',')}` && (
-                    <MultiAlbumToPlaylistSubmenu albumIds={albumIds} triggerId={`multi-album:${albumIds.join(',')}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <MultiAlbumToPlaylistSubmenu albums={albums} triggerId={`multi-album:${albumIds.join(',')}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}

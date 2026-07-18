@@ -6,6 +6,7 @@ import { getArtistInfo } from '@/lib/api/subsonicArtists';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { shuffleArray } from '@/lib/util/shuffleArray';
+import { ownedEntityKey, ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { downloadZip } from '@/lib/api/downloadZip';
@@ -100,9 +101,11 @@ export default function AlbumDetail() {
       const userRatingOverrides = { ...s.userRatingOverrides };
       delete starredOverrides[id];
       delete userRatingOverrides[id];
+      delete starredOverrides[ownedEntityKey({ id, serverId })];
+      delete userRatingOverrides[ownedEntityKey({ id, serverId })];
       return { starredOverrides, userRatingOverrides };
     });
-  }, []);
+  }, [serverId]);
 
   useAlbumServerMetadataReconcile({
     serverId,
@@ -116,15 +119,17 @@ export default function AlbumDetail() {
 
   const isStarred = useMemo(() => {
     if (!albumId) return false;
-    if (albumId in starredOverrides) return !!starredOverrides[albumId];
+    const override = ownedOverrideValue(starredOverrides, { id: albumId, serverId });
+    if (override !== undefined) return override;
     return !!album?.album.starred;
-  }, [albumId, album?.album.starred, starredOverrides]);
+  }, [albumId, album?.album.starred, serverId, starredOverrides]);
 
   const albumEntityRating = useMemo(() => {
     if (!albumId) return 0;
-    if (albumId in userRatingOverrides) return userRatingOverrides[albumId];
+    const override = ownedOverrideValue(userRatingOverrides, { id: albumId, serverId });
+    if (override !== undefined) return override;
     return album?.album.userRating ?? 0;
-  }, [albumId, album?.album.userRating, userRatingOverrides]);
+  }, [albumId, album?.album.userRating, serverId, userRatingOverrides]);
 
   // React Compiler rule: manual memoization is intentional and must be preserved.
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
@@ -152,7 +157,7 @@ export default function AlbumDetail() {
       if (cancelled) return;
       if (!isOfflinePinComplete(albumId, serverId, offlineSongIds)) return;
       useOfflineJobStore.setState(s => ({
-        jobs: s.jobs.filter(j => j.albumId !== albumId),
+        jobs: s.jobs.filter(j => j.albumId !== albumId || j.serverId !== serverId),
       }));
     });
     return () => { cancelled = true; };
@@ -218,7 +223,7 @@ const handleShuffleAll = () => {
   const handleRate = (songId: string, rating: number) => {
     setRatings(r => ({ ...r, [songId]: rating }));
     // F4: optimistic override + retried server sync via the central helper.
-    queueSongRating(songId, rating);
+    queueSongRating(songId, rating, serverId || undefined);
   };
 
   const handleAlbumEntityRating = async (rating: number) => {
@@ -340,7 +345,7 @@ const handleShuffleAll = () => {
   const handleCacheOffline = useCallback(async () => {
     if (!album) return;
     if (resolvedOfflineStatus === 'queued') {
-      dequeueOfflinePin(album.album.id);
+      dequeueOfflinePin(album.album.id, serverId);
       return;
     }
     let songs = effectiveSongs ?? album.songs;
@@ -454,6 +459,7 @@ const handleShuffleAll = () => {
           setShowPlPicker={setShowPlPicker}
           t={t}
           actionPolicy={albumActionPolicy}
+          serverId={serverId}
         />
       )}
 

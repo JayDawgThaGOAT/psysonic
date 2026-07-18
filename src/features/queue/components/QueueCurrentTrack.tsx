@@ -20,6 +20,7 @@ import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 interface Props {
   currentTrack: Track;
@@ -256,7 +257,7 @@ export function QueueCurrentTrack({
             const label = orbitAttributionLabel(currentTrack.id);
             return label ? <div className="queue-current-sub queue-current-attribution">{label}</div> : null;
           })()}
-          {renderStars(userRatingOverrides[currentTrack.id] ?? currentTrack.userRating)}
+          {renderStars(ownedOverrideValue(userRatingOverrides, currentTrack) ?? currentTrack.userRating)}
         </div>
       </div>
     </div>

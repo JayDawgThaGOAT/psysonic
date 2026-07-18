@@ -131,6 +131,8 @@ export interface RadioBrowserStation {
 
 export interface SubsonicPlaylist {
   id: string;
+  /** Owning server profile when playlists are aggregated across a Library scope. */
+  serverId?: string;
   name: string;
   songCount: number;
   duration: number;

@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { commands } from '@/generated/bindings';
 import { useAuthStore } from '@/store/authStore';
 import { ndLogin } from '@/lib/api/navidromeAdmin';
+import { getCachedConnectBaseUrl } from '@/lib/server/serverEndpoint';
+import { serverProfileBaseUrl } from '@/lib/server/serverBaseUrl';
 
 export type SmartRuleOperator =
   | 'is'
@@ -49,10 +51,14 @@ let authCache: {
   expiresAt: number;
 } | null = null;
 
-async function getNavidromeAuth(): Promise<{ serverUrl: string; token: string }> {
+async function getNavidromeAuth(serverId?: string): Promise<{ serverUrl: string; token: string }> {
   const s = useAuthStore.getState();
-  const server = s.getActiveServer();
-  const serverUrl = s.getBaseUrl();
+  const server = serverId
+    ? s.servers.find(profile => profile.id === serverId)
+    : s.getActiveServer();
+  const serverUrl = server
+    ? getCachedConnectBaseUrl(server.id) || serverProfileBaseUrl({ url: server.url })
+    : '';
   if (!serverUrl || !server?.username || !server?.password) {
     throw new Error('No active server credentials');
   }
@@ -81,8 +87,8 @@ export function buildSmartRules(conditions: SmartRuleCondition[], opts?: { limit
   return rules;
 }
 
-export async function ndListSmartPlaylists(): Promise<NdSmartPlaylist[]> {
-  const { serverUrl, token } = await getNavidromeAuth();
+export async function ndListSmartPlaylists(serverId?: string): Promise<NdSmartPlaylist[]> {
+  const { serverUrl, token } = await getNavidromeAuth(serverId);
   const raw = await invoke<unknown>('nd_list_playlists', { serverUrl, token, smart: true });
   const list = Array.isArray(raw)
     ? raw
@@ -92,8 +98,13 @@ export async function ndListSmartPlaylists(): Promise<NdSmartPlaylist[]> {
   return list.map((v) => parseNdSmartPlaylist(v));
 }
 
-export async function ndCreateSmartPlaylist(name: string, rules: Record<string, unknown>, sync = true): Promise<NdSmartPlaylist> {
-  const { serverUrl, token } = await getNavidromeAuth();
+export async function ndCreateSmartPlaylist(
+  name: string,
+  rules: Record<string, unknown>,
+  sync = true,
+  serverId?: string,
+): Promise<NdSmartPlaylist> {
+  const { serverUrl, token } = await getNavidromeAuth(serverId);
   const raw = await invoke<unknown>('nd_create_playlist', {
     serverUrl,
     token,
@@ -107,8 +118,9 @@ export async function ndUpdateSmartPlaylist(
   name: string,
   rules: Record<string, unknown>,
   sync = true,
+  serverId?: string,
 ): Promise<NdSmartPlaylist> {
-  const { serverUrl, token } = await getNavidromeAuth();
+  const { serverUrl, token } = await getNavidromeAuth(serverId);
   const raw = await invoke<unknown>('nd_update_playlist', {
     serverUrl,
     token,
@@ -118,14 +130,14 @@ export async function ndUpdateSmartPlaylist(
   return parseNdSmartPlaylist(raw, { id, name, rules, sync });
 }
 
-export async function ndGetSmartPlaylist(id: string): Promise<NdSmartPlaylist> {
-  const { serverUrl, token } = await getNavidromeAuth();
+export async function ndGetSmartPlaylist(id: string, serverId?: string): Promise<NdSmartPlaylist> {
+  const { serverUrl, token } = await getNavidromeAuth(serverId);
   const raw = await invoke<unknown>('nd_get_playlist', { serverUrl, token, id });
   return parseNdSmartPlaylist(raw, { id });
 }
 
-export async function ndDeletePlaylist(id: string): Promise<void> {
-  const { serverUrl, token } = await getNavidromeAuth();
+export async function ndDeletePlaylist(id: string, serverId?: string): Promise<void> {
+  const { serverUrl, token } = await getNavidromeAuth(serverId);
   const res = await commands.ndDeletePlaylist(serverUrl, token, id);
   if (res.status === 'error') throw new Error(res.error);
 }

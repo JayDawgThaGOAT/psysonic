@@ -166,6 +166,7 @@ export interface PlayerState {
     queueIndex?: number;
     playlistId?: string;
     playlistSongIndex?: number;
+    playlistSongRemove?: () => void | Promise<void>;
     /** Overrides the EntityShareKind for the "Share" action — used by Composers
      *  list/grid to copy a `composer` link from the otherwise artist-typed
      *  context menu, so paste lands on /composer/:id instead of /artist/:id. */
@@ -183,6 +184,7 @@ export interface PlayerState {
     playlistSongIndex?: number,
     shareKindOverride?: 'track' | 'album' | 'artist' | 'composer',
     pinToPlaybackServer?: boolean,
+    playlistSongRemove?: () => void | Promise<void>,
   ) => void;
   closeContextMenu: () => void;
 

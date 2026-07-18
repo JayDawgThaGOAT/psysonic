@@ -10,6 +10,7 @@ import { showToast } from '@/lib/dom/toast';
 
 export interface RunPlaylistsOpenSmartEditorDeps {
   pl: SubsonicPlaylist;
+  serverId: string;
   isNavidromeServer: boolean;
   allGenres: SubsonicGenre[];
   t: TFunction;
@@ -19,13 +20,15 @@ export interface RunPlaylistsOpenSmartEditorDeps {
   setCreating: React.Dispatch<React.SetStateAction<boolean>>;
   setCreatingSmart: React.Dispatch<React.SetStateAction<boolean>>;
   setCreatingSmartBusy: React.Dispatch<React.SetStateAction<boolean>>;
+  setEditingSmartServerId: React.Dispatch<React.SetStateAction<string | null>>;
+  isCurrent?: () => boolean;
 }
 
 export async function runPlaylistsOpenSmartEditor(deps: RunPlaylistsOpenSmartEditorDeps): Promise<void> {
   const {
-    pl, isNavidromeServer, allGenres, t,
+    pl, serverId, isNavidromeServer, allGenres, t,
     setSmartFilters, setEditingSmartId, setGenreQuery,
-    setCreating, setCreatingSmart, setCreatingSmartBusy,
+    setCreating, setCreatingSmart, setCreatingSmartBusy, setEditingSmartServerId,
   } = deps;
 
   if (!isNavidromeServer || !isSmartPlaylistName(pl.name)) return;
@@ -34,19 +37,20 @@ export async function runPlaylistsOpenSmartEditor(deps: RunPlaylistsOpenSmartEdi
     let target: { id: string; name: string; rules?: Record<string, unknown> } | null = null;
     try {
       // Prefer direct endpoint for this playlist: returns freshest rules.
-      const direct = await ndGetSmartPlaylist(pl.id);
+      const direct = await ndGetSmartPlaylist(pl.id, serverId);
       if (direct.id && (direct.rules || isSmartPlaylistName(direct.name))) target = direct;
     } catch {
       // Fallback to list endpoint below.
     }
     if (!target) {
-      const smart = await ndListSmartPlaylists();
+      const smart = await ndListSmartPlaylists(serverId);
       target = smart.find((v) =>
         v.id === pl.id ||
         v.name === pl.name ||
         displayPlaylistName(v.name) === displayPlaylistName(pl.name),
       ) ?? null;
     }
+    if (deps.isCurrent && !deps.isCurrent()) return;
     if (target) {
       const parsed = parseSmartRulesToFilters(target.rules, target.name);
       if (parsed.untaggedGenresOnly) {
@@ -63,10 +67,12 @@ export async function runPlaylistsOpenSmartEditor(deps: RunPlaylistsOpenSmartEdi
       });
       setEditingSmartId(pl.id);
     }
+    setEditingSmartServerId(serverId);
     setGenreQuery('');
     setCreating(false);
     setCreatingSmart(true);
   } catch {
+    if (deps.isCurrent && !deps.isCurrent()) return;
     // Degrade gracefully instead of blocking the editor on transient/API errors.
     setSmartFilters({
       ...defaultSmartFilters,
@@ -74,10 +80,11 @@ export async function runPlaylistsOpenSmartEditor(deps: RunPlaylistsOpenSmartEdi
     });
     setGenreQuery('');
     setEditingSmartId(pl.id);
+    setEditingSmartServerId(serverId);
     setCreating(false);
     setCreatingSmart(true);
     showToast(t('smartPlaylists.loadFailed'), 3500, 'warning');
   } finally {
-    setCreatingSmartBusy(false);
+    if (!deps.isCurrent || deps.isCurrent()) setCreatingSmartBusy(false);
   }
 }

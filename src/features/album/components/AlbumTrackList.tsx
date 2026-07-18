@@ -16,6 +16,7 @@ import { AlbumTrackListMobile } from '@/features/album/components/AlbumTrackList
 import { TracklistColumnPicker } from '@/ui/TracklistColumnPicker';
 import { TracklistHeaderRow } from '@/features/album/components/TracklistHeaderRow';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export type { SortKey } from '@/features/album/utils/albumTrackListHelpers';
 
@@ -185,7 +186,7 @@ export default function AlbumTrackList({
                 gridStyle={gridStyle}
                 currentTrackId={currentTrackId}
                 isPlaying={isPlaying}
-                ratingValue={ratings[song.id] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
+                ratingValue={ratings[song.id] ?? ownedOverrideValue(userRatingOverrides, song) ?? song.userRating ?? 0}
                 isStarred={starredSongs.has(song.id)}
                 inSelectMode={inSelectMode}
                 isContextMenuSong={contextMenuSongId === song.id}

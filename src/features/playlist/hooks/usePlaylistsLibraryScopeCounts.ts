@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { filterSongsToActiveLibrary } from '@/lib/api/subsonicLibrary';
-import { getPlaylist } from '@/lib/api/subsonicPlaylists';
+import { filterSongsToServerLibrary } from '@/lib/api/subsonicLibrary';
+import { getPlaylistForServer } from '@/lib/api/subsonicPlaylists';
 import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
 import { useOfflineBrowseContext } from '@/features/offline';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export interface PlaylistsLibraryScopeCountsResult {
   filteredSongCountByPlaylist: Record<string, number>;
@@ -37,8 +38,9 @@ export function usePlaylistsLibraryScopeCounts(
         const next: Record<string, number> = {};
         const nextDuration: Record<string, number> = {};
         for (const pl of playlists) {
-          next[pl.id] = pl.songCount;
-          nextDuration[pl.id] = pl.duration;
+          const key = ownedEntityKey(pl);
+          next[key] = pl.songCount;
+          nextDuration[key] = pl.duration;
         }
         if (!cancelled) {
           setFilteredSongCountByPlaylist(next);
@@ -46,26 +48,27 @@ export function usePlaylistsLibraryScopeCounts(
         }
         return;
       }
-      const ids = playlists.map((pl) => pl.id);
       const next: Record<string, number> = {};
       const nextDuration: Record<string, number> = {};
-      for (let i = 0; i < ids.length; i += 4) {
-        const chunk = ids.slice(i, i + 4);
+      for (let i = 0; i < playlists.length; i += 4) {
+        const chunk = playlists.slice(i, i + 4);
         const rows = await Promise.all(
-          chunk.map(async (id) => {
+          chunk.map(async (playlist) => {
+            const key = ownedEntityKey(playlist);
             try {
-              const { songs } = await getPlaylist(id);
-              const filtered = await filterSongsToActiveLibrary(songs);
+              if (!playlist.serverId) return [key, -1, -1] as const;
+              const { songs } = await getPlaylistForServer(playlist.serverId, playlist.id);
+              const filtered = await filterSongsToServerLibrary(songs, playlist.serverId);
               const duration = filtered.reduce((acc, s) => acc + (s.duration ?? 0), 0);
-              return [id, filtered.length, duration] as const;
+              return [key, filtered.length, duration] as const;
             } catch {
-              return [id, -1, -1] as const;
+              return [key, -1, -1] as const;
             }
           }),
         );
-        for (const [id, count, duration] of rows) {
-          if (count >= 0) next[id] = count;
-          if (duration >= 0) nextDuration[id] = duration;
+        for (const [key, count, duration] of rows) {
+          if (count >= 0) next[key] = count;
+          if (duration >= 0) nextDuration[key] = duration;
         }
       }
       if (!cancelled) {

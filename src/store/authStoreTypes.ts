@@ -300,10 +300,10 @@ export interface AuthState {
    * (empty serverId when none). Persisted; cleared when the track finishes naturally or when threshold is reached.
    */
   skipStarManualSkipCountsByKey: Record<string, number>;
-  /** Increment skip count for current server + track; clears stored count when threshold reached. */
-  recordSkipStarManualAdvance: (trackId: string) => { crossedThreshold: boolean } | null;
-  /** Drop persisted skip count for this track on the active server (e.g. natural playback end). */
-  clearSkipStarManualCountForTrack: (trackId: string) => void;
+  /** Increment skip count for the track owner; clears stored count when threshold reached. */
+  recordSkipStarManualAdvance: (trackId: string, serverId?: string) => { crossedThreshold: boolean } | null;
+  /** Drop persisted skip count for this track owner (e.g. natural playback end). */
+  clearSkipStarManualCountForTrack: (trackId: string, serverId?: string) => void;
 
   /** Random mixes, random albums, home hero: drop non‑zero ratings at or below per‑axis thresholds (0 = unrated, kept). */
   mixMinRatingFilterEnabled: boolean;

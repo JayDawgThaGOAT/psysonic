@@ -1,7 +1,7 @@
 import { libraryUpsertSongsFromApi } from '@/lib/api/library';
-import { buildStreamUrl } from '@/lib/api/subsonicStreamUrl';
-import { getAlbum } from '@/lib/api/subsonicLibrary';
-import { getArtist } from '@/lib/api/subsonicArtists';
+import { buildStreamUrlForServer } from '@/lib/api/subsonicStreamUrl';
+import { getAlbumForServer } from '@/lib/api/subsonicLibrary';
+import { getArtistForServer } from '@/lib/api/subsonicArtists';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
@@ -26,6 +26,7 @@ import {
   removeOfflinePinTask,
   type OfflinePinTask,
 } from '@/features/offline/utils/offlinePinQueue';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 /** @deprecated Metadata lives in the library index; kept for type-compat during transition. */
 export interface OfflineTrackMeta {
@@ -86,13 +87,14 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
     serverId,
     type = 'album',
   } = task;
-  if (cancelledDownloads.has(albumId)) return;
-  cancelledDownloads.delete(albumId);
+  const cancelKey = `${serverId}:${albumId}`;
+  if (cancelledDownloads.has(cancelKey)) return;
+  cancelledDownloads.delete(cancelKey);
 
   const CONCURRENCY = 8;
   const trackIds = songs.map(s => s.id);
   const jobStore = useOfflineJobStore;
-  const downloadId = `${albumId}-${Date.now()}`;
+  const downloadId = `${serverId}-${albumId}-${Date.now()}`;
   const serverIndexKey = serverIndexKeyForOffline(serverId);
   const libraryServerId = librarySqlScopeForOffline(serverId);
   const pinSource: PinSource = { kind: type, sourceId: albumId, displayName: albumName };
@@ -138,14 +140,14 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
       });
     }
     jobStore.setState(state => ({
-      jobs: state.jobs.filter(j => j.albumId !== albumId),
+      jobs: state.jobs.filter(j => j.albumId !== albumId || (j.serverId && j.serverId !== serverId)),
     }));
     return;
   }
 
   jobStore.setState(state => ({
     jobs: [
-      ...state.jobs.filter(j => j.albumId !== albumId),
+      ...state.jobs.filter(j => j.albumId !== albumId || (j.serverId && j.serverId !== serverId)),
       ...pendingSongs.map((s, i) => ({
         trackId: s.id,
         albumId,
@@ -155,14 +157,17 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
         totalTracks: pendingSongs.length,
         status: 'queued' as const,
         downloadId,
+        serverId,
       })),
     ],
   }));
 
   for (let i = 0; i < pendingSongs.length; i += CONCURRENCY) {
-    if (cancelledDownloads.has(albumId)) {
-      cancelledDownloads.delete(albumId);
-      jobStore.setState(state => ({ jobs: state.jobs.filter(j => j.albumId !== albumId) }));
+    if (cancelledDownloads.has(cancelKey)) {
+      cancelledDownloads.delete(cancelKey);
+      jobStore.setState(state => ({
+        jobs: state.jobs.filter(j => j.albumId !== albumId || (j.serverId && j.serverId !== serverId)),
+      }));
       clearOfflineCancel({ downloadId }).catch(() => {});
       return;
     }
@@ -172,7 +177,7 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
 
     jobStore.setState(state => ({
       jobs: state.jobs.map(j =>
-        j.albumId === albumId && batchIds.has(j.trackId)
+        j.albumId === albumId && (!j.serverId || j.serverId === serverId) && batchIds.has(j.trackId)
           ? { ...j, status: 'downloading' }
           : j,
       ),
@@ -181,7 +186,7 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
     const results = await Promise.all(
       batch.map(async song => {
         const suffix = song.suffix || 'mp3';
-        if (cancelledDownloads.has(albumId)) {
+        if (cancelledDownloads.has(cancelKey)) {
           return { song, localPath: null as string | null, error: 'CANCELLED' };
         }
         const existing = findLocalPlaybackEntry(song.id, serverId);
@@ -202,7 +207,7 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
               trackId: song.id,
               serverIndexKey,
               libraryServerId,
-              url: buildStreamUrl(song.id),
+              url: buildStreamUrlForServer(serverId, song.id),
               suffix,
               mediaDir,
               downloadId,
@@ -221,8 +226,8 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
           return { song, localPath: res.path, error: null as string | null };
         } catch (err) {
           const msg = typeof err === 'string' ? err : (err instanceof Error ? err.message : '');
-          if (msg === 'VOLUME_NOT_FOUND' && !cancelledDownloads.has(albumId)) {
-            cancelledDownloads.add(albumId);
+          if (msg === 'VOLUME_NOT_FOUND' && !cancelledDownloads.has(cancelKey)) {
+            cancelledDownloads.add(cancelKey);
             showToast('Speichermedium nicht gefunden. Bitte Verzeichnis in den Einstellungen prüfen.', 6000, 'error');
           }
           return { song, localPath: null as string | null, error: msg };
@@ -233,7 +238,7 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
     const resultMap = new Map(results.map(r => [r.song.id, r]));
     jobStore.setState(state => ({
       jobs: state.jobs.map(j => {
-        if (j.albumId !== albumId) return j;
+        if (j.albumId !== albumId || (j.serverId && j.serverId !== serverId)) return j;
         const r = resultMap.get(j.trackId);
         if (!r) return j;
         if (r.error === 'CANCELLED') return j;
@@ -246,7 +251,9 @@ async function runOfflinePinDownload(task: OfflinePinTask): Promise<void> {
   setTimeout(() => {
     jobStore.setState(state => ({
       jobs: state.jobs.filter(
-        j => j.albumId !== albumId || (j.status !== 'done' && j.status !== 'error'),
+        j => j.albumId !== albumId
+          || (j.serverId && j.serverId !== serverId)
+          || (j.status !== 'done' && j.status !== 'error'),
       ),
     }));
   }, 2500);
@@ -257,7 +264,7 @@ interface OfflineState {
   albums: Record<string, OfflineAlbumMeta>;
   isDownloaded: (trackId: string, serverId: string) => boolean;
   isAlbumDownloaded: (albumId: string, serverId: string) => boolean;
-  isAlbumDownloading: (albumId: string) => boolean;
+  isAlbumDownloading: (albumId: string, serverId?: string) => boolean;
   getLocalUrl: (trackId: string, serverId: string) => string | null;
   downloadAlbum: (
     albumId: string,
@@ -273,7 +280,7 @@ interface OfflineState {
   downloadArtist: (artistId: string, artistName: string, serverId: string) => Promise<void>;
   deleteAlbum: (albumId: string, serverId: string) => Promise<void>;
   clearAll: (serverId: string) => Promise<void>;
-  getAlbumProgress: (albumId: string) => { done: number; total: number } | null;
+  getAlbumProgress: (albumId: string, serverId?: string) => { done: number; total: number } | null;
 }
 
 export const useOfflineStore = create<OfflineState>()(
@@ -294,11 +301,13 @@ export const useOfflineStore = create<OfflineState>()(
         );
       },
 
-      isAlbumDownloading: (albumId) => {
+      isAlbumDownloading: (albumId, serverId) => {
         const jobState = useOfflineJobStore.getState();
-        return jobState.pinQueue.some(p => p.albumId === albumId)
+        return jobState.pinQueue.some(p => p.albumId === albumId && (!serverId || !p.serverId || p.serverId === serverId))
           || jobState.jobs.some(
-            j => j.albumId === albumId && (j.status === 'queued' || j.status === 'downloading'),
+            j => j.albumId === albumId
+              && (!serverId || !j.serverId || j.serverId === serverId)
+              && (j.status === 'queued' || j.status === 'downloading'),
           );
       },
 
@@ -326,8 +335,10 @@ export const useOfflineStore = create<OfflineState>()(
         });
       },
 
-      getAlbumProgress: (albumId) => {
-        const albumJobs = useOfflineJobStore.getState().jobs.filter(j => j.albumId === albumId);
+      getAlbumProgress: (albumId, serverId) => {
+        const albumJobs = useOfflineJobStore.getState().jobs.filter(
+          j => j.albumId === albumId && (!serverId || !j.serverId || j.serverId === serverId),
+        );
         if (albumJobs.length === 0) return null;
         const done = albumJobs.filter(j => j.status === 'done' || j.status === 'error').length;
         return { done, total: albumJobs.length };
@@ -355,9 +366,10 @@ export const useOfflineStore = create<OfflineState>()(
 
       downloadArtist: async (artistId, artistName, serverId) => {
         const jobStore = useOfflineJobStore;
+        const progressKey = ownedEntityKey({ id: artistId, serverId });
         let albums: { id: string; name: string; artist: string; coverArt?: string; year?: number }[] = [];
         try {
-          const res = await getArtist(artistId);
+          const res = await getArtistForServer(serverId, artistId);
           albums = res.albums;
         } catch { return; }
         if (albums.length === 0) return;
@@ -370,9 +382,9 @@ export const useOfflineStore = create<OfflineState>()(
             doneCount += 1;
             continue;
           }
-          if (offline.isAlbumDownloading(album.id)) continue;
+          if (offline.isAlbumDownloading(album.id, serverId)) continue;
           try {
-            const { songs } = await getAlbum(album.id);
+            const { songs } = await getAlbumForServer(serverId, album.id);
             toEnqueue.push({
               albumId: album.id,
               albumName: album.name,
@@ -382,18 +394,18 @@ export const useOfflineStore = create<OfflineState>()(
               songs,
               serverId,
               type: 'artist',
-              artistProgressGroupId: artistId,
+              artistProgressGroupId: progressKey,
             });
           } catch { /* skip failed album */ }
         }
 
         if (doneCount === albums.length) return;
 
-        const existing = jobStore.getState().bulkProgress[artistId];
+        const existing = jobStore.getState().bulkProgress[progressKey];
         jobStore.setState(state => ({
           bulkProgress: {
             ...state.bulkProgress,
-            [artistId]: {
+            [progressKey]: {
               done: existing && existing.done > doneCount ? existing.done : doneCount,
               total: albums.length,
             },
@@ -408,18 +420,18 @@ export const useOfflineStore = create<OfflineState>()(
 
         setTimeout(() => {
           jobStore.setState(state => {
-            const progress = state.bulkProgress[artistId];
+            const progress = state.bulkProgress[progressKey];
             if (!progress || progress.done < progress.total) return state;
-            const { [artistId]: _removed, ...rest } = state.bulkProgress;
+            const { [progressKey]: _removed, ...rest } = state.bulkProgress;
             return { bulkProgress: rest };
           });
         }, 5000);
       },
 
       deleteAlbum: async (albumId, serverId) => {
-        useOfflineJobStore.getState().cancelDownload(albumId);
-        cancelledDownloads.delete(albumId);
-        removeOfflinePinTask(albumId);
+        useOfflineJobStore.getState().cancelDownload(albumId, serverId);
+        cancelledDownloads.delete(`${serverId}:${albumId}`);
+        removeOfflinePinTask(albumId, serverId);
         const indexKey = serverIndexKeyForOffline(serverId);
         const album = get().albums[`${indexKey}:${albumId}`]
           ?? get().albums[`${serverId}:${albumId}`];

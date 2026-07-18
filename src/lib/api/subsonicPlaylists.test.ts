@@ -5,27 +5,35 @@ import {
   chunkIndicesForSubsonicGet,
   chunkRemovalIndicesForSubsonicGet,
   chunkSongIdsForSubsonicGet,
+  getPlaylistsForServers,
+  getPlaylistsForServersSettled,
+  getPlaylistForServer,
   removePlaylistSongsAtIndices,
   updatePlaylist,
 } from '@/lib/api/subsonicPlaylists';
 
-const { apiMock } = vi.hoisted(() => {
+const { apiMock, apiForServerMock } = vi.hoisted(() => {
   const fn = vi.fn();
-  return { apiMock: fn };
+  return { apiMock: fn, apiForServerMock: vi.fn() };
 });
 
 vi.mock('@/lib/api/subsonicClient', () => ({
   api: apiMock,
-  apiForServer: vi.fn(),
+  apiForServer: apiForServerMock,
 }));
 
 vi.mock('@/features/offline', () => ({
   schedulePinnedPlaylistSync: vi.fn(),
 }));
 
+vi.mock('@/lib/network/subsonicNetworkGuard', () => ({
+  shouldAttemptSubsonicForServer: () => true,
+}));
+
 describe('subsonicPlaylists batching', () => {
   beforeEach(() => {
     apiMock.mockReset();
+    apiForServerMock.mockReset();
     apiMock.mockImplementation(async (endpoint: string) => {
       if (endpoint === 'getPlaylist.view') {
         return {
@@ -36,6 +44,52 @@ describe('subsonicPlaylists batching', () => {
         };
       }
       return {};
+    });
+  });
+
+  it('aggregates playlists in server order and tolerates partial failure', async () => {
+    apiForServerMock.mockImplementation(async (serverId: string) => {
+      if (serverId === 'b') throw new Error('offline');
+      return { playlists: { playlist: [{ id: `shared`, name: serverId }] } };
+    });
+
+    await expect(getPlaylistsForServers(['a', 'b', 'c', 'a'])).resolves.toEqual([
+      expect.objectContaining({ id: 'shared', name: 'a', serverId: 'a' }),
+      expect.objectContaining({ id: 'shared', name: 'c', serverId: 'c' }),
+    ]);
+    expect(apiForServerMock.mock.calls.map(call => call[0])).toEqual(['a', 'b', 'c']);
+  });
+
+  it('reports failed owners separately from successful playlists', async () => {
+    apiForServerMock.mockImplementation(async (serverId: string) => {
+      if (serverId === 'b') throw new Error('offline');
+      return { playlists: { playlist: [{ id: `pl-${serverId}`, name: serverId }] } };
+    });
+
+    await expect(getPlaylistsForServersSettled(['a', 'b'])).resolves.toEqual({
+      playlists: [{ id: 'pl-a', name: 'a', serverId: 'a' }],
+      failedServerIds: ['b'],
+    });
+  });
+
+  it('stamps playlist details and songs with their owner server', async () => {
+    apiForServerMock.mockResolvedValue({
+      playlist: { id: 'shared', name: 'Remote', entry: [{ id: 'song-1' }] },
+    });
+
+    await expect(getPlaylistForServer('server-b', 'shared')).resolves.toEqual({
+      playlist: expect.objectContaining({ id: 'shared', serverId: 'server-b' }),
+      songs: [{ id: 'song-1', serverId: 'server-b' }],
+    });
+  });
+
+  it('routes mutations through the explicit owner server', async () => {
+    await addSongsToPlaylist('shared', ['song-1'], 'server-b');
+
+    expect(apiMock).not.toHaveBeenCalled();
+    expect(apiForServerMock).toHaveBeenCalledWith('server-b', 'updatePlaylist.view', {
+      playlistId: 'shared',
+      songIdToAdd: ['song-1'],
     });
   });
 

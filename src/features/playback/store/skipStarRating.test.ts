@@ -60,8 +60,8 @@ describe('applySkipStarOnManualNext', () => {
 
   it('records the manual advance but does not rate when threshold not crossed', () => {
     recordSkipStarMock.mockReturnValueOnce({ crossedThreshold: false });
-    applySkipStarOnManualNext(track('t1'), true);
-    expect(recordSkipStarMock).toHaveBeenCalledWith('t1');
+    applySkipStarOnManualNext(track('t1', { serverId: 'srv-b' }), true);
+    expect(recordSkipStarMock).toHaveBeenCalledWith('t1', 'srv-b');
     expect(queueSongRatingMock).not.toHaveBeenCalled();
   });
 
@@ -95,6 +95,15 @@ describe('applySkipStarOnManualNext', () => {
   it('delegates to queueSongRating(id, 1) when threshold crosses and the track is unrated', () => {
     recordSkipStarMock.mockReturnValueOnce({ crossedThreshold: true });
     applySkipStarOnManualNext(track('t1'), true);
-    expect(queueSongRatingMock).toHaveBeenCalledWith('t1', 1);
+    expect(queueSongRatingMock).toHaveBeenCalledWith('t1', 1, 's1');
+  });
+
+  it('reads and writes owner-qualified ratings for duplicate raw ids', () => {
+    recordSkipStarMock.mockReturnValueOnce({ crossedThreshold: true });
+    playerStateGet().userRatingOverrides = { 'srv-a:shared': 4 };
+    applySkipStarOnManualNext(track('shared', { serverId: 'srv-b' }), true);
+
+    expect(recordSkipStarMock).toHaveBeenCalledWith('shared', 'srv-b');
+    expect(queueSongRatingMock).toHaveBeenCalledWith('shared', 1, 'srv-b');
   });
 });

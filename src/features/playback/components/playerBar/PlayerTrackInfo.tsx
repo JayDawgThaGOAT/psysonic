@@ -20,6 +20,7 @@ import {
   usePlayerBarLayoutStore,
   type PlayerBarLayoutItemId,
 } from '@/features/playback/store/playerBarLayoutStore';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineActionPolicy } from '@/features/offline';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
@@ -197,8 +198,8 @@ export function PlayerTrackInfo({
         )}
         {currentTrack && !isRadio && !showPreviewMeta && isLayoutVisible('starRating') && playerPolicy.canRate && (
           <StarRating
-            value={userRatingOverrides[currentTrack.id] ?? currentTrack.userRating ?? 0}
-            onChange={r => queueSongRating(currentTrack.id, r)}
+            value={ownedOverrideValue(userRatingOverrides, currentTrack) ?? currentTrack.userRating ?? 0}
+            onChange={r => queueSongRating(currentTrack.id, r, currentTrack.serverId)}
             className="player-track-rating"
             ariaLabel={t('albumDetail.ratingLabel')}
           />

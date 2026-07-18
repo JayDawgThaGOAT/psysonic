@@ -11,6 +11,7 @@ export interface DownloadJob {
   status: 'queued' | 'downloading' | 'done' | 'error';
   /** Unique per `downloadAlbum` run — keys the Rust-side cancellation flag. */
   downloadId: string;
+  serverId?: string;
 }
 
 export interface OfflinePinQueueEntry {
@@ -19,6 +20,7 @@ export interface OfflinePinQueueEntry {
   pinKind: 'album' | 'playlist' | 'artist' | 'track';
   status: 'queued' | 'downloading';
   queuedAt: number;
+  serverId?: string;
 }
 
 interface OfflineJobState {
@@ -26,10 +28,10 @@ interface OfflineJobState {
   /** Album / playlist / artist pins waiting for or undergoing download. */
   pinQueue: OfflinePinQueueEntry[];
   bulkProgress: Record<string, { done: number; total: number }>;
-  setPinQueueStatus: (albumId: string, status: OfflinePinQueueEntry['status']) => void;
-  removePinFromQueue: (albumId: string) => void;
+  setPinQueueStatus: (albumId: string, status: OfflinePinQueueEntry['status'], serverId?: string) => void;
+  removePinFromQueue: (albumId: string, serverId?: string) => void;
   bumpBulkProgressDone: (groupId: string) => void;
-  cancelDownload: (albumId: string) => void;
+  cancelDownload: (albumId: string, serverId?: string) => void;
   cancelAllDownloads: () => void;
 }
 
@@ -49,15 +51,21 @@ export const useOfflineJobStore = create<OfflineJobState>()((set, get) => ({
   pinQueue: [],
   bulkProgress: {},
 
-  setPinQueueStatus: (albumId, status) => {
+  setPinQueueStatus: (albumId, status, serverId) => {
     set(state => ({
-      pinQueue: state.pinQueue.map(p => (p.albumId === albumId ? { ...p, status } : p)),
+      pinQueue: state.pinQueue.map(p => (
+        p.albumId === albumId && (!serverId || !p.serverId || p.serverId === serverId)
+          ? { ...p, status }
+          : p
+      )),
     }));
   },
 
-  removePinFromQueue: (albumId) => {
+  removePinFromQueue: (albumId, serverId) => {
     set(state => ({
-      pinQueue: state.pinQueue.filter(p => p.albumId !== albumId),
+      pinQueue: state.pinQueue.filter(p => (
+        p.albumId !== albumId || (serverId && p.serverId && p.serverId !== serverId)
+      )),
     }));
   },
 
@@ -75,14 +83,21 @@ export const useOfflineJobStore = create<OfflineJobState>()((set, get) => ({
     });
   },
 
-  cancelDownload: (albumId) => {
-    cancelledDownloads.add(albumId);
+  cancelDownload: (albumId, serverId) => {
+    const cancelKey = serverId ? `${serverId}:${albumId}` : albumId;
+    cancelledDownloads.add(cancelKey);
     // Abort the in-flight Rust transfers, then drop every job for this album
     // (queued AND downloading) so the sidebar toast clears right away.
-    abortDownloadsInRust(get().jobs.filter(j => j.albumId === albumId));
+    abortDownloadsInRust(get().jobs.filter(j => (
+      j.albumId === albumId && (!serverId || !j.serverId || j.serverId === serverId)
+    )));
     set(state => ({
-      jobs: state.jobs.filter(j => j.albumId !== albumId),
-      pinQueue: state.pinQueue.filter(p => p.albumId !== albumId),
+      jobs: state.jobs.filter(j => (
+        j.albumId !== albumId || (serverId && j.serverId && j.serverId !== serverId)
+      )),
+      pinQueue: state.pinQueue.filter(p => (
+        p.albumId !== albumId || (serverId && p.serverId && p.serverId !== serverId)
+      )),
     }));
   },
 
@@ -90,8 +105,8 @@ export const useOfflineJobStore = create<OfflineJobState>()((set, get) => ({
     const active = get().jobs.filter(
       j => j.status === 'queued' || j.status === 'downloading',
     );
-    [...new Set(active.map(j => j.albumId))].forEach(id => cancelledDownloads.add(id));
-    [...get().pinQueue.map(p => p.albumId)].forEach(id => cancelledDownloads.add(id));
+    active.forEach(j => cancelledDownloads.add(j.serverId ? `${j.serverId}:${j.albumId}` : j.albumId));
+    get().pinQueue.forEach(p => cancelledDownloads.add(p.serverId ? `${p.serverId}:${p.albumId}` : p.albumId));
     abortDownloadsInRust(active);
     // Keep only already-settled jobs (done/error) — the active ones are gone,
     // so the toast disappears instead of lingering on stuck "downloading" rows.

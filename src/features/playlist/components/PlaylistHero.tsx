@@ -19,6 +19,7 @@ import { AlbumCoverArtImage } from '@/cover/AlbumCoverArtImage';
 import { PLAYLIST_MAIN_COVER_CSS_PX } from '@/features/playlist/hooks/usePlaylistCovers';
 import { PlaylistSmartCoverCell } from '@/features/playlist/components/PlaylistCoverImages';
 import type { OfflineActionPolicy } from '@/features/offline';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
 
 interface Props {
   playlist: SubsonicPlaylist;
@@ -93,6 +94,7 @@ export default function PlaylistHero({
                 <AlbumCoverArtImage
                   albumId={customCoverId}
                   coverArt={customCoverId}
+                  serverScope={coverServerScopeForServerId(activeServerId)}
                   displayCssPx={PLAYLIST_MAIN_COVER_CSS_PX}
                   surface="dense"
                   libraryResolve={false}
@@ -104,7 +106,7 @@ export default function PlaylistHero({
                 <div className="playlist-cover-grid">
                   {coverQuadIds.map((coverId, i) =>
                     coverId
-                      ? <PlaylistSmartCoverCell key={i} coverId={coverId} />
+                      ? <PlaylistSmartCoverCell key={i} coverId={coverId} serverId={activeServerId} />
                       : <div key={i} className="playlist-cover-cell playlist-cover-cell--empty" />
                   )}
                 </div>
@@ -223,7 +225,7 @@ export default function PlaylistHero({
                     if (offlineStatus === 'cached') {
                       deleteAlbum(id, activeServerId);
                     } else if (offlineStatus === 'queued') {
-                      dequeueOfflinePin(id);
+                      dequeueOfflinePin(id, activeServerId);
                     } else if (playlist) {
                       downloadPlaylist(id, playlist.name, playlist.coverArt, songs, activeServerId);
                     }

@@ -40,6 +40,7 @@ import { useNowPlayingStarLove } from '@/features/nowPlaying/hooks/useNowPlaying
 import { useArtistInfoBatch } from '@/features/artist';
 import { primaryTrackArtistRef, resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
 import type { ArtistCardTab } from '@/features/nowPlaying/components/ArtistCard';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
@@ -277,7 +278,10 @@ export default function NowPlaying() {
               artistRefs={trackArtistRefs.length > 0 ? trackArtistRefs : undefined}
               genre={songMeta?.genre ?? undefined}
               playCount={(songMeta as (SubsonicSong & { playCount?: number }) | null)?.playCount}
-              userRatingOverride={userRatingOverrides[currentTrack.id]}
+              userRatingOverride={ownedOverrideValue(userRatingOverrides, {
+                id: currentTrack.id,
+                serverId: currentTrack.serverId ?? playbackServerId,
+              })}
               networkTrack={networkTrack}
               networkArtist={networkArtist}
               starred={starred}

@@ -1,22 +1,21 @@
 import React from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, PlayCircle, Sparkles } from 'lucide-react';
 import { displayPlaylistName, isSmartPlaylistName } from '@/features/sidebar/utils/sidebarHelpers';
-import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { usePlaylistStore } from '@/features/playlist';
 import { EMPTY_SERVER_FOLDERS, usePlaylistFolderStore } from '@/features/playlist';
 import { groupPlaylistsByFolder } from '@/features/playlist';
-
-interface SidebarPlaylist {
-  id: string;
-  name: string;
-}
+import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
+import { playlistDetailPath, runLatestPlaylistServerIntent } from '@/features/playlist';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 interface Props {
-  playlists: SidebarPlaylist[];
+  playlists: SubsonicPlaylist[];
   playlistsLoading: boolean;
+  multiServerScope: boolean;
+  folderServerId: string | null;
 }
 
 /**
@@ -26,13 +25,16 @@ interface Props {
  * works here via each playlist's right-click menu ("Move to folder"). With no
  * folders this renders the original flat list (plus right-click support).
  */
-export default function SidebarPlaylistsSection({ playlists, playlistsLoading }: Props) {
+export default function SidebarPlaylistsSection({
+  playlists, playlistsLoading, multiServerScope, folderServerId,
+}: Props) {
   const { t } = useTranslation();
-  const serverId = useAuthStore(s => s.activeServerId);
+  const navigate = useNavigate();
+  const location = useLocation();
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
   const fullPlaylists = usePlaylistStore(s => s.playlists);
   const bucket =
-    usePlaylistFolderStore(s => (serverId ? s.byServer[serverId] : undefined)) ?? EMPTY_SERVER_FOLDERS;
+    usePlaylistFolderStore(s => (folderServerId ? s.byServer[folderServerId] : undefined)) ?? EMPTY_SERVER_FOLDERS;
   const toggleFolderCollapsed = usePlaylistFolderStore(s => s.toggleFolderCollapsed);
 
   if (playlistsLoading) {
@@ -52,23 +54,30 @@ export default function SidebarPlaylistsSection({ playlists, playlistsLoading }:
     );
   }
 
-  const renderItem = (pl: SidebarPlaylist) => (
-    <NavLink
-      key={pl.id}
-      to={`/playlists/${pl.id}`}
-      className={({ isActive }) => `nav-link sidebar-playlist-item ${isActive ? 'active' : ''}`}
+  const renderItem = (pl: SubsonicPlaylist) => {
+    const path = playlistDetailPath(pl);
+    const active = `${location.pathname}${location.search}` === path;
+    return <NavLink
+      key={ownedEntityKey(pl)}
+      to={path}
+      className={`nav-link sidebar-playlist-item ${active ? 'active' : ''}`}
+      onClick={e => {
+        e.preventDefault();
+        void runLatestPlaylistServerIntent(pl, () => navigate(path));
+      }}
       onContextMenu={e => {
         e.preventDefault();
-        const full = fullPlaylists.find(p => p.id === pl.id) ?? pl;
-        openContextMenu(e.clientX, e.clientY, full, 'playlist');
+        const full = fullPlaylists.find(p => ownedEntityKey(p) === ownedEntityKey(pl)) ?? pl;
+        const { clientX, clientY } = e;
+        void runLatestPlaylistServerIntent(full, () => openContextMenu(clientX, clientY, full, 'playlist'));
       }}
     >
       {isSmartPlaylistName(pl.name) ? <Sparkles size={12} /> : <PlayCircle size={12} />}
       <span>{displayPlaylistName(pl.name)}</span>
     </NavLink>
-  );
+  };
 
-  if (!serverId || bucket.folders.length === 0) {
+  if (!folderServerId || multiServerScope || bucket.folders.length === 0) {
     return <div className="sidebar-playlists-list">{playlists.map(renderItem)}</div>;
   }
 
@@ -80,7 +89,7 @@ export default function SidebarPlaylistsSection({ playlists, playlistsLoading }:
         <div key={folder.id} className="sidebar-playlist-folder">
           <button
             className={`sidebar-playlist-folder-header${folder.collapsed ? '' : ' expanded'}`}
-            onClick={() => toggleFolderCollapsed(serverId, folder.id)}
+            onClick={() => toggleFolderCollapsed(folderServerId, folder.id)}
             aria-expanded={!folder.collapsed}
             aria-label={folder.collapsed ? t('playlists.folders.expandFolder') : t('playlists.folders.collapseFolder')}
           >

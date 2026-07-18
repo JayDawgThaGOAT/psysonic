@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export type AlbumSortKey = 'natural' | 'title' | 'artist' | 'album' | 'favorite' | 'rating' | 'duration' | 'playCount' | 'lastPlayed' | 'bpm';
 
@@ -76,8 +77,8 @@ export function useAlbumDetailSort({
             bv = starredSongs.has(b.id) ? 1 : 0;
             break;
           case 'rating':
-            av = ratings[a.id] ?? userRatingOverrides[a.id] ?? a.userRating ?? 0;
-            bv = ratings[b.id] ?? userRatingOverrides[b.id] ?? b.userRating ?? 0;
+            av = ratings[a.id] ?? ownedOverrideValue(userRatingOverrides, a) ?? a.userRating ?? 0;
+            bv = ratings[b.id] ?? ownedOverrideValue(userRatingOverrides, b) ?? b.userRating ?? 0;
             break;
           case 'duration': av = a.duration ?? 0; bv = b.duration ?? 0; break;
           case 'playCount': av = a.playCount ?? 0; bv = b.playCount ?? 0; break;

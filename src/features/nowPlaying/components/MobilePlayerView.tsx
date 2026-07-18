@@ -18,6 +18,7 @@ import { useCachedUrl } from '@/ui/CachedImage';
 import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 import { formatTrackTime } from '@/lib/format/formatDuration';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
 import {
   getQueueResolverVersion,
@@ -253,7 +254,7 @@ export default function MobilePlayerView() {
 
   // Star / favorite
   const isStarred = currentTrack
-    ? (currentTrack.id in starredOverrides ? starredOverrides[currentTrack.id] : !!currentTrack.starred)
+    ? (ownedOverrideValue(starredOverrides, currentTrack) ?? !!currentTrack.starred)
     : false;
 
   const toggleStar = useCallback(() => {

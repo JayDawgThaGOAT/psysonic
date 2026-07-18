@@ -295,6 +295,7 @@ export default function ArtistDetail() {
         headerCoverFailed={headerCoverFailed}
         setHeaderCoverFailed={setHeaderCoverFailed}
         actionPolicy={artistActionPolicy}
+        serverId={activeServerId}
       />
 
       {losslessOnly && <LosslessModeBanner />}

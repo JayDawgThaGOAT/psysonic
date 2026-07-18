@@ -5,6 +5,7 @@ import type { SubsonicAlbum, SubsonicArtist } from '@/lib/api/subsonicTypes';
 import type { Track } from '@/lib/media/trackTypes';
 import { useAuthStore } from '@/store/authStore';
 import { showToast } from '@/lib/dom/toast';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 type RatingKind = 'song' | 'album' | 'artist';
 
@@ -18,7 +19,7 @@ interface Args {
 }
 
 interface Result {
-  applySongRating: (songId: string, rating: number) => void;
+  applySongRating: (song: Pick<Track, 'id' | 'serverId'>, rating: number) => void;
   applyAlbumRating: (album: SubsonicAlbum, rating: number) => void;
   applyArtistRating: (artist: SubsonicArtist, rating: number) => void;
   getRatingValueByKind: (kind: RatingKind, id: string) => number;
@@ -31,9 +32,9 @@ export function useContextMenuRating({
   const setEntityRatingSupport = useAuthStore(s => s.setEntityRatingSupport);
   const activeServerId = useAuthStore(s => s.activeServerId);
 
-  const applySongRating = useCallback((songId: string, rating: number) => {
+  const applySongRating = useCallback((song: Pick<Track, 'id' | 'serverId'>, rating: number) => {
     // F4: optimistic override + retry-with-backoff sync via the central helper.
-    queueSongRating(songId, rating);
+    queueSongRating(song.id, rating, song.serverId, { scopedOverride: Boolean(song.serverId) });
   }, []);
 
   const applyAlbumRating = useCallback((album: SubsonicAlbum, rating: number) => {
@@ -65,7 +66,7 @@ export function useContextMenuRating({
   const getRatingValueByKind = useCallback((kind: RatingKind, id: string): number => {
     if (kind === 'song' && (type === 'song' || type === 'album-song' || type === 'queue-item')) {
       const song = item as Track;
-      if (song.id === id) return userRatingOverrides[id] ?? song.userRating ?? 0;
+      if (song.id === id) return userRatingOverrides[ownedEntityKey(song)] ?? userRatingOverrides[id] ?? song.userRating ?? 0;
     }
     if (kind === 'album' && type === 'album') {
       const album = item as SubsonicAlbum;
@@ -98,7 +99,8 @@ export function useContextMenuRating({
 
   const commitRatingByKind = useCallback((kind: RatingKind, id: string, rating: number) => {
     if (kind === 'song') {
-      applySongRating(id, rating);
+      const song = item as Track;
+      applySongRating({ id, serverId: song.serverId }, rating);
       return;
     }
     if (kind === 'album' && type === 'album') {

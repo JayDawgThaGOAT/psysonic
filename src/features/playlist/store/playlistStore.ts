@@ -1,21 +1,46 @@
-import { getPlaylists, createPlaylist as apiCreatePlaylist } from '@/lib/api/subsonicPlaylists';
+import {
+  getPlaylistsForServer,
+  getPlaylistsForServersSettled,
+  createPlaylist as apiCreatePlaylist,
+} from '@/lib/api/subsonicPlaylists';
 import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { useAuthStore } from '@/store/authStore';
 import { isOfflineBrowseActive, fetchOfflineBrowsablePlaylists } from '@/features/offline';
 import { usePlaylistMembershipStore } from '@/store/playlistMembershipStore';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 interface PlaylistStore {
   recentIds: string[];
   playlists: SubsonicPlaylist[];
   playlistsLoading: boolean;
   lastModified: Record<string, number>;
-  touchPlaylist: (id: string) => void;
-  removeId: (id: string) => void;
+  touchPlaylist: (id: string, serverId?: string) => void;
+  removeId: (id: string, serverId?: string) => void;
   fetchPlaylists: () => Promise<void>;
-  createPlaylist: (name: string, songIds?: string[]) => Promise<SubsonicPlaylist | null>;
+  fetchPlaylistsForServer: (serverId: string, isCurrent?: () => boolean) => Promise<void>;
+  createPlaylist: (name: string, songIds: string[] | undefined, serverId: string) => Promise<SubsonicPlaylist | null>;
   addPlaylist: (playlist: SubsonicPlaylist) => void;
+}
+
+let playlistFetchGeneration = 0;
+let playlistMutationGeneration = 0;
+
+interface PlaylistPersistedState {
+  recentIds?: string[];
+  playlists?: SubsonicPlaylist[];
+  lastModified?: Record<string, number>;
+}
+
+export function migratePlaylistPersistedState(persisted: unknown): PlaylistPersistedState {
+  const previous = (persisted ?? {}) as PlaylistPersistedState;
+  return {
+    playlists: (previous.playlists ?? []).filter(playlist => Boolean(playlist.serverId)),
+    recentIds: [],
+    lastModified: {},
+  };
 }
 
 export const usePlaylistStore = create<PlaylistStore>()(
@@ -25,45 +50,91 @@ export const usePlaylistStore = create<PlaylistStore>()(
       playlists: [],
       playlistsLoading: false,
       lastModified: {},
-      touchPlaylist: (id) =>
+      touchPlaylist: (id, serverId) => {
+        if (!serverId) return;
+        const key = ownedEntityKey({ id, serverId });
         set((s) => ({
-          recentIds: [id, ...s.recentIds.filter((x) => x !== id)].slice(0, 50),
-          lastModified: { ...s.lastModified, [id]: Date.now() },
-        })),
-      removeId: (id) => {
-        usePlaylistMembershipStore.getState().invalidatePlaylistSongIds(id);
-        set((s) => ({ recentIds: s.recentIds.filter((x) => x !== id) }));
+          recentIds: [key, ...s.recentIds.filter((x) => x !== key)].slice(0, 50),
+          lastModified: { ...s.lastModified, [key]: Date.now() },
+        }));
+      },
+      removeId: (id, serverId) => {
+        if (!serverId) return;
+        playlistMutationGeneration += 1;
+        const key = ownedEntityKey({ id, serverId });
+        usePlaylistMembershipStore.getState().invalidatePlaylistSongIds(id, serverId);
+        set((s) => ({ recentIds: s.recentIds.filter((x) => x !== key) }));
       },
       fetchPlaylists: async () => {
+        const generation = ++playlistFetchGeneration;
+        const mutationGeneration = playlistMutationGeneration;
         set({ playlistsLoading: true });
         usePlaylistMembershipStore.getState().clearAllPlaylistSongIds();
         try {
-          const serverId = useAuthStore.getState().activeServerId;
+          const auth = useAuthStore.getState();
+          const serverId = auth.activeServerId;
           if (isOfflineBrowseActive() && serverId) {
-            const playlists = await fetchOfflineBrowsablePlaylists(serverId);
-            set({ playlists, playlistsLoading: false });
+            const playlists = (await fetchOfflineBrowsablePlaylists(serverId))
+              .map(playlist => ({ ...playlist, serverId }));
+            if (playlistFetchGeneration === generation) {
+              set(mutationGeneration === playlistMutationGeneration
+                ? { playlists, playlistsLoading: false }
+                : { playlistsLoading: false });
+            }
             return;
           }
-          const playlists = await getPlaylists();
-          set({ playlists, playlistsLoading: false });
+          const serverIds = deriveEffectiveLibraryBrowseServerIds(auth);
+          const { playlists, failedServerIds } = await getPlaylistsForServersSettled(serverIds);
+          if (playlistFetchGeneration === generation) {
+            if (mutationGeneration !== playlistMutationGeneration) {
+              set({ playlistsLoading: false });
+            } else {
+              const failed = new Set(failedServerIds);
+              set(state => ({
+                playlists: serverIds.flatMap(ownerServerId => failed.has(ownerServerId)
+                  ? state.playlists.filter(playlist => playlist.serverId === ownerServerId)
+                  : playlists.filter(playlist => playlist.serverId === ownerServerId)),
+                playlistsLoading: false,
+              }));
+            }
+          }
         } catch {
-          set({ playlistsLoading: false });
+          if (playlistFetchGeneration === generation) set({ playlistsLoading: false });
         }
       },
-      createPlaylist: async (name: string, songIds?: string[]) => {
+      fetchPlaylistsForServer: async (serverId, isCurrent) => {
+        const mutationGeneration = playlistMutationGeneration;
         try {
-          const playlist = await apiCreatePlaylist(name, songIds);
+          const playlists = await getPlaylistsForServer(serverId);
+          if ((isCurrent && !isCurrent()) || mutationGeneration !== playlistMutationGeneration) return;
+          set((state) => ({
+            playlists: [
+              ...state.playlists.filter(playlist => playlist.serverId !== serverId),
+              ...playlists,
+            ],
+          }));
+        } catch {
+          // Keep the existing aggregate list when an owner-specific refresh fails.
+        }
+      },
+      createPlaylist: async (name: string, songIds: string[] | undefined, serverId: string) => {
+        try {
+          const playlist = { ...await apiCreatePlaylist(name, songIds, serverId), serverId };
+          playlistMutationGeneration += 1;
+          const key = ownedEntityKey(playlist);
           set((s) => ({
             playlists: [...s.playlists, playlist],
-            recentIds: [playlist.id, ...s.recentIds.filter((x) => x !== playlist.id)].slice(0, 50),
+            recentIds: [key, ...s.recentIds.filter((x) => x !== key)].slice(0, 50),
           }));
-          usePlaylistMembershipStore.getState().setPlaylistSongIds(playlist.id, songIds ?? []);
+          usePlaylistMembershipStore.getState().setPlaylistSongIds(playlist.id, songIds ?? [], serverId);
           return playlist;
         } catch {
           return null;
         }
       },
       addPlaylist: (playlist) => {
+        if (!playlist.serverId) return;
+        playlistMutationGeneration += 1;
         set((s) => ({
           playlists: [...s.playlists, playlist],
         }));
@@ -71,6 +142,8 @@ export const usePlaylistStore = create<PlaylistStore>()(
     }),
     {
       name: 'psysonic_playlists_recent',
+      version: 1,
+      migrate: migratePlaylistPersistedState,
       partialize: (state) => ({
         recentIds: state.recentIds,
         playlists: state.playlists,

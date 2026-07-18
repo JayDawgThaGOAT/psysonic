@@ -23,6 +23,7 @@ import {
   type OfflineSurface,
 } from '@/features/offline';
 import ContextMenuItems from '@/features/contextMenu/components/ContextMenuItems';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 function contextMenuSurfaceForType(type: string | null): OfflineSurface {
   switch (type) {
@@ -170,6 +171,7 @@ export default function ContextMenu() {
     queueIndex,
     playlistId,
     playlistSongIndex,
+    playlistSongRemove,
     shareKindOverride,
     pinToPlaybackServer = false,
   } = contextMenu;
@@ -177,8 +179,10 @@ export default function ContextMenu() {
     ? navigatePlaybackLibrary
     : (path: string) => { navigate(path); };
 
-  const isStarred = (id: string, itemStarred?: string) =>
-    id in starredOverrides ? starredOverrides[id] : !!itemStarred;
+  const isStarred = (id: string, itemStarred?: string, serverId?: string) => {
+    const key = ownedEntityKey({ id, serverId });
+    return key in starredOverrides ? starredOverrides[key] : !!itemStarred;
+  };
 
   const { applySongRating, applyAlbumRating, applyArtistRating, getRatingValueByKind, commitRatingByKind } =
     useContextMenuRating({ type, item, userRatingOverrides, setUserRatingOverride, entityRatingSupport, t });
@@ -204,7 +208,7 @@ export default function ContextMenu() {
   };
 
   const copyShareLink = useCallback(
-    (kind: EntityShareKind, id: string) => copyShareLinkAction(kind, id, t),
+    (kind: EntityShareKind, id: string, serverId?: string) => copyShareLinkAction(kind, id, t, serverId),
     [t],
   );
 
@@ -238,6 +242,7 @@ export default function ContextMenu() {
           queueIndex={queueIndex}
           playlistId={playlistId}
           playlistSongIndex={playlistSongIndex}
+          playlistSongRemove={playlistSongRemove}
           shareKindOverride={shareKindOverride}
           playTrack={playTrack}
           playNext={playNext}

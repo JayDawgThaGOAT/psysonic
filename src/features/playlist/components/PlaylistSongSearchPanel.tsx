@@ -35,6 +35,7 @@ interface Props {
   contextMenuSongId: string | null;
   setContextMenuSongId: React.Dispatch<React.SetStateAction<string | null>>;
   addSong: (song: SubsonicSong) => void;
+  serverId?: string;
 }
 
 export default function PlaylistSongSearchPanel({
@@ -42,7 +43,7 @@ export default function PlaylistSongSearchPanel({
   selectedSearchIds, setSelectedSearchIds,
   searchPlPickerOpen, setSearchPlPickerOpen,
   contextMenuSongId, setContextMenuSongId,
-  addSong,
+  addSong, serverId,
 }: Props) {
   const { t } = useTranslation();
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
@@ -90,6 +91,7 @@ export default function PlaylistSongSearchPanel({
             {searchPlPickerOpen && (
               <AddToPlaylistSubmenu
                 songIds={[...selectedSearchIds]}
+                serverId={serverId}
                 dropDown
                 onDone={() => { setSearchPlPickerOpen(false); setSelectedSearchIds(new Set()); }}
               />

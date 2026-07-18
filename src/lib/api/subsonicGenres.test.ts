@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchAllSongsByGenre, getSongsByGenre } from '@/lib/api/subsonicGenres';
+import { fetchAllSongsByGenre, getGenresForServer, getSongsByGenre } from '@/lib/api/subsonicGenres';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 
-const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }));
+const { apiMock, apiForServerMock } = vi.hoisted(() => ({ apiMock: vi.fn(), apiForServerMock: vi.fn() }));
 
 vi.mock('@/lib/api/subsonicClient', () => ({
   api: apiMock,
+  apiForServer: apiForServerMock,
   libraryFilterParams: () => ({}),
+  libraryFilterParamsForServer: () => ({ musicFolderId: ['folder-a'] }),
 }));
 
 function songs(n: number, startId = 0): SubsonicSong[] {
@@ -24,6 +26,21 @@ describe('getSongsByGenre', () => {
   it('returns an empty array when the genre has no songs', async () => {
     apiMock.mockResolvedValue({ songsByGenre: {} });
     expect(await getSongsByGenre('Empty')).toEqual([]);
+  });
+});
+
+describe('getGenresForServer', () => {
+  beforeEach(() => apiForServerMock.mockReset());
+
+  it('uses the selected server and its library filter', async () => {
+    apiForServerMock.mockResolvedValue({ genres: { genre: { value: 'Jazz', songCount: 3, albumCount: 2 } } });
+
+    await expect(getGenresForServer('server-b')).resolves.toEqual([
+      { value: 'Jazz', songCount: 3, albumCount: 2 },
+    ]);
+    expect(apiForServerMock).toHaveBeenCalledWith('server-b', 'getGenres.view', {
+      musicFolderId: ['folder-a'],
+    });
   });
 });
 

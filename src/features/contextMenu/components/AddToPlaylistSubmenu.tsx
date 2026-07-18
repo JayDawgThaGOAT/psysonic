@@ -5,7 +5,9 @@ import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
 import { usePlaylistStore } from '@/features/playlist';
 import { addTracksToPlaylistWithDedup, showAddTracksDedupToast } from '@/features/playlist';
 import { showToast } from '@/lib/dom/toast';
-import { isSmartPlaylistName } from '@/features/contextMenu/utils/contextMenuHelpers';
+import { manualPlaylistTargetsForServer } from '@/features/contextMenu/utils/contextMenuHelpers';
+import { useAuthStore } from '@/store/authStore';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 interface Props {
   songIds: string[];
@@ -14,12 +16,14 @@ interface Props {
   onDone: () => void;
   dropDown?: boolean;
   triggerId?: string;
+  serverId?: string;
 }
 
-export function AddToPlaylistSubmenu({ songIds, resolveSongIds, onDone, dropDown, triggerId }: Props) {
+export function AddToPlaylistSubmenu({ songIds, resolveSongIds, onDone, dropDown, triggerId, serverId }: Props) {
   const { t } = useTranslation();
   const subRef = useRef<HTMLDivElement>(null);
   const newNameRef = useRef<HTMLInputElement>(null);
+  const requestedOwnerRef = useRef<string | null>(null);
   const songIdsRef = useRef(songIds);
   // React Compiler refs rule: ref kept in sync with the latest value for use in effects/handlers/cleanup; not render data.
   // eslint-disable-next-line react-hooks/refs
@@ -33,25 +37,34 @@ export function AddToPlaylistSubmenu({ songIds, resolveSongIds, onDone, dropDown
   const recentIds = usePlaylistStore((s) => s.recentIds);
   const createPlaylist = usePlaylistStore((s) => s.createPlaylist);
   const touchPlaylist = usePlaylistStore((s) => s.touchPlaylist);
-  const fetchPlaylists = usePlaylistStore((s) => s.fetchPlaylists);
+  const fetchPlaylistsForServer = usePlaylistStore((s) => s.fetchPlaylistsForServer);
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const ownerServerId = serverId ?? activeServerId ?? undefined;
 
   useEffect(() => {
-    if (storePlaylists.length === 0) fetchPlaylists();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let current = true;
+    if (!ownerServerId) {
+      requestedOwnerRef.current = null;
+    } else if (storePlaylists.some(playlist => playlist.serverId === ownerServerId)) {
+      requestedOwnerRef.current = ownerServerId;
+    } else if (requestedOwnerRef.current !== ownerServerId) {
+      requestedOwnerRef.current = ownerServerId;
+      void fetchPlaylistsForServer(ownerServerId, () => current);
+    }
+    return () => { current = false; };
+  }, [fetchPlaylistsForServer, ownerServerId, storePlaylists]);
 
   const playlists = useMemo(() => {
-    return [...storePlaylists]
-      .filter(p => !isSmartPlaylistName(p.name))
+    return manualPlaylistTargetsForServer(storePlaylists, ownerServerId)
       .sort((a, b) => {
-        const ai = recentIds.indexOf(a.id);
-        const bi = recentIds.indexOf(b.id);
+        const ai = recentIds.indexOf(ownedEntityKey({ id: a.id, serverId: ownerServerId }));
+        const bi = recentIds.indexOf(ownedEntityKey({ id: b.id, serverId: ownerServerId }));
         if (ai === -1 && bi === -1) return a.name.localeCompare(b.name);
         if (ai === -1) return 1;
         if (bi === -1) return -1;
         return ai - bi;
       });
-  }, [storePlaylists, recentIds]);
+  }, [storePlaylists, recentIds, ownerServerId]);
 
   useLayoutEffect(() => {
     if (subRef.current) {
@@ -68,12 +81,13 @@ export function AddToPlaylistSubmenu({ songIds, resolveSongIds, onDone, dropDown
   const idsForAction = () => [...(resolveSongIds?.() ?? songIdsRef.current)];
 
   const handleAdd = async (pl: SubsonicPlaylist) => {
+    if (!ownerServerId) return;
     const ids = idsForAction();
-    setAdding(pl.id);
+    setAdding(ownedEntityKey(pl));
     try {
-      const result = await addTracksToPlaylistWithDedup(pl.id, pl.name, ids, t);
+      const result = await addTracksToPlaylistWithDedup(pl.id, pl.name, ids, t, ownerServerId);
       showAddTracksDedupToast(t, pl.name, result);
-      if (result.outcome !== 'skipped') touchPlaylist(pl.id);
+      if (result.outcome !== 'skipped') touchPlaylist(pl.id, ownerServerId);
     } catch {
       showToast(t('playlists.addError'), 3000, 'error');
     }
@@ -82,10 +96,11 @@ export function AddToPlaylistSubmenu({ songIds, resolveSongIds, onDone, dropDown
   };
 
   const handleCreate = async () => {
+    if (!ownerServerId) return;
     const ids = idsForAction();
     const name = newName.trim() || t('playlists.unnamed');
     try {
-      const pl = await createPlaylist(name, ids);
+      const pl = await createPlaylist(name, ids, ownerServerId);
       if (pl?.id) {
         showToast(t('playlists.createAndAddSuccess', { count: ids.length, playlist: pl.name || name }));
       }
@@ -144,10 +159,10 @@ export function AddToPlaylistSubmenu({ songIds, resolveSongIds, onDone, dropDown
       )}
       {playlists.map((pl: SubsonicPlaylist) => (
         <div
-          key={pl.id}
+          key={ownedEntityKey(pl)}
           className="context-menu-item"
           onClick={() => handleAdd(pl)}
-          style={{ opacity: adding === pl.id ? 0.5 : 1, pointerEvents: adding ? 'none' : undefined }}
+          style={{ opacity: adding === ownedEntityKey(pl) ? 0.5 : 1, pointerEvents: adding ? 'none' : undefined }}
         >
           <ListMusic size={13} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pl.name}</span>

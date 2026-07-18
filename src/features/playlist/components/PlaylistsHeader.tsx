@@ -23,11 +23,16 @@ interface Props {
   setNewName: React.Dispatch<React.SetStateAction<string>>;
   nameInputRef: React.RefObject<HTMLInputElement | null>;
   handleCreate: () => Promise<void>;
+  createServerId: string;
+  setCreateServerId: (serverId: string) => void;
+  createServerOptions: Array<{ id: string; label: string }>;
   isNavidromeServer: boolean;
   setEditingSmartId: React.Dispatch<React.SetStateAction<string | null>>;
   setSmartFilters: React.Dispatch<React.SetStateAction<SmartFilters>>;
   setGenreQuery: React.Dispatch<React.SetStateAction<string>>;
+  onEditorIntent: () => void;
   actionPolicy?: OfflineActionPolicy;
+  foldersEnabled?: boolean;
 }
 
 export default function PlaylistsHeader({
@@ -35,8 +40,10 @@ export default function PlaylistsHeader({
   toggleSelectionMode, handleDeleteSelected,
   creating, setCreating, setCreatingSmart,
   newName, setNewName, nameInputRef, handleCreate,
-  isNavidromeServer, setEditingSmartId, setSmartFilters, setGenreQuery,
+  createServerId, setCreateServerId, createServerOptions,
+  isNavidromeServer, setEditingSmartId, setSmartFilters, setGenreQuery, onEditorIntent,
   actionPolicy,
+  foldersEnabled = true,
 }: Props) {
   const { t } = useTranslation();
   const policy = actionPolicy ?? offlineActionPolicy('playlistsHeader', false);
@@ -50,6 +57,18 @@ export default function PlaylistsHeader({
       </h1>
       <div className="compact-action-bar" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
         {policy.canEditPlaylist && !(selectionMode && selectedIds.size > 0) && (<>
+            {createServerOptions.length > 1 && (
+              <select
+                className="input"
+                value={createServerId}
+                onChange={event => setCreateServerId(event.target.value)}
+                aria-label={t('settings.servers')}
+              >
+                {createServerOptions.map(server => (
+                  <option key={server.id} value={server.id}>{server.label}</option>
+                ))}
+              </select>
+            )}
             {creating ? (
               <>
                 <input
@@ -72,12 +91,13 @@ export default function PlaylistsHeader({
                 </button>
               </>
             ) : (
-              <button className="btn btn-primary" onClick={() => { setCreatingSmart(false); setCreating(true); }} aria-label={t('playlists.newPlaylist')} data-tooltip={t('playlists.newPlaylist')}>
+              <button className="btn btn-primary" onClick={() => { onEditorIntent(); setCreatingSmart(false); setCreating(true); }} aria-label={t('playlists.newPlaylist')} data-tooltip={t('playlists.newPlaylist')}>
                 <Plus size={15} /> <span className="compact-btn-label">{t('playlists.newPlaylist')}</span>
               </button>
             )}
             {!creating && isNavidromeServer && (
               <button className="btn btn-surface" onClick={() => {
+                onEditorIntent();
                 setCreating(false);
                 setEditingSmartId(null);
                 setSmartFilters(defaultSmartFilters);
@@ -89,8 +109,8 @@ export default function PlaylistsHeader({
             )}
           </>
         )}
-        {!(selectionMode && selectedIds.size > 0) && <PlaylistsFolderViewToggle />}
-        {!(selectionMode && selectedIds.size > 0) && <PlaylistsNewFolderButton />}
+        {foldersEnabled && !(selectionMode && selectedIds.size > 0) && <PlaylistsFolderViewToggle />}
+        {foldersEnabled && !(selectionMode && selectedIds.size > 0) && <PlaylistsNewFolderButton />}
         {selectionMode && selectedIds.size > 0 && (() => {
           const deletableCount = selectedPlaylists.filter(isPlaylistDeletable).length;
           return (

@@ -29,6 +29,8 @@ const baseProps = () => ({
   setPlaylistsExpanded: vi.fn(),
   playlists: [],
   playlistsLoading: false,
+  multiServerPlaylistScope: false,
+  playlistFolderServerId: 'server-a',
   newReleasesUnreadCount: 0,
   navDnd: null,
   navDndRowClass: () => '',

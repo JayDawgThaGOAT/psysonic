@@ -116,6 +116,7 @@ export default function Sidebar({
     activeServerId: serverId || null,
     libraryBrowseServerIds,
   }, unavailableServerIds), [libraryBrowseServerIds, serverId, servers, unavailableServerIds]);
+  const playlistServerScopeKey = effectiveLibraryBrowseServerIds.join('\u0000');
   const libraryGroups = useMemo(() => {
     const selectedServers = new Set(effectiveLibraryBrowseServerIds);
     return servers
@@ -252,7 +253,7 @@ export default function Sidebar({
   useEffect(() => {
     if (!playlistsExpanded || !isLoggedIn) return;
     fetchPlaylists();
-  }, [playlistsExpanded, isLoggedIn, fetchPlaylists]);
+  }, [playlistsExpanded, isLoggedIn, fetchPlaylists, playlistServerScopeKey]);
 
   return (
     <>
@@ -325,6 +326,10 @@ export default function Sidebar({
           setPlaylistsExpanded={setPlaylistsExpanded}
           playlists={playlists}
           playlistsLoading={playlistsLoading}
+          multiServerPlaylistScope={effectiveLibraryBrowseServerIds.length > 1}
+          playlistFolderServerId={effectiveLibraryBrowseServerIds.length === 1
+            ? effectiveLibraryBrowseServerIds[0] ?? null
+            : null}
           newReleasesUnreadCount={newReleasesUnreadCount}
           navDnd={navDnd}
           navDndRowClass={navDndRowClass}

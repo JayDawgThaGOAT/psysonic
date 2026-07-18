@@ -14,6 +14,7 @@ interface Props {
   setShowPlPicker: React.Dispatch<React.SetStateAction<boolean>>;
   t: TFunction;
   actionPolicy?: OfflineActionPolicy;
+  serverId?: string;
 }
 
 /**
@@ -34,6 +35,7 @@ export function AlbumDetailToolbar({
   setShowPlPicker,
   t,
   actionPolicy,
+  serverId,
 }: Props) {
   const policy = actionPolicy ?? offlineActionPolicy('albumDetail', false);
   return (
@@ -75,6 +77,7 @@ export function AlbumDetailToolbar({
                 {showPlPicker && (
                   <AddToPlaylistSubmenu
                     songIds={[...useSelectionStore.getState().selectedIds]}
+                    serverId={serverId}
                     onDone={() => { setShowPlPicker(false); useSelectionStore.getState().clearAll(); }}
                     dropDown
                   />

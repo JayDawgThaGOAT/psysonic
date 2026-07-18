@@ -49,6 +49,7 @@ interface Props {
   headerCoverFailed: boolean;
   setHeaderCoverFailed: React.Dispatch<React.SetStateAction<boolean>>;
   actionPolicy?: OfflineActionPolicy;
+  serverId: string;
 }
 
 /**
@@ -104,7 +105,7 @@ export default function ArtistDetailHero({
   handleImageUpload, playAllLoading, radioLoading, uploading,
   openedLink, openLink,
   coverId, coverRef, coverRevision, headerCoverFailed, setHeaderCoverFailed,
-  actionPolicy,
+  actionPolicy, serverId,
 }: Props) {
   const policy = actionPolicy ?? offlineActionPolicy('artistDetail', false);
   const { t } = useTranslation();
@@ -112,15 +113,14 @@ export default function ArtistDetailHero({
   const isMobile = useIsMobile();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const downloadArtist = useOfflineStore(s => s.downloadArtist);
-  const activeServerId = useAuthStore(s => s.activeServerId) ?? '';
   const artistAlbumIds = useMemo(() => albums.map(a => a.id), [albums]);
   const { status: artistOfflineStatus, progress: artistOfflineProgress } = useArtistOfflineState(
     id ?? '',
-    activeServerId,
+    serverId,
     artistAlbumIds,
   );
   const entityRatingSupportByServer = useAuthStore(s => s.entityRatingSupportByServer);
-  const artistEntityRatingSupport = entityRatingSupportByServer[activeServerId] ?? 'unknown';
+  const artistEntityRatingSupport = entityRatingSupportByServer[serverId] ?? 'unknown';
 
   const { open: openLightbox, lightbox } = useCoverLightboxSrc(coverRef, { alt: artist.name });
 
@@ -334,7 +334,7 @@ export default function ArtistDetailHero({
                 }
                 onClick={() => {
                   if (id && artist && artistOfflineStatus !== 'cached') {
-                    downloadArtist(id, artist.name, activeServerId);
+                    downloadArtist(id, artist.name, serverId);
                   }
                 }}
                 data-tooltip={

@@ -1,4 +1,5 @@
 import { queueSongStar } from '@/features/playback/store/pendingStarSync';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import type { SubsonicSong, SubsonicGenre } from '@/lib/api/subsonicTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -146,7 +147,7 @@ export default function RandomMix() {
 
   const toggleSongStar = (song: SubsonicSong, e: React.MouseEvent) => {
     e.stopPropagation();
-    const currentlyStarred = song.id in starredOverrides ? starredOverrides[song.id] : starredSongs.has(song.id);
+    const currentlyStarred = ownedOverrideValue(starredOverrides, song) ?? starredSongs.has(song.id);
     const nextStarred = new Set(starredSongs);
     if (currentlyStarred) nextStarred.delete(song.id);
     else nextStarred.add(song.id);
@@ -272,7 +273,7 @@ export default function RandomMix() {
               {filteredGenreMixSongs.map((song, idx) => {
                 const track = songToTrack(song);
                 const queueSongs = filteredGenreMixSongs.map(songToTrack);
-                const isStarred = song.id in starredOverrides ? starredOverrides[song.id] : starredSongs.has(song.id);
+                const isStarred = ownedOverrideValue(starredOverrides, song) ?? starredSongs.has(song.id);
                 return (
                   <RandomMixTrackRow
                     key={song.id}
@@ -345,7 +346,7 @@ export default function RandomMix() {
             const track = songToTrack(song);
             const queueSongs = filteredSongs.map(songToTrack);
             const genre = song.genre;
-            const isStarred = song.id in starredOverrides ? starredOverrides[song.id] : starredSongs.has(song.id);
+            const isStarred = ownedOverrideValue(starredOverrides, song) ?? starredSongs.has(song.id);
             const isGenreBlocked = !!genre && (
               AUDIOBOOK_GENRES.some(ag => genre.toLowerCase().includes(ag)) ||
               customGenreBlacklist.some(bg => genre.toLowerCase().includes(bg.toLowerCase()))
