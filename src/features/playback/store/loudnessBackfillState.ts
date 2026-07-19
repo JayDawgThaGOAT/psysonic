@@ -20,15 +20,18 @@ const analysisBackfillInFlightByTrackId: Record<string, true> = {};
 const analysisBackfillAttemptsByTrackId: Record<string, number> = {};
 
 export function isBackfillInFlight(ref: AnalysisTrackRef): boolean {
+  if (!ref.trackId || !ref.serverIndexKey) return false;
   return Boolean(analysisBackfillInFlightByTrackId[analysisTrackRefKey(ref)]);
 }
 
 export function getBackfillAttempts(ref: AnalysisTrackRef): number {
+  if (!ref.trackId || !ref.serverIndexKey) return 0;
   return analysisBackfillAttemptsByTrackId[analysisTrackRefKey(ref)] ?? 0;
 }
 
 /** Atomic: flag the track inflight AND bump the attempt counter to `nextAttempt`. */
 export function markBackfillInFlight(ref: AnalysisTrackRef, nextAttempt: number): void {
+  if (!ref.trackId || !ref.serverIndexKey) return;
   const key = analysisTrackRefKey(ref);
   analysisBackfillInFlightByTrackId[key] = true;
   analysisBackfillAttemptsByTrackId[key] = nextAttempt;
@@ -36,15 +39,18 @@ export function markBackfillInFlight(ref: AnalysisTrackRef, nextAttempt: number)
 
 /** Clear the inflight flag (called from the `.finally` of the enqueue promise). */
 export function clearBackfillInFlight(ref: AnalysisTrackRef): void {
+  if (!ref.trackId || !ref.serverIndexKey) return;
   delete analysisBackfillInFlightByTrackId[analysisTrackRefKey(ref)];
 }
 
 /** Reset the attempt counter to 0 — called after a `refresh:hit`. */
 export function resetBackfillAttempts(ref: AnalysisTrackRef): void {
+  if (!ref.trackId || !ref.serverIndexKey) return;
   analysisBackfillAttemptsByTrackId[analysisTrackRefKey(ref)] = 0;
 }
 
 export function resetLoudnessBackfillState(ref: AnalysisTrackRef): void {
+  if (!ref.trackId || !ref.serverIndexKey) return;
   const key = analysisTrackRefKey(ref);
   delete analysisBackfillInFlightByTrackId[key];
   analysisBackfillAttemptsByTrackId[key] = 0;

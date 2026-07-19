@@ -26,25 +26,30 @@ const cachedLoudnessGainByTrackId: Record<string, number> = {};
 const stableLoudnessGainByTrackId: Record<string, true> = {};
 
 export function getCachedLoudnessGain(ref: AnalysisTrackRef): number | undefined {
+  if (!ref.trackId || !ref.serverIndexKey) return undefined;
   return cachedLoudnessGainByTrackId[analysisTrackRefKey(ref)];
 }
 
 export function setCachedLoudnessGain(ref: AnalysisTrackRef, gainDb: number): void {
+  if (!ref.trackId || !ref.serverIndexKey) return;
   cachedLoudnessGainByTrackId[analysisTrackRefKey(ref)] = gainDb;
 }
 
 export function hasStableLoudness(ref: AnalysisTrackRef): boolean {
+  if (!ref.trackId || !ref.serverIndexKey) return false;
   return Boolean(stableLoudnessGainByTrackId[analysisTrackRefKey(ref)]);
 }
 
 /** Atomic: write the cached value AND mark it stable (analysis-confirmed). */
 export function markLoudnessStable(ref: AnalysisTrackRef, gainDb: number): void {
+  if (!ref.trackId || !ref.serverIndexKey) return;
   const key = analysisTrackRefKey(ref);
   cachedLoudnessGainByTrackId[key] = gainDb;
   stableLoudnessGainByTrackId[key] = true;
 }
 
 export function forgetLoudnessGain(ref: AnalysisTrackRef): void {
+  if (!ref.trackId || !ref.serverIndexKey) return;
   const key = analysisTrackRefKey(ref);
   delete cachedLoudnessGainByTrackId[key];
   delete stableLoudnessGainByTrackId[key];
@@ -60,7 +65,7 @@ export function clearLoudnessCacheState(ref: AnalysisTrackRef): void {
  * `audio_update_replay_gain`.
  */
 export function loudnessGainDbForEngineBind(ref: AnalysisTrackRef | null): number | null {
-  if (!ref?.trackId) return null;
+  if (!ref?.trackId || !ref.serverIndexKey) return null;
   const key = analysisTrackRefKey(ref);
   if (!stableLoudnessGainByTrackId[key]) return null;
   const v = cachedLoudnessGainByTrackId[key];

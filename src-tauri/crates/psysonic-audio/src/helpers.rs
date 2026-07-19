@@ -64,7 +64,7 @@ pub(crate) fn emit_partial_loudness_from_bytes(
         "analysis:loudness-partial",
         PartialLoudnessPayload {
             track_id: playback_identity(url),
-            server_id: {
+            server_index_key: {
                 let sid = crate::analysis_dispatch::resolve_server_id_for_app(app, server_id);
                 (!sid.is_empty()).then_some(sid)
             },

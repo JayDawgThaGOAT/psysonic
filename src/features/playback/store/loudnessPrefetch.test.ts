@@ -51,14 +51,14 @@ beforeEach(() => {
 describe('prefetchLoudnessForEnqueuedTracks', () => {
   it("is a no-op when engine isn't loudness", () => {
     hoisted.auth.normalizationEngine = 'off';
-    hoisted.collectMock.mockReturnValueOnce([{ trackId: 't1', serverId: 's' }]);
+    hoisted.collectMock.mockReturnValueOnce([{ trackId: 't1', serverIndexKey: 's' }]);
     prefetchLoudnessForEnqueuedTracks([ref('t1')], 0);
     expect(hoisted.refreshMock).not.toHaveBeenCalled();
     expect(hoisted.collectMock).not.toHaveBeenCalled();
   });
 
   it('forwards each window ref to refreshLoudnessForTrack with syncPlayingEngine=false', () => {
-    const refs = ['t1', 't2', 't3'].map(trackId => ({ trackId, serverId: 's' }));
+    const refs = ['t1', 't2', 't3'].map(trackId => ({ trackId, serverIndexKey: 's' }));
     hoisted.collectMock.mockReturnValueOnce(refs);
     prefetchLoudnessForEnqueuedTracks([ref('t1'), ref('t2'), ref('t3')], 0);
     expect(hoisted.refreshMock).toHaveBeenCalledTimes(3);

@@ -8,7 +8,7 @@ export type AnalysisStorageChangedReason =
 
 export type AnalysisStorageChangedDetail = {
   trackId?: string | null;
-  serverId?: string | null;
+  serverIndexKey?: string | null;
   reason: AnalysisStorageChangedReason;
 };
 

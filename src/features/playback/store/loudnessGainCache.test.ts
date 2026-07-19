@@ -60,6 +60,13 @@ describe('cache identity', () => {
   it('returns undefined for missing entries', () => {
     expect(getCachedLoudnessGain(ref('missing'))).toBeUndefined();
   });
+
+  it('does not cache analysis under an unknown profile UUID', () => {
+    const unknownOwner = ref('t1', '9ee02895-4d12-4faa-9a9f-3fae22b64d18');
+    markLoudnessStable(unknownOwner, -5);
+    expect(getCachedLoudnessGain(unknownOwner)).toBeUndefined();
+    expect(hasStableLoudness(unknownOwner)).toBe(false);
+  });
 });
 
 describe('stable loudness state', () => {

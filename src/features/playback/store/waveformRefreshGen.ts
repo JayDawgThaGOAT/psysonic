@@ -21,12 +21,13 @@ import {
 const waveformRefreshGenByTrackId: Record<string, number> = {};
 
 export function bumpWaveformRefreshGen(ref: AnalysisTrackRef): void {
-  if (!ref.trackId) return;
+  if (!ref.trackId || !ref.serverIndexKey) return;
   const key = analysisTrackRefKey(ref);
   waveformRefreshGenByTrackId[key] = (waveformRefreshGenByTrackId[key] ?? 0) + 1;
 }
 
 export function getWaveformRefreshGen(ref: AnalysisTrackRef): number {
+  if (!ref.trackId || !ref.serverIndexKey) return 0;
   return waveformRefreshGenByTrackId[analysisTrackRefKey(ref)] ?? 0;
 }
 

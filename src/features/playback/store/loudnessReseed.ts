@@ -33,8 +33,8 @@ import {
  * Best-effort throughout — Rust errors are logged but never thrown.
  */
 export async function reseedLoudnessForTrackId(ref: AnalysisTrackRef): Promise<void> {
-  const { trackId, serverId } = ref;
-  if (!trackId) return;
+  const { trackId, serverIndexKey } = ref;
+  if (!trackId || !serverIndexKey) return;
   const auth = useAuthStore.getState();
   if (auth.normalizationEngine !== 'loudness') return;
   bumpWaveformRefreshGen(ref);
@@ -53,21 +53,21 @@ export async function reseedLoudnessForTrackId(ref: AnalysisTrackRef): Promise<v
     normalizationEngineLive: 'loudness',
   });
   try {
-    const res = await commands.analysisDeleteWaveformForTrack(trackId, serverId);
+    const res = await commands.analysisDeleteWaveformForTrack(trackId, serverIndexKey);
     if (res.status === 'error') throw new Error(res.error);
   } catch (e) {
     console.error('[psysonic] analysis_delete_waveform_for_track failed:', e);
   }
   try {
-    const res = await commands.analysisDeleteLoudnessForTrack(trackId, serverId);
+    const res = await commands.analysisDeleteLoudnessForTrack(trackId, serverIndexKey);
     if (res.status === 'error') throw new Error(res.error);
   } catch (e) {
     console.error('[psysonic] analysis_delete_loudness_for_track failed:', e);
   }
   usePlayerStore.getState().updateReplayGainForCurrentTrack();
-  const url = serverId ? buildStreamUrlForServer(serverId, trackId) : buildStreamUrl(trackId);
+  const url = serverIndexKey ? buildStreamUrlForServer(serverIndexKey, trackId) : buildStreamUrl(trackId);
   try {
-    const res = await commands.analysisEnqueueSeedFromUrl(trackId, url, true, serverId, null);
+    const res = await commands.analysisEnqueueSeedFromUrl(trackId, url, true, serverIndexKey, null);
     if (res.status === 'error') throw new Error(res.error);
   } catch (e) {
     console.error('[psysonic] analysis_enqueue_seed_from_url (reseed) failed:', e);

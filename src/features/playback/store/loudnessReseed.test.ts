@@ -91,6 +91,12 @@ describe('reseedLoudnessForTrackId', () => {
     expect(hoisted.bumpWaveformRefreshGenMock).not.toHaveBeenCalled();
   });
 
+  it('does not reseed analysis under an unknown profile UUID', async () => {
+    await reseedLoudnessForTrackId(ref('t1', '9ee02895-4d12-4faa-9a9f-3fae22b64d18'));
+    expect(hoisted.invokeMock).not.toHaveBeenCalled();
+    expect(hoisted.bumpWaveformRefreshGenMock).not.toHaveBeenCalled();
+  });
+
   it("is a no-op when normalization engine isn't loudness", async () => {
     hoisted.authState.normalizationEngine = 'off';
     await reseedLoudnessForTrackId(ref('t1'));

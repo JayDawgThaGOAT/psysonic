@@ -63,6 +63,11 @@ describe('refreshWaveformForTrack', () => {
     expect(hoisted.invokeMock).not.toHaveBeenCalled();
   });
 
+  it('does not query waveform storage for an unknown profile UUID', async () => {
+    await refreshWaveformForTrack(ref('t1', '9ee02895-4d12-4faa-9a9f-3fae22b64d18'));
+    expect(hoisted.invokeMock).not.toHaveBeenCalled();
+  });
+
   it('discards results when the gen has been bumped since the call started', async () => {
     setCurrent('t1');
     hoisted.invokeMock.mockImplementationOnce(async () => {

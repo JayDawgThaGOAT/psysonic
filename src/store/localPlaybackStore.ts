@@ -158,7 +158,7 @@ export const useLocalPlaybackStore = create<LocalPlaybackState>()(
           return { entries: next };
         });
         localPlaybackFrontendDebug({ event: 'index-remove', trackId, serverIndexKey, reason });
-        emitAnalysisStorageChanged({ trackId, serverId: serverIndexKey, reason: 'local-playback-delete' });
+        emitAnalysisStorageChanged({ trackId, serverIndexKey, reason: 'local-playback-delete' });
       },
 
       removeEntriesByPinSource: async (serverIndexKey, pinSource, mediaDir) => {
@@ -284,7 +284,7 @@ export const useLocalPlaybackStore = create<LocalPlaybackState>()(
           delete entries[cand.key];
           emitAnalysisStorageChanged({
             trackId: parsed.trackId,
-            serverId: parsed.serverIndexKey,
+            serverIndexKey: parsed.serverIndexKey,
             reason: 'hotcache-delete',
           });
         }

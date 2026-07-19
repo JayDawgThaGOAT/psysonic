@@ -109,6 +109,11 @@ describe('refreshLoudnessForTrack', () => {
     expect(hoisted.invokeMock).not.toHaveBeenCalled();
   });
 
+  it('does not route an unknown profile UUID through the active server', async () => {
+    await refreshLoudnessForTrack(ref('t1', '9ee02895-4d12-4faa-9a9f-3fae22b64d18'));
+    expect(hoisted.invokeMock).not.toHaveBeenCalled();
+  });
+
   it('coalesces concurrent calls for the same key into one inflight promise', async () => {
     hoisted.invokeMock.mockResolvedValue(null);
     const p1 = refreshLoudnessForTrack(ref('t1'));

@@ -102,10 +102,8 @@ describe('collectLoudnessBackfillWindowTrackRefs', () => {
     ]);
   });
 
-  it('returns just the current track for an empty queue', () => {
-    expect(collectLoudnessBackfillWindowTrackRefs([], 0, track('only'))).toEqual([
-      analysisTrackRef('only', null),
-    ]);
+  it('omits an ownerless current track from an empty queue', () => {
+    expect(collectLoudnessBackfillWindowTrackRefs([], 0, track('only'))).toEqual([]);
   });
 
   it('returns an empty list when nothing is playing and the queue is empty', () => {

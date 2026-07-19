@@ -92,11 +92,11 @@ export function setupAuthSync(): () => void {
     const currentRef = player.currentTrack
       ? analysisTrackRefForTrack(player.currentTrack, player.queueItems[player.queueIndex])
       : null;
-    if (!currentRef) return;
-    if (detail.trackId || detail.serverId) {
+    if (!currentRef?.serverIndexKey) return;
+    if (detail.trackId || detail.serverIndexKey) {
       const changedRef = analysisTrackRef(
         detail.trackId ?? currentRef.trackId,
-        detail.serverId ?? currentRef.serverId,
+        detail.serverIndexKey ?? currentRef.serverIndexKey,
       );
       if (analysisTrackRefKey(changedRef) !== analysisTrackRefKey(currentRef)) return;
     }

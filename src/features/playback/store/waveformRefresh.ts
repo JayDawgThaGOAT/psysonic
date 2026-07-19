@@ -1,6 +1,5 @@
 import { commands } from '@/generated/bindings';
 import { coerceWaveformBins } from '@/lib/waveform/waveformParse';
-import { getPlaybackIndexKey } from '@/features/playback/utils/playback/playbackServer';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { getWaveformRefreshGen } from '@/features/playback/store/waveformRefreshGen';
 import {
@@ -39,10 +38,10 @@ export async function fetchWaveformBins(
   inputRef: AnalysisTrackRef,
 ): Promise<number[] | null> {
   const trackId = inputRef.trackId;
-  if (!trackId) return null;
+  if (!trackId || !inputRef.serverIndexKey) return null;
   try {
-    const ref = analysisTrackRef(trackId, inputRef.serverId ?? getPlaybackIndexKey());
-    const res = await commands.analysisGetWaveformForTrack(trackId, ref.serverId);
+    const ref = analysisTrackRef(trackId, inputRef.serverIndexKey);
+    const res = await commands.analysisGetWaveformForTrack(trackId, ref.serverIndexKey);
     if (res.status === 'error') throw new Error(res.error);
     const row = res.data;
     const bins = row ? coerceWaveformBins(row.bins) : null;
@@ -54,11 +53,11 @@ export async function fetchWaveformBins(
 
 export async function refreshWaveformForTrack(inputRef: AnalysisTrackRef): Promise<void> {
   const trackId = inputRef.trackId;
-  if (!trackId) return;
-  const ref = analysisTrackRef(trackId, inputRef.serverId ?? getPlaybackIndexKey());
+  if (!trackId || !inputRef.serverIndexKey) return;
+  const ref = analysisTrackRef(trackId, inputRef.serverIndexKey);
   const gen = getWaveformRefreshGen(ref);
   try {
-    const res = await commands.analysisGetWaveformForTrack(trackId, ref.serverId);
+    const res = await commands.analysisGetWaveformForTrack(trackId, ref.serverIndexKey);
     if (res.status === 'error') throw new Error(res.error);
     const row = res.data;
     if (getWaveformRefreshGen(ref) !== gen) return;

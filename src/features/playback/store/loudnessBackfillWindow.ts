@@ -26,10 +26,10 @@ export function isTrackInsideLoudnessBackfillWindow(
   queueIndex: number,
   currentTrack: Track | null,
 ): boolean {
-  if (!target.trackId) return false;
+  if (!target.trackId || !target.serverIndexKey) return false;
   const currentRef = queue[queueIndex];
   if (currentTrack && sameQueueTrack(
-    { id: target.trackId, serverId: target.serverId ?? undefined },
+    { id: target.trackId, serverId: target.serverIndexKey ?? undefined },
     { id: currentTrack.id, serverId: currentRef?.serverId ?? currentTrack.serverId },
   )) return true;
   if (queue.length === 0) return false;
@@ -52,7 +52,7 @@ export function collectLoudnessBackfillWindowTrackRefs(
   const refs = new Map<string, AnalysisTrackRef>();
   if (currentTrack?.id) {
     const ref = analysisTrackRefForTrack(currentTrack, queue[queueIndex]);
-    refs.set(analysisTrackRefKey(ref), ref);
+    if (ref.serverIndexKey) refs.set(analysisTrackRefKey(ref), ref);
   }
   const start = Math.max(0, queueIndex + 1);
   const end = Math.min(queue.length, start + LOUDNESS_BACKFILL_WINDOW_AHEAD);
@@ -60,7 +60,7 @@ export function collectLoudnessBackfillWindowTrackRefs(
     const queueRef = queue[i];
     if (!queueRef?.trackId) continue;
     const ref = analysisTrackRefForQueueItem(queueRef);
-    refs.set(analysisTrackRefKey(ref), ref);
+    if (ref.serverIndexKey) refs.set(analysisTrackRefKey(ref), ref);
   }
   return [...refs.values()];
 }
@@ -103,9 +103,10 @@ export function loudnessBackfillPriorityForTrack(
   queueIndex: number,
   currentTrack: Track | null,
 ): 'high' | 'middle' | 'low' {
+  if (!target.trackId || !target.serverIndexKey) return 'low';
   const currentRef = queue[queueIndex];
   if (currentTrack && sameQueueTrack(
-    { id: target.trackId, serverId: target.serverId ?? undefined },
+    { id: target.trackId, serverId: target.serverIndexKey ?? undefined },
     { id: currentTrack.id, serverId: currentRef?.serverId ?? currentTrack.serverId },
   )) return 'high';
   const start = Math.max(0, queueIndex + 1);

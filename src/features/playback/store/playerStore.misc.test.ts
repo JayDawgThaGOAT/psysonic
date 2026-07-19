@@ -237,7 +237,7 @@ describe('stop', () => {
   });
 
   it('keeps the waveform of the still-shown track and re-hydrates it from the DB', () => {
-    const track = makeTrack({ id: 'wf-keep' });
+    const track = makeTrack({ id: 'wf-keep', serverId: 'server-a' });
     seedQueue([track], { index: 0, currentTrack: track });
     usePlayerStore.setState({ isPlaying: true, waveformBins: [10, 20, 30] });
     onInvoke('analysis_get_waveform_for_track', () => null);

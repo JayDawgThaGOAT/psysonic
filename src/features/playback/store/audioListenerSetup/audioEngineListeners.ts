@@ -75,13 +75,13 @@ export function setupAudioEngineListeners(): () => void {
     listen<void>('audio:ended', () => handleAudioEnded()),
     listen<string>('audio:error', ({ payload }) => handleAudioError(payload)),
     listen<number>('audio:track_switched', ({ payload }) => handleAudioTrackSwitched(payload)),
-    listen<{ trackId?: string | null; serverId?: string | null; gainDb: number; targetLufs: number; isPartial: boolean }>('analysis:loudness-partial', ({ payload }) => {
+    listen<{ trackId?: string | null; serverIndexKey?: string | null; gainDb: number; targetLufs: number; isPartial: boolean }>('analysis:loudness-partial', ({ payload }) => {
       const state = usePlayerStore.getState();
       const current = state.currentTrack;
-      if (!current || !payload?.serverId) return;
+      if (!current || !payload?.serverIndexKey) return;
       const payloadTrackId = normalizeAnalysisTrackId(payload.trackId);
       if (!payloadTrackId) return;
-      const payloadRef = analysisTrackRef(payloadTrackId, payload.serverId);
+      const payloadRef = analysisTrackRef(payloadTrackId, payload.serverIndexKey);
       const currentRef = analysisTrackRefForTrack(current, state.queueItems[state.queueIndex]);
       if (analysisTrackRefKey(payloadRef) !== analysisTrackRefKey(currentRef)) return;
       if (!Number.isFinite(payload.gainDb)) return;
@@ -100,11 +100,11 @@ export function setupAudioEngineListeners(): () => void {
       });
       usePlayerStore.getState().updateReplayGainForCurrentTrack();
     }),
-    listen<{ trackId: string; serverId: string; isPartial: boolean }>('analysis:waveform-updated', ({ payload }) => {
-      if (!payload?.trackId || !payload.serverId) return;
+    listen<{ trackId: string; serverIndexKey: string; isPartial: boolean }>('analysis:waveform-updated', ({ payload }) => {
+      if (!payload?.trackId || !payload.serverIndexKey) return;
       const payloadTrackId = normalizeAnalysisTrackId(payload.trackId);
       if (!payloadTrackId) return;
-      const payloadRef = analysisTrackRef(payloadTrackId, payload.serverId);
+      const payloadRef = analysisTrackRef(payloadTrackId, payload.serverIndexKey);
       const live = usePlayerStore.getState();
       const currentRef = live.currentTrack
         ? analysisTrackRefForTrack(live.currentTrack, live.queueItems[live.queueIndex])
@@ -113,7 +113,7 @@ export function setupAudioEngineListeners(): () => void {
         bumpWaveformRefreshGen(currentRef);
         void refreshWaveformForTrack(currentRef);
         void refreshLoudnessForTrack(currentRef);
-        emitNormalizationDebug('backfill:applied', { trackId: payloadTrackId, serverId: payload.serverId });
+        emitNormalizationDebug('backfill:applied', { trackId: payloadTrackId, serverIndexKey: payload.serverIndexKey });
         return;
       }
       // Library aggressive backfill completes thousands of tracks — only warm loudness
@@ -129,7 +129,7 @@ export function setupAudioEngineListeners(): () => void {
         return;
       }
       void refreshLoudnessForTrack(payloadRef, { syncPlayingEngine: false });
-      emitNormalizationDebug('backfill:applied', { trackId: payloadTrackId, serverId: payload.serverId });
+      emitNormalizationDebug('backfill:applied', { trackId: payloadTrackId, serverIndexKey: payload.serverIndexKey });
     }),
     listen<{ trackId: string; serverId: string }>('analysis:enrichment-updated', ({ payload }) => {
       if (!payload?.trackId) return;

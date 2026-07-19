@@ -706,7 +706,7 @@ pub(crate) async fn ranged_download_task(
             "analysis:loudness-partial",
             crate::ipc::PartialLoudnessPayload {
                 track_id: crate::helpers::playback_identity(&url_for_emit),
-                server_id: (!server_id_for_emit.is_empty()).then_some(server_id_for_emit.clone()),
+                server_index_key: (!server_id_for_emit.is_empty()).then_some(server_id_for_emit.clone()),
                 gain_db: provisional_db,
                 target_lufs,
                 is_partial: true,

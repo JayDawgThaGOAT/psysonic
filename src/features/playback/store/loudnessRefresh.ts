@@ -1,6 +1,5 @@
 import { buildStreamUrl, buildStreamUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { commands } from '@/generated/bindings';
-import { getPlaybackIndexKey } from '@/features/playback/utils/playback/playbackServer';
 import { redactSubsonicUrlForLog } from '@/lib/server/redactSubsonicUrl';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
@@ -60,8 +59,8 @@ export async function refreshLoudnessForTrack(
   opts?: { syncPlayingEngine?: boolean },
 ): Promise<void> {
   const trackId = inputRef.trackId;
-  if (!trackId) return;
-  const ref = analysisTrackRef(trackId, inputRef.serverId ?? getPlaybackIndexKey());
+  if (!trackId || !inputRef.serverIndexKey) return;
+  const ref = analysisTrackRef(trackId, inputRef.serverIndexKey);
   const syncEngine = opts?.syncPlayingEngine !== false;
   const target = useAuthStore.getState().loudnessTargetLufs;
   const inflightKey = `${analysisTrackRefKey(ref)}|${syncEngine ? 'sync' : 'no-sync'}|${target}`;
@@ -74,12 +73,12 @@ export async function refreshLoudnessForTrack(
 }
 
 async function runRefreshLoudnessForTrack(ref: AnalysisTrackRef, syncEngine: boolean): Promise<void> {
-  const { trackId, serverId } = ref;
-  emitNormalizationDebug('refresh:start', { trackId, serverId });
+  const { trackId, serverIndexKey } = ref;
+  emitNormalizationDebug('refresh:start', { trackId, serverIndexKey });
   usePlayerStore.setState({ normalizationDbgSource: 'refresh:start', normalizationDbgTrackId: trackId });
   try {
     const requestedTarget = useAuthStore.getState().loudnessTargetLufs;
-    const loudnessRes = await commands.analysisGetLoudnessForTrack(trackId, requestedTarget, serverId);
+    const loudnessRes = await commands.analysisGetLoudnessForTrack(trackId, requestedTarget, serverIndexKey);
     if (loudnessRes.status === 'error') throw new Error(loudnessRes.error);
     // Boundary cast: the generated DTO widens `recommendedGainDb` to `number | null`;
     // downstream relies on the FE type's non-null shape (guarded at runtime by Number.isFinite).
@@ -107,7 +106,7 @@ async function runRefreshLoudnessForTrack(ref: AnalysisTrackRef, syncEngine: boo
           return;
         }
         markBackfillInFlight(ref, attempts + 1);
-        const url = serverId ? buildStreamUrlForServer(serverId, trackId) : buildStreamUrl(trackId);
+        const url = serverIndexKey ? buildStreamUrlForServer(serverIndexKey, trackId) : buildStreamUrl(trackId);
         const priority = loudnessBackfillPriorityForTrack(
           ref,
           live.queueItems,
@@ -120,7 +119,7 @@ async function runRefreshLoudnessForTrack(ref: AnalysisTrackRef, syncEngine: boo
           attempt: attempts + 1,
           priority,
         });
-        void commands.analysisEnqueueSeedFromUrl(trackId, url, null, serverId, priority)
+        void commands.analysisEnqueueSeedFromUrl(trackId, url, null, serverIndexKey, priority)
           .then((res) => {
             if (res.status === 'error') throw new Error(res.error);
             emitNormalizationDebug('backfill:queued', { trackId, attempt: attempts + 1 });
