@@ -22,7 +22,7 @@ import { tooltipAttrs } from '@/ui/tooltipAttrs';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
 import { deriveAlbumGenreTags } from '@/lib/library/genreTags';
 import { genreColor } from '@/lib/library/genreColor';
-import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 /** True when the album artist label means "no single artist" — `getArtistInfo`
  *  has nothing meaningful to return for these, so the Artist Bio entry is hidden.
@@ -227,12 +227,14 @@ export default function AlbumHeader({
   const genreMoreRef = useRef<HTMLButtonElement>(null);
   const goToGenre = (genre: string) => {
     setGenreMenuPos(null);
-    navigate(`/genres/${encodeURIComponent(genre)}`, { state: { returnTo: `/album/${info.id}` } });
+    navigate(`/genres/${encodeURIComponent(genre)}`, {
+      state: { returnTo: buildAlbumDetailPath(info.id, { serverId }) },
+    });
   };
 
   const handleShareAlbum = async () => {
     try {
-      const ok = await copyEntityShareLink('album', info.id);
+      const ok = await copyEntityShareLink('album', info.id, { serverId });
       if (ok) showToast(t('contextMenu.shareCopied'));
       else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
     } catch {
@@ -350,7 +352,9 @@ export default function AlbumHeader({
                     <button
                       className="album-detail-artist-link"
                       data-tooltip={t('albumDetail.moreLabelAlbums', { label: info.recordLabel })}
-                      onClick={() => navigate(`/label/${encodeURIComponent(info.recordLabel!)}`)}
+                      onClick={() => navigate(
+                        `/label/${encodeURIComponent(info.recordLabel!)}${serverId ? `?server=${encodeURIComponent(serverId)}` : ''}`,
+                      )}
                     >
                       {info.recordLabel}
                     </button>

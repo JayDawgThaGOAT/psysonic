@@ -23,7 +23,7 @@ import {
 import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineActionPolicy } from '@/features/offline';
-import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   currentTrack: Track | null;
@@ -149,7 +149,9 @@ export function PlayerTrackInfo({
             : displayTitle}
           className="player-track-name"
           style={{ cursor: !isRadio && !showPreviewMeta && currentTrack?.albumId ? 'pointer' : 'default' }}
-          onClick={() => !isRadio && !showPreviewMeta && currentTrack?.albumId && navigate(`/album/${currentTrack.albumId}`)}
+          onClick={() => !isRadio && !showPreviewMeta && currentTrack?.albumId && navigate(
+            buildAlbumDetailPath(currentTrack.albumId, { serverId: currentTrack.serverId }),
+          )}
           onContextMenu={!isRadio && !showPreviewMeta && currentTrack
             ? (e) => {
                 e.preventDefault();
@@ -193,7 +195,9 @@ export function PlayerTrackInfo({
             text={albumLine}
             className="player-track-album"
             style={{ cursor: currentTrack?.albumId ? 'pointer' : 'default' }}
-            onClick={() => currentTrack?.albumId && navigate(`/album/${currentTrack.albumId}`)}
+            onClick={() => currentTrack?.albumId && navigate(
+              buildAlbumDetailPath(currentTrack.albumId, { serverId: currentTrack.serverId }),
+            )}
           />
         )}
         {currentTrack && !isRadio && !showPreviewMeta && isLayoutVisible('starRating') && playerPolicy.canRate && (

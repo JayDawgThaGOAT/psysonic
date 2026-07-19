@@ -1,7 +1,7 @@
-import { search } from '@/lib/api/subsonicSearch';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronLeft } from 'lucide-react';
 import AlbumCard from '@/features/album/components/AlbumCard';
 import { useTranslation } from 'react-i18next';
@@ -9,25 +9,41 @@ import { useAuthStore } from '@/store/authStore';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
 import { albumGridWarmCovers } from '@/cover/layoutSizes';
 import { VirtualCardGrid } from '@/ui/VirtualCardGrid';
+import { readDetailServerId } from '@/lib/navigation/detailServerScope';
 
 export default function LabelAlbums() {
   const { t } = useTranslation();
   const perfFlags = usePerfProbeFlags();
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [albums, setAlbums] = useState<SubsonicAlbum[]>([]);
   const [loading, setLoading] = useState(true);
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const ownerServerId = readDetailServerId(searchParams, activeServerId);
+  const invalidExplicitServer = searchParams.has('server') && !ownerServerId;
 
   useEffect(() => {
     if (!name) return;
+    let cancelled = false;
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
+    if (invalidExplicitServer) {
+      setAlbums([]);
+      setLoading(false);
+      return;
+    }
 
     // Search for the label name and ask for a large number of albums
-    search(name, { albumCount: 200, artistCount: 0, songCount: 0 })
+    const options = { albumCount: 200, artistCount: 0, songCount: 0 };
+    const request = ownerServerId
+      ? searchForServer(ownerServerId, name, options)
+      : search(name, options);
+    request
       .then(res => {
+        if (cancelled) return;
         // Filter out albums that don't match the record label exactly if possible,
         // to avoid unrelated search hits. We do case-insensitive comparison.
         const matches = res.albums.filter(a =>
@@ -38,9 +54,10 @@ export default function LabelAlbums() {
         // as a decent best-effort if our strict filter yields nothing.
         setAlbums(matches.length > 0 ? matches : res.albums);
       })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [name, musicLibraryFilterVersion]);
+      .catch(error => { if (!cancelled) console.error(error); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [invalidExplicitServer, name, musicLibraryFilterVersion, ownerServerId]);
 
   return (
     <div className="animate-fade-in" style={{ padding: '0 var(--space-6)' }}>
@@ -61,7 +78,7 @@ export default function LabelAlbums() {
       ) : (
         <VirtualCardGrid
           items={albums}
-          itemKey={(a, _i) => a.id}
+          itemKey={a => `${a.serverId ?? ownerServerId ?? ''}\u0000${a.id}`}
           rowVariant="album"
           disableVirtualization={perfFlags.disableMainstageVirtualLists}
           layoutSignal={albums.length}

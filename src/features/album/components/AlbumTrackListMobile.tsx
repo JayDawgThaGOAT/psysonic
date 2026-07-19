@@ -4,16 +4,18 @@ import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import type { Track } from '@/lib/media/trackTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { formatLongDuration } from '@/lib/format/formatDuration';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { sameQueueTrack } from '@/features/playback';
 
 interface Props {
   discNums: number[];
   discs: Map<number, SubsonicSong[]>;
   discTitleByNum: Map<number, string>;
   isMultiDisc: boolean;
-  currentTrackId: string | null;
+  currentTrack: Track | null;
   isPlaying: boolean;
-  contextMenuSongId: string | null;
-  setContextMenuSongId: (id: string | null) => void;
+  contextMenuSongKey: string | null;
+  setContextMenuSongKey: (id: string | null) => void;
   onPlaySong: (song: SubsonicSong) => void;
   onContextMenu: (
     x: number,
@@ -34,10 +36,10 @@ export function AlbumTrackListMobile({
   discs,
   discTitleByNum,
   isMultiDisc,
-  currentTrackId,
+  currentTrack,
   isPlaying,
-  contextMenuSongId,
-  setContextMenuSongId,
+  contextMenuSongKey,
+  setContextMenuSongKey,
   onPlaySong,
   onContextMenu,
 }: Props) {
@@ -54,15 +56,16 @@ export function AlbumTrackListMobile({
             </div>
           )}
           {discs.get(discNum)!.map(song => {
-            const isActive = currentTrackId === song.id;
+            const songKey = ownedEntityKey(song);
+            const isActive = sameQueueTrack(currentTrack, song);
             return (
               <div
-                key={song.id}
-                className={`tracklist-mobile-row${isActive ? ' active' : ''}${contextMenuSongId === song.id ? ' context-active' : ''}`}
+                key={songKey}
+                className={`tracklist-mobile-row${isActive ? ' active' : ''}${contextMenuSongKey === songKey ? ' context-active' : ''}`}
                 onClick={() => onPlaySong(song)}
                 onContextMenu={e => {
                   e.preventDefault();
-                  setContextMenuSongId(song.id);
+                  setContextMenuSongKey(songKey);
                   onContextMenu(e.clientX, e.clientY, songToTrack(song), 'album-song');
                 }}
               >

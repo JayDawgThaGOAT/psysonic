@@ -22,17 +22,27 @@ export type AlbumCoverRefOptions = {
 
 const albumDistinctDiscCoversByAlbumId = new Map<string, boolean>();
 
+function distinctDiscCoverKey(albumId: string, serverId?: string | null): string {
+  const id = albumId.trim();
+  const owner = serverId?.trim();
+  return owner ? `${owner}\u0000${id}` : id;
+}
+
 export function rememberAlbumDistinctDiscCovers(
   albumId: string,
   songs: ReadonlyArray<Pick<SubsonicSong, 'discNumber' | 'coverArt' | 'id' | 'albumId'>>,
+  serverId?: string | null,
 ): void {
   const id = albumId.trim();
   if (!id) return;
-  albumDistinctDiscCoversByAlbumId.set(id, albumHasDistinctDiscCovers(songs));
+  albumDistinctDiscCoversByAlbumId.set(
+    distinctDiscCoverKey(id, serverId),
+    albumHasDistinctDiscCovers(songs),
+  );
 }
 
-export function forgetAlbumDistinctDiscCovers(albumId: string): void {
-  albumDistinctDiscCoversByAlbumId.delete(albumId.trim());
+export function forgetAlbumDistinctDiscCovers(albumId: string, serverId?: string | null): void {
+  albumDistinctDiscCoversByAlbumId.delete(distinctDiscCoverKey(albumId, serverId));
 }
 
 /**
@@ -49,8 +59,11 @@ export function forgetAlbumDistinctDiscCovers(albumId: string): void {
  * there). Trust only the value remembered from a known tracklist; default to
  * album-scoped and let the library index correct genuine per-disc albums.
  */
-export function resolveDistinctDiscCoversForAlbum(albumId: string): boolean {
-  return albumDistinctDiscCoversByAlbumId.get(albumId.trim()) === true;
+export function resolveDistinctDiscCoversForAlbum(
+  albumId: string,
+  serverId?: string | null,
+): boolean {
+  return albumDistinctDiscCoversByAlbumId.get(distinctDiscCoverKey(albumId, serverId)) === true;
 }
 
 function resolveAlbumCoverRefOptions(
@@ -106,27 +119,27 @@ export function radioCoverRef(
 }
 
 export function albumCoverRefForSong(
-  song: Pick<SubsonicSong, 'albumId' | 'coverArt' | 'id' | 'discNumber'>,
+  song: Pick<SubsonicSong, 'albumId' | 'coverArt' | 'id' | 'discNumber' | 'serverId'>,
   distinctDiscCovers?: boolean,
   serverScope: CoverServerScope = { kind: 'active' },
 ): CoverArtRef | undefined {
   const albumId = song.albumId?.trim();
   const distinct =
     distinctDiscCovers
-    ?? (albumId ? resolveDistinctDiscCoversForAlbum(albumId) : false);
+    ?? (albumId ? resolveDistinctDiscCoversForAlbum(albumId, song.serverId) : false);
   const entry = resolveTrackCoverEntry(song, distinct);
   return entry ? coverEntryToRef(entry, serverScope) : undefined;
 }
 
 export function albumCoverRefForPlayback(
-  track: Pick<SubsonicSong, 'coverArt' | 'id' | 'discNumber'> & { albumId?: string | null },
+  track: Pick<SubsonicSong, 'coverArt' | 'id' | 'discNumber' | 'serverId'> & { albumId?: string | null },
   serverScope: CoverServerScope = resolvePlaybackCoverScope(),
 ): CoverArtRef | undefined {
   const albumId = track.albumId?.trim();
   if (!albumId) return undefined;
-  const distinctDiscCovers = resolveDistinctDiscCoversForAlbum(albumId);
+  const distinctDiscCovers = resolveDistinctDiscCoversForAlbum(albumId, track.serverId);
   return albumCoverRefForSong(
-    { ...track, albumId } as Pick<SubsonicSong, 'albumId' | 'coverArt' | 'id' | 'discNumber'>,
+    { ...track, albumId },
     distinctDiscCovers,
     serverScope,
   );

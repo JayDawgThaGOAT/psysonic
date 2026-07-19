@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { useAuthStore } from '@/store/authStore';
@@ -26,6 +26,8 @@ import { tryLoadAlbumDetailMultiScope } from '@/features/album/hooks/loadAlbumDe
 import { tryLoadArtistDetailMultiScope } from '@/lib/library/loadArtistDetailMultiScope';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 
 type AlbumPayload = ResolvedAlbum;
 
@@ -48,31 +50,52 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
   const [relatedAlbums, setRelatedAlbums] = useState<SubsonicAlbum[]>([]);
   const [loading, setLoading] = useState(true);
   const [starredSongs, setStarredSongs] = useState<Set<string>>(new Set());
+  const loadGenerationRef = useRef(0);
   const favoritesOfflineEnabled = useAuthStore(s => s.favoritesOfflineEnabled);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const [searchParams] = useSearchParams();
   const detailServerId = readDetailServerId(searchParams, activeServerId);
+  const invalidExplicitServer = searchParams.has('server') && !detailServerId;
   const offlineBrowseActive = useOfflineBrowseContext().active && !!detailServerId;
+  const librarySyncRevision = useLibraryScopeSyncRevision(getLibraryBrowseScope().serverIds);
 
   useEffect(() => {
     if (!id) return;
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => loadGenerationRef.current === generation;
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
+    setAlbum(null);
     setRelatedAlbums([]);
+    setStarredSongs(new Set());
 
-    const applyAlbumPayload = (data: AlbumPayload) => {
+    if (invalidExplicitServer) {
+      setLoading(false);
+      return () => {
+        if (loadGenerationRef.current === generation) loadGenerationRef.current += 1;
+      };
+    }
+
+    const applyAlbumPayload = (data: AlbumPayload): boolean => {
+      if (!isCurrent()) return false;
       setAlbum(data);
       const initialStarred = new Set<string>();
-      data.songs.forEach(s => { if (s.starred) initialStarred.add(s.id); });
+      data.songs.forEach(s => { if (s.starred) initialStarred.add(ownedEntityKey(s)); });
       setStarredSongs(initialStarred);
       setLoading(false);
+      return true;
+    };
+
+    const finishWithoutAlbum = () => {
+      if (isCurrent()) setLoading(false);
     };
 
     const loadRelatedAlbums = async (
       serverId: string | null,
       artistId: string | undefined,
+      currentAlbum: Pick<SubsonicAlbum, 'id' | 'serverId'>,
       useLocalArtist: boolean,
       localBytesOnly: boolean,
       scopes?: LibraryScopePair[],
@@ -81,23 +104,25 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
       try {
         if (serverId && scopes?.length) {
           const scoped = await tryLoadArtistDetailMultiScope(scopes, serverId, artistId);
-          if (scoped) setRelatedAlbums(scoped.albums.filter(a => a.id !== id));
+          if (scoped && isCurrent()) {
+            setRelatedAlbums(scoped.albums.filter(a => ownedEntityKey(a) !== ownedEntityKey(currentAlbum)));
+          }
           return;
         }
         if (useLocalArtist && serverId) {
           const artistLocal = localBytesOnly
             ? await loadArtistFromLocalPlayback(serverId, artistId)
             : await loadArtistFromLibraryIndex(serverId, artistId);
-          if (artistLocal) {
-            setRelatedAlbums(artistLocal.albums.filter(a => a.id !== id));
+          if (artistLocal && isCurrent()) {
+            setRelatedAlbums(artistLocal.albums.filter(a => ownedEntityKey(a) !== ownedEntityKey(currentAlbum)));
             return;
           }
         }
         const relatedServerId = serverId ?? detailServerId ?? activeServerId;
         if (!relatedServerId) return;
         const artistData = await resolveArtist(relatedServerId, artistId);
-        if (artistData) {
-          setRelatedAlbums(artistData.albums.filter(a => a.id !== id));
+        if (artistData && isCurrent()) {
+          setRelatedAlbums(artistData.albums.filter(a => ownedEntityKey(a) !== ownedEntityKey(currentAlbum)));
         }
       } catch (e) {
         console.error('Failed to fetch related albums', e);
@@ -109,33 +134,35 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
       if (offlineBrowseActive && detailServerId) {
         const local = await resolveAlbum(detailServerId, id);
         if (local) {
-          applyAlbumPayload(local);
+          if (!applyAlbumPayload(local)) return;
           await loadRelatedAlbums(
             detailServerId,
             local.album.artistId,
+            local.album,
             true,
             offlineLocalBrowseEnabled(detailServerId),
           );
           return;
         }
-        setLoading(false);
+        finishWithoutAlbum();
         return;
       }
 
       if (detailServerId && browseScope.pairs.length > 0) {
         const multi = await tryLoadAlbumDetailMultiScope(browseScope.pairs, detailServerId, id);
         if (multi) {
-          applyAlbumPayload(multi);
+          if (!applyAlbumPayload(multi)) return;
           await loadRelatedAlbums(
             multi.album.serverId ?? detailServerId,
             multi.album.artistId,
+            multi.album,
             true,
             false,
             browseScope.pairs,
           );
           return;
         }
-        setLoading(false);
+        finishWithoutAlbum();
         return;
       }
 
@@ -149,8 +176,8 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
         try {
           const local = await resolveAlbum(detailServerId, id);
           if (local) {
-            applyAlbumPayload(local);
-            await loadRelatedAlbums(detailServerId, local.album.artistId, true, false);
+            if (!applyAlbumPayload(local)) return;
+            await loadRelatedAlbums(detailServerId, local.album.artistId, local.album, true, false);
             return;
           }
         } catch { /* fall through */ }
@@ -165,49 +192,55 @@ export function useAlbumDetailData(id: string | undefined): UseAlbumDetailDataRe
           try {
             const local = await resolveAlbum(detailServerId, id);
             if (local) {
-              applyAlbumPayload(local);
-              await loadRelatedAlbums(detailServerId, local.album.artistId, true, false);
+              if (!applyAlbumPayload(local)) return;
+              await loadRelatedAlbums(detailServerId, local.album.artistId, local.album, true, false);
               return;
             }
           } catch { /* ignore */ }
         }
-        setLoading(false);
+        finishWithoutAlbum();
         return;
       }
 
       try {
         const sid = detailServerId ?? activeServerId;
         if (!sid) {
-          setLoading(false);
+          finishWithoutAlbum();
           return;
         }
         const data = await resolveAlbum(sid, id);
         if (!data) {
-          setLoading(false);
+          finishWithoutAlbum();
           return;
         }
-        applyAlbumPayload(data);
-        await loadRelatedAlbums(detailServerId, data.album.artistId, false, false);
+        if (!applyAlbumPayload(data)) return;
+        await loadRelatedAlbums(data.album.serverId ?? sid, data.album.artistId, data.album, false, false);
       } catch {
         if (canLoadLocal && detailServerId) {
           try {
             const local = await loadAlbumFromLibraryIndex(detailServerId, id);
             if (local) {
-              applyAlbumPayload(local);
-              await loadRelatedAlbums(detailServerId, local.album.artistId, true, false);
+              if (!applyAlbumPayload(local)) return;
+              await loadRelatedAlbums(detailServerId, local.album.artistId, local.album, true, false);
               return;
             }
           } catch { /* ignore */ }
         }
-        setLoading(false);
+        finishWithoutAlbum();
       }
     })();
+
+    return () => {
+      if (loadGenerationRef.current === generation) loadGenerationRef.current += 1;
+    };
   }, [
     activeServerId,
     detailServerId,
     favoritesOfflineEnabled,
     id,
+    invalidExplicitServer,
     libraryBrowseScopeVersion,
+    librarySyncRevision,
     offlineBrowseActive,
     searchParams,
   ]);

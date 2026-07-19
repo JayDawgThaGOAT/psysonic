@@ -19,7 +19,7 @@ import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
 import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
-import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 interface Props {
@@ -245,7 +245,9 @@ export function QueueCurrentTrack({
           </div>
           <div
             className={`queue-current-sub truncate${currentTrack.albumId ? ' is-link' : ''}`}
-            onClick={() => currentTrack.albumId && navigate(`/album/${currentTrack.albumId}`)}
+            onClick={() => currentTrack.albumId && navigate(buildAlbumDetailPath(currentTrack.albumId, {
+              serverId: currentTrack.serverId,
+            }))}
           >{currentTrack.album}</div>
           {currentTrack.year && (
             <div className="queue-current-sub">{currentTrack.year}</div>

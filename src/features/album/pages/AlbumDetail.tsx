@@ -1,8 +1,8 @@
-import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { setRating, star, unstar } from '@/lib/api/subsonicStarRating';
 import { queueSongStar, queueSongRating } from '@/features/playback/store/pendingStarSync';
 import { getAlbumForServer } from '@/lib/api/subsonicLibrary';
-import { getArtistInfo } from '@/lib/api/subsonicArtists';
+import { getArtistInfoForServer } from '@/lib/api/subsonicArtists';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { shuffleArray } from '@/lib/util/shuffleArray';
@@ -51,6 +51,8 @@ import { isLosslessMode } from '@/lib/library/losslessMode';
 import { readDetailServerId } from '@/lib/navigation/detailServerScope';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineActionPolicy } from '@/features/offline';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
+import { sameQueueTrack } from '@/features/playback';
 
 export default function AlbumDetail() {
   const { t } = useTranslation();
@@ -77,12 +79,15 @@ export default function AlbumDetail() {
   const [ratings, setRatings] = useState<Record<string, number>>({});
   const [bio, setBio] = useState<string | null>(null);
   const [bioOpen, setBioOpen] = useState(false);
+  const bioRequestRef = useRef(0);
   const downloadAlbum = useOfflineStore(s => s.downloadAlbum);
   const deleteAlbum = useOfflineStore(s => s.deleteAlbum);
-  const serverId = readDetailServerId(searchParams, auth.activeServerId) ?? '';
+  const routeServerId = readDetailServerId(searchParams, auth.activeServerId) ?? '';
+  const albumOwnerServerId = album?.album.serverId ?? routeServerId;
+  const albumOwnerId = album?.album.id ?? '';
   const entityRatingSupportByServer = useAuthStore(s => s.entityRatingSupportByServer);
   const setEntityRatingSupport = useAuthStore(s => s.setEntityRatingSupport);
-  const albumEntityRatingSupport = entityRatingSupportByServer[serverId] ?? 'unknown';
+  const albumEntityRatingSupport = entityRatingSupportByServer[albumOwnerServerId] ?? 'unknown';
   const offlineCtx = useOfflineBrowseContext();
   const albumActionPolicy = offlineActionPolicy('albumDetail', offlineCtx.active);
   const userMetadataMutationRef = useRef(false);
@@ -93,7 +98,7 @@ export default function AlbumDetail() {
   const inSelectMode = selectedCount > 0;
 
   // Derive a stable albumId for the selectors below (empty string when not yet loaded).
-  const albumId = album?.album.id ?? '';
+  const albumId = albumOwnerId;
 
   const onReconcileApplied = useCallback((id: string) => {
     usePlayerStore.setState(s => {
@@ -101,14 +106,14 @@ export default function AlbumDetail() {
       const userRatingOverrides = { ...s.userRatingOverrides };
       delete starredOverrides[id];
       delete userRatingOverrides[id];
-      delete starredOverrides[ownedEntityKey({ id, serverId })];
-      delete userRatingOverrides[ownedEntityKey({ id, serverId })];
+      delete starredOverrides[ownedEntityKey({ id, serverId: albumOwnerServerId })];
+      delete userRatingOverrides[ownedEntityKey({ id, serverId: albumOwnerServerId })];
       return { starredOverrides, userRatingOverrides };
     });
-  }, [serverId]);
+  }, [albumOwnerServerId]);
 
   useAlbumServerMetadataReconcile({
-    serverId,
+    serverId: albumOwnerServerId,
     albumId,
     album: album?.album,
     setAlbum,
@@ -119,17 +124,17 @@ export default function AlbumDetail() {
 
   const isStarred = useMemo(() => {
     if (!albumId) return false;
-    const override = ownedOverrideValue(starredOverrides, { id: albumId, serverId });
+    const override = ownedOverrideValue(starredOverrides, { id: albumId, serverId: albumOwnerServerId });
     if (override !== undefined) return override;
     return !!album?.album.starred;
-  }, [albumId, album?.album.starred, serverId, starredOverrides]);
+  }, [albumId, album?.album.starred, albumOwnerServerId, starredOverrides]);
 
   const albumEntityRating = useMemo(() => {
     if (!albumId) return 0;
-    const override = ownedOverrideValue(userRatingOverrides, { id: albumId, serverId });
+    const override = ownedOverrideValue(userRatingOverrides, { id: albumId, serverId: albumOwnerServerId });
     if (override !== undefined) return override;
     return album?.album.userRating ?? 0;
-  }, [albumId, album?.album.userRating, serverId, userRatingOverrides]);
+  }, [albumId, album?.album.userRating, albumOwnerServerId, userRatingOverrides]);
 
   // React Compiler rule: manual memoization is intentional and must be preserved.
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
@@ -139,35 +144,52 @@ export default function AlbumDetail() {
     return album.songs.filter(s => isLosslessSuffix(s.suffix));
   }, [album?.songs, losslessOnly]);
 
-  const offlineSongIds = useMemo(
-    () => (effectiveSongs ?? album?.songs ?? []).map(s => s.id),
-    [effectiveSongs, album?.songs],
+  const representativeSongs = useMemo(
+    () => (effectiveSongs ?? album?.songs ?? []).filter(song => (
+      (!song.serverId
+        || !albumOwnerServerId
+        || resolveIndexKey(song.serverId) === resolveIndexKey(albumOwnerServerId))
+      && (!song.albumId || !albumOwnerId || song.albumId === albumOwnerId)
+    )),
+    [effectiveSongs, album?.songs, albumOwnerId, albumOwnerServerId],
   );
-  const { resolvedOfflineStatus, offlineProgress } = useAlbumOfflineState(albumId, serverId, offlineSongIds);
+  const offlineSongIds = useMemo(() => representativeSongs.map(s => s.id), [representativeSongs]);
+  const { resolvedOfflineStatus, offlineProgress } = useAlbumOfflineState(
+    albumId,
+    albumOwnerServerId,
+    offlineSongIds,
+  );
 
   useEffect(() => {
     if (!albumId || !album || offlineSongIds.length === 0) return;
-    const songs = effectiveSongs ?? album.songs;
     let cancelled = false;
     void reconcileLibraryTierForAlbum(
-      serverId,
-      songs,
+      albumOwnerServerId,
+      representativeSongs,
       { kind: 'album', sourceId: albumId, displayName: album.album.name },
     ).then(() => {
       if (cancelled) return;
-      if (!isOfflinePinComplete(albumId, serverId, offlineSongIds)) return;
+      if (!isOfflinePinComplete(albumId, albumOwnerServerId, offlineSongIds)) return;
       useOfflineJobStore.setState(s => ({
-        jobs: s.jobs.filter(j => j.albumId !== albumId || j.serverId !== serverId),
+        jobs: s.jobs.filter(j => j.albumId !== albumId || j.serverId !== albumOwnerServerId),
       }));
     });
     return () => { cancelled = true; };
-  }, [albumId, serverId, album, effectiveSongs, offlineSongIds]);
+  }, [albumId, albumOwnerServerId, album, representativeSongs, offlineSongIds]);
 
   useEffect(() => {
-    if (!albumId || !effectiveSongs?.length) return;
-    rememberAlbumDistinctDiscCovers(albumId, effectiveSongs);
-    return () => forgetAlbumDistinctDiscCovers(albumId);
-  }, [albumId, effectiveSongs]);
+    if (!albumId || representativeSongs.length === 0) return;
+    rememberAlbumDistinctDiscCovers(albumId, representativeSongs, albumOwnerServerId);
+    return () => forgetAlbumDistinctDiscCovers(albumId, albumOwnerServerId);
+  }, [albumId, albumOwnerServerId, representativeSongs]);
+
+  useEffect(() => {
+    bioRequestRef.current += 1;
+    // React Compiler set-state-in-effect rule: reset route-owned async state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBio(null);
+    setBioOpen(false);
+  }, [albumOwnerServerId, album?.album.artistId]);
 
 const handlePlayAll = () => {
      if (!album || !effectiveSongs) return;
@@ -214,27 +236,29 @@ const handleShuffleAll = () => {
        if (!t.genre && albumGenre) t.genre = albumGenre;
        return t;
      });
-     const track = tracks.find(t => t.id === song.id) || songToTrack(song);
-     playTrack(track, tracks);
+      const clickedTrack = songToTrack(song);
+      const track = tracks.find(t => sameQueueTrack(t, clickedTrack)) || clickedTrack;
+      playTrack(track, tracks);
    };
 
    const handleDoubleClickSong = (song: SubsonicSong) => addTrackToOrbit(song.id, song.serverId);
 
-  const handleRate = (songId: string, rating: number) => {
-    setRatings(r => ({ ...r, [songId]: rating }));
+  const handleRate = (song: SubsonicSong, rating: number) => {
+    setRatings(r => ({ ...r, [ownedEntityKey(song)]: rating }));
     // F4: optimistic override + retried server sync via the central helper.
-    queueSongRating(songId, rating, serverId || undefined);
+    queueSongRating(song.id, rating, song.serverId ?? (albumOwnerServerId || undefined));
   };
 
   const handleAlbumEntityRating = async (rating: number) => {
-    if (!album || album.album.id !== id) return;
+    if (!album || !albumOwnerServerId) return;
     const albumId = album.album.id;
-    const ratingAtStart = albumId in userRatingOverrides
-      ? userRatingOverrides[albumId]
-      : (album.album.userRating ?? 0);
+    const albumOwner = { id: albumId, serverId: albumOwnerServerId };
+    const ratingAtStart = ownedOverrideValue(userRatingOverrides, albumOwner)
+      ?? album.album.userRating
+      ?? 0;
 
     userMetadataMutationRef.current = true;
-    setUserRatingOverride(albumId, rating);
+    setUserRatingOverride(ownedEntityKey(albumOwner), rating);
 
     if (albumEntityRatingSupport !== 'full') {
       userMetadataMutationRef.current = false;
@@ -242,15 +266,15 @@ const handleShuffleAll = () => {
     }
 
     try {
-      await setRating(albumId, rating, { serverId, kind: 'album' });
+      await setRating(albumId, rating, { serverId: albumOwnerServerId, kind: 'album' });
       setAlbum(cur =>
         cur && cur.album.id === albumId
           ? { ...cur, album: { ...cur.album, userRating: rating } }
           : cur,
       );
     } catch (err) {
-      setUserRatingOverride(albumId, ratingAtStart);
-      setEntityRatingSupport(serverId, 'track_only');
+      setUserRatingOverride(ownedEntityKey(albumOwner), ratingAtStart);
+      setEntityRatingSupport(albumOwnerServerId, 'track_only');
       showToast(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
         4500,
@@ -262,15 +286,17 @@ const handleShuffleAll = () => {
   };
 
   const handleBio = async () => {
-    if (!album) return;
+    if (!album || !albumOwnerServerId) return;
     if (bio) { setBioOpen(true); return; }
-    const info = await getArtistInfo(album.album.artistId);
+    const generation = ++bioRequestRef.current;
+    const info = await getArtistInfoForServer(albumOwnerServerId, album.album.artistId);
+    if (bioRequestRef.current !== generation) return;
     setBio(info.biography ?? t('albumDetail.noBio'));
     setBioOpen(true);
   };
 
   const handleDownload = async () => {
-    if (!album) return;
+    if (!album || !albumOwnerServerId) return;
     const { name, id: albumId } = album.album;
 
     const folder = auth.downloadFolder || await requestDownloadFolder();
@@ -278,7 +304,7 @@ const handleShuffleAll = () => {
 
     const filename = `${sanitizeFilename(name)}.zip`;
     const destPath = await join(folder, filename);
-    const url = buildDownloadUrl(albumId);
+    const url = buildDownloadUrlForServer(albumOwnerServerId, albumId);
     const downloadId = crypto.randomUUID();
 
     const { start, complete, fail } = useZipDownloadStore.getState();
@@ -293,12 +319,13 @@ const handleShuffleAll = () => {
   };
 
   const toggleStar = async () => {
-    if (!album) return;
+    if (!album || !albumOwnerServerId) return;
     const wasStarred = isStarred;
     const previousStarred = album.album.starred;
     const nextStarred = !wasStarred;
+    const albumOwner = { id: album.album.id, serverId: albumOwnerServerId };
     userMetadataMutationRef.current = true;
-    setStarredOverride(album.album.id, nextStarred);
+    setStarredOverride(ownedEntityKey(albumOwner), nextStarred);
     setAlbum(prev => prev ? {
       ...prev,
       album: {
@@ -308,7 +335,7 @@ const handleShuffleAll = () => {
     } : prev);
     try {
       const meta = {
-        serverId: serverId || album.album.serverId,
+        serverId: albumOwnerServerId,
         name: album.album.name,
         artist: album.album.artist,
         artistId: album.album.artistId,
@@ -319,7 +346,7 @@ const handleShuffleAll = () => {
       else await star(album.album.id, 'album', meta);
     } catch (e) {
       console.error('Failed to toggle star', e);
-      setStarredOverride(album.album.id, wasStarred);
+      setStarredOverride(ownedEntityKey(albumOwner), wasStarred);
       setAlbum(prev => prev ? {
         ...prev,
         album: {
@@ -334,24 +361,25 @@ const handleShuffleAll = () => {
 
   const toggleSongStar = (song: SubsonicSong, e: React.MouseEvent) => {
     e.stopPropagation();
-    const wasStarred = starredSongs.has(song.id);
+    const songKey = ownedEntityKey(song);
+    const wasStarred = starredSongs.has(songKey);
     const next = new Set(starredSongs);
-    if (wasStarred) next.delete(song.id); else next.add(song.id);
+    if (wasStarred) next.delete(songKey); else next.add(songKey);
     setStarredSongs(next);
     // F4: optimistic override + retried server sync via the central helper.
-    queueSongStar(song.id, !wasStarred, song.serverId ?? (serverId || undefined));
+    queueSongStar(song.id, !wasStarred, song.serverId ?? (albumOwnerServerId || undefined));
   };
 
   const handleCacheOffline = useCallback(async () => {
-    if (!album) return;
+    if (!album || !albumOwnerServerId) return;
     if (resolvedOfflineStatus === 'queued') {
-      dequeueOfflinePin(album.album.id, serverId);
+      dequeueOfflinePin(album.album.id, albumOwnerServerId);
       return;
     }
-    let songs = effectiveSongs ?? album.songs;
-    if (serverId && shouldAttemptSubsonicForServer(serverId)) {
+    let songs = representativeSongs;
+    if (shouldAttemptSubsonicForServer(albumOwnerServerId)) {
       try {
-        const fresh = await getAlbumForServer(serverId, album.album.id);
+        const fresh = await getAlbumForServer(albumOwnerServerId, album.album.id);
         songs = losslessOnly
           ? fresh.songs.filter(s => isLosslessSuffix(s.suffix))
           : fresh.songs;
@@ -359,20 +387,33 @@ const handleShuffleAll = () => {
         /* keep album.songs from the page */
       }
     }
-    if (isOfflinePinComplete(album.album.id, serverId, songs.map(s => s.id))) return;
-    downloadAlbum(album.album.id, album.album.name, albumArtistDisplayName(album.album), album.album.coverArt, album.album.year, songs, serverId);
-  }, [album, downloadAlbum, serverId, effectiveSongs, losslessOnly, resolvedOfflineStatus]);
+    if (isOfflinePinComplete(album.album.id, albumOwnerServerId, songs.map(s => s.id))) return;
+    downloadAlbum(
+      album.album.id,
+      album.album.name,
+      albumArtistDisplayName(album.album),
+      album.album.coverArt,
+      album.album.year,
+      songs,
+      albumOwnerServerId,
+    );
+  }, [album, albumOwnerServerId, downloadAlbum, representativeSongs, losslessOnly, resolvedOfflineStatus]);
 
   const handleRemoveOffline = () => {
-    if (!album) return;
-    deleteAlbum(album.album.id, serverId);
+    if (!album || !albumOwnerServerId) return;
+    deleteAlbum(album.album.id, albumOwnerServerId);
   };
 
   // Must be before early returns — hooks must be called unconditionally.
-  const mergedStarredSongs = useMemo(() => new Set([
-    ...[...starredSongs].filter(id => starredOverrides[id] !== false),
-    ...Object.entries(starredOverrides).filter(([, v]) => v).map(([k]) => k),
-  ]), [starredSongs, starredOverrides]);
+  const mergedStarredSongs = useMemo(() => {
+    const merged = new Set<string>();
+    for (const song of effectiveSongs ?? album?.songs ?? []) {
+      const key = ownedEntityKey(song);
+      const override = ownedOverrideValue(starredOverrides, song);
+      if (override ?? starredSongs.has(key)) merged.add(key);
+    }
+    return merged;
+  }, [effectiveSongs, album?.songs, starredOverrides, starredSongs]);
 
   const { sortKey, sortDir, handleSort, displayedSongs } = useAlbumDetailSort({
     songs: effectiveSongs,
@@ -383,8 +424,8 @@ const handleShuffleAll = () => {
   });
 
   const albumCoverServerScope = useMemo(
-    () => coverServerScopeForServerId(album?.album.serverId || serverId),
-    [album?.album.serverId, serverId],
+    () => coverServerScopeForServerId(albumOwnerServerId),
+    [albumOwnerServerId],
   );
   const albumCoverRefResolved = useAlbumCoverRef(
     album?.album.id,
@@ -422,7 +463,7 @@ const handleShuffleAll = () => {
     <div className="album-detail animate-fade-in">
       <AlbumHeader
         info={info}
-        serverId={info.serverId ?? serverId}
+        serverId={albumOwnerServerId}
         headerArtistRefs={headerArtistRefs}
         songs={songs}
         coverRef={albumCoverRefResolved}
@@ -459,7 +500,7 @@ const handleShuffleAll = () => {
           setShowPlPicker={setShowPlPicker}
           t={t}
           actionPolicy={albumActionPolicy}
-          serverId={serverId}
+          songs={songs}
         />
       )}
 
@@ -490,7 +531,7 @@ const handleShuffleAll = () => {
           <h2 className="section-title album-related-title">{t('albumDetail.moreByArtist', { artist: info.artist })}</h2>
           <VirtualCardGrid
             items={relatedAlbums}
-            itemKey={(a, i) => `${a.id}-${i}`}
+            itemKey={a => ownedEntityKey(a)}
             rowVariant="album"
             disableVirtualization={perfFlags.disableMainstageVirtualLists}
             layoutSignal={relatedAlbums.length}

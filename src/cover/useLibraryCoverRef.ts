@@ -212,7 +212,7 @@ export function useArtistCoverRef(
 
 /** Track row / song card — album-scoped; multi-CD from library when indexed. */
 export function useTrackCoverRef(
-  song: Pick<SubsonicSong, 'id' | 'albumId' | 'coverArt' | 'discNumber'> | null | undefined,
+  song: Pick<SubsonicSong, 'id' | 'albumId' | 'coverArt' | 'discNumber' | 'serverId'> | null | undefined,
   serverScope: CoverServerScope = COVER_SCOPE_ACTIVE,
   options?: LibraryCoverRefOptions,
 ): CoverArtRef | undefined {
@@ -222,22 +222,23 @@ export function useTrackCoverRef(
   const albumId = song?.albumId;
   const coverArt = song?.coverArt;
   const discNumber = song?.discNumber;
+  const serverId = song?.serverId;
 
   const distinctDiscCovers = useMemo(
-    () => (albumId?.trim() ? resolveDistinctDiscCoversForAlbum(albumId) : false),
-    [albumId],
+    () => (albumId?.trim() ? resolveDistinctDiscCoversForAlbum(albumId, serverId) : false),
+    [albumId, serverId],
   );
 
   const syncRef = useMemo(() => {
     if (!songId?.trim() || !albumId?.trim()) return undefined;
     return albumCoverRefForSong(
-      { id: songId, albumId, coverArt, discNumber },
+      { id: songId, albumId, coverArt, discNumber, serverId },
       distinctDiscCovers,
       serverScope,
     );
     // `serverScope` is keyed via stable `scopeKey`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [songId, albumId, coverArt, discNumber, distinctDiscCovers, scopeKey]);
+  }, [songId, albumId, coverArt, discNumber, serverId, distinctDiscCovers, scopeKey]);
 
   const [ref, setRef] = useState<CoverArtRef | undefined>(syncRef);
 
@@ -324,6 +325,7 @@ export function usePlaybackTrackCoverRef(
   const albumId = track?.albumId;
   const coverArt = track?.coverArt;
   const discNumber = track?.discNumber;
+  const serverId = track?.serverId;
 
   const syncRef = useMemo(() => {
     if (!albumId?.trim() || !track) return undefined;
@@ -331,7 +333,7 @@ export function usePlaybackTrackCoverRef(
     // `scope` is keyed via the stable `scopeKey` string; the primitive track
     // fields recompute the ref when the playing track changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track, trackId, albumId, coverArt, discNumber, scopeKey]);
+  }, [track, trackId, albumId, coverArt, discNumber, serverId, scopeKey]);
 
   const [ref, setRef] = useState<CoverArtRef | undefined>(syncRef);
 
@@ -341,7 +343,7 @@ export function usePlaybackTrackCoverRef(
     const al = albumId?.trim();
     if (!tid || !al || !track) return;
     let cancelled = false;
-    const distinctDiscCovers = resolveDistinctDiscCoversForAlbum(al);
+    const distinctDiscCovers = resolveDistinctDiscCoversForAlbum(al, serverId);
     void resolveTrackCoverRefFromLibrary(
       { ...track, id: tid, albumId: al } as Pick<SubsonicSong, 'id' | 'albumId' | 'coverArt' | 'discNumber'>,
       scope,
@@ -371,7 +373,7 @@ export function usePlaybackTrackCoverRef(
     // `scope` is keyed via the stable `scopeKey` string; depending on the object
     // directly would re-resolve from SQLite on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track, trackId, albumId, coverArt, discNumber, scopeKey, syncRef]);
+  }, [track, trackId, albumId, coverArt, discNumber, serverId, scopeKey, syncRef]);
 
   return ref;
 }

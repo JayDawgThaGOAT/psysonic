@@ -6,6 +6,7 @@ import AlbumHeader from '@/features/album/components/AlbumHeader';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 
 const navigate = vi.fn();
+const copyEntityShareLink = vi.fn();
 
 vi.mock('react-router-dom', async importActual => {
   const actual = await importActual<typeof import('react-router-dom')>();
@@ -20,6 +21,9 @@ vi.mock('@/store/themeStore', () => ({ useThemeStore: () => false }));
 vi.mock('@/ui/StarRating', () => ({ default: () => null }));
 vi.mock('@/ui/OpenArtistRefInline', () => ({ OpenArtistRefInline: () => null }));
 vi.mock('@/cover/CoverArtImage', () => ({ CoverArtImage: () => null }));
+vi.mock('@/lib/share/copyEntityShareLink', () => ({
+  copyEntityShareLink: (...args: unknown[]) => copyEntityShareLink(...args),
+}));
 
 function baseProps() {
   return {
@@ -145,5 +149,26 @@ describe('AlbumHeader genres', () => {
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     expect(more).toHaveFocus();
+  });
+
+  it('preserves the album owner in genre return and share actions', async () => {
+    navigate.mockClear();
+    copyEntityShareLink.mockReset().mockResolvedValue(true);
+    const user = userEvent.setup();
+    renderWithProviders(
+      <AlbumHeader
+        {...baseProps()}
+        info={albumInfo({ genres: [{ name: 'Rock' }] })}
+        serverId="srv-b"
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'More albums in Rock' }));
+    expect(navigate).toHaveBeenCalledWith('/genres/Rock', {
+      state: { returnTo: '/album/al1?server=srv-b' },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Share album' }));
+    expect(copyEntityShareLink).toHaveBeenCalledWith('album', 'al1', { serverId: 'srv-b' });
   });
 });

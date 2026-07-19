@@ -1553,9 +1553,9 @@ fn lookup_artist_key(
     .map(Option::flatten)
 }
 
-/// Caller must pre-sort `candidates` by scope priority (lowest index first).
-fn merge_album_by_priority(candidates: &[LibraryAlbumDto]) -> LibraryAlbumDto {
-    let mut out = candidates.first().cloned().unwrap_or_else(|| LibraryAlbumDto {
+/// Caller must pre-sort `candidates` by full scope-pair priority (lowest index first).
+fn priority_album_candidate(candidates: &[LibraryAlbumDto]) -> LibraryAlbumDto {
+    candidates.first().cloned().unwrap_or_else(|| LibraryAlbumDto {
         server_id: String::new(),
         id: String::new(),
         name: String::new(),
@@ -1569,22 +1569,67 @@ fn merge_album_by_priority(candidates: &[LibraryAlbumDto]) -> LibraryAlbumDto {
         starred_at: None,
         synced_at: 0,
         raw_json: Value::Null,
-    });
-    for c in candidates.iter().skip(1) {
-        merge_optional_text(&mut out.name, &c.name);
-        merge_optional(&mut out.artist, &c.artist);
-        merge_optional(&mut out.artist_id, &c.artist_id);
-        merge_optional(&mut out.genre, &c.genre);
-        merge_optional(&mut out.cover_art_id, &c.cover_art_id);
-        merge_optional_i64(&mut out.year, c.year);
-        merge_optional_i64(&mut out.starred_at, c.starred_at);
-        merge_optional_i64(&mut out.song_count, c.song_count);
-        merge_optional_i64(&mut out.duration_sec, c.duration_sec);
-        if out.synced_at < c.synced_at {
-            out.synced_at = c.synced_at;
-        }
-    }
-    out
+    })
+}
+
+fn overlay_priority_album_row(
+    conn: &rusqlite::Connection,
+    album: &mut LibraryAlbumDto,
+) -> rusqlite::Result<()> {
+    let row = conn
+        .query_row(
+            "SELECT name, artist, artist_id, song_count, duration_sec, year, genre, cover_art_id, \
+                    starred_at, synced_at, raw_json \
+             FROM album WHERE server_id = ?1 AND id = ?2",
+            rusqlite::params![&album.server_id, &album.id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
+                    r.get::<_, i64>(9)?,
+                    r.get::<_, Option<String>>(10)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        name,
+        artist,
+        artist_id,
+        song_count,
+        duration_sec,
+        year,
+        genre,
+        cover_art_id,
+        starred_at,
+        synced_at,
+        raw_json,
+    )) = row
+    else {
+        return Ok(());
+    };
+    album.name = name;
+    album.artist = artist;
+    album.artist_id = artist_id;
+    album.song_count = song_count;
+    album.duration_sec = duration_sec;
+    album.year = year;
+    album.genre = genre;
+    album.cover_art_id = cover_art_id;
+    album.starred_at = starred_at;
+    album.synced_at = synced_at;
+    album.raw_json = raw_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or(Value::Null);
+    Ok(())
 }
 
 fn merge_optional_text(dst: &mut String, src: &str) {
@@ -1756,9 +1801,9 @@ pub fn album_detail(
             .into_iter()
             .map(|(_, album)| album)
             .collect();
-        let mut album = merge_album_by_priority(&albums);
-        album.starred_at =
-            read_album_starred_at(conn, server_id, album_id).unwrap_or(None);
+        let mut album = priority_album_candidate(&albums);
+        overlay_priority_album_row(conn, &mut album)?;
+        album.starred_at = read_album_starred_at(conn, &album.server_id, &album.id).unwrap_or(None);
         let tracks = fetch_scope_deduped_tracks_for_album_key(
             conn,
             scopes,
@@ -2680,7 +2725,7 @@ mod tests {
     }
 
     #[test]
-    fn album_detail_aggregates_metadata_by_priority() {
+    fn album_detail_keeps_priority_owner_metadata_coherent() {
         let store = LibraryStore::open_in_memory();
         seed_and_rebuild(
             &store,
@@ -2725,8 +2770,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(detail.album.year, Some(2001));
-        assert_eq!(detail.album.genre.as_deref(), Some("Jazz"));
-        assert_eq!(detail.album.cover_art_id.as_deref(), Some("cov-b"));
+        assert_eq!(detail.album.genre, None);
+        assert_eq!(detail.album.cover_art_id, None);
         assert_eq!(detail.tracks.len(), 1);
     }
 
@@ -2788,7 +2833,7 @@ mod tests {
     }
 
     #[test]
-    fn album_detail_star_reads_anchor_album_id() {
+    fn album_detail_star_reads_priority_owner_album_id() {
         let store = LibraryStore::open_in_memory();
         seed_and_rebuild(
             &store,
@@ -2838,12 +2883,59 @@ mod tests {
             &store,
             &LibraryScopeAlbumDetailRequest {
                 scopes: vec![scope_pair("s1", "lib-a"), scope_pair("s1", "lib-b")],
-                album_id: "alb-a".into(),
+                album_id: "alb-b".into(),
                 server_id: "s1".into(),
             },
         )
         .unwrap();
+        assert_eq!(detail.album.id, "alb-a");
         assert_eq!(detail.album.starred_at, Some(1111));
+    }
+
+    #[test]
+    fn album_detail_preserves_priority_owner_raw_json() {
+        let store = LibraryStore::open_in_memory();
+        seed_and_rebuild(
+            &store,
+            &[
+                track(
+                    "s1", "t-a1", "Song", Some("Artist"), "Album", "alb-a",
+                    Some("art1"), 200, "lib-a", Some(2001), None, None,
+                ),
+                track(
+                    "s2", "t-b1", "Song", Some("Artist"), "Album", "alb-b",
+                    Some("art2"), 200, "lib-b", Some(2002), Some("Jazz"), Some("cov-b"),
+                ),
+            ],
+        );
+        store
+            .with_conn("test", |c| {
+                c.execute(
+                    "INSERT INTO album (server_id, id, name, artist, artist_id, year, starred_at, synced_at, raw_json) \
+                     VALUES ('s1', 'alb-a', 'Album', 'Artist', 'art1', 2001, 1111, 1, \
+                             '{\"recordLabel\":\"Primary Records\"}'), \
+                            ('s2', 'alb-b', 'Album', 'Artist', 'art2', 2002, 2222, 1, \
+                             '{\"recordLabel\":\"Secondary Records\"}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let detail = album_detail(
+            &store,
+            &LibraryScopeAlbumDetailRequest {
+                scopes: vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")],
+                album_id: "alb-b".into(),
+                server_id: "s2".into(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(detail.album.server_id, "s1");
+        assert_eq!(detail.album.id, "alb-a");
+        assert_eq!(detail.album.starred_at, Some(1111));
+        assert_eq!(detail.album.raw_json["recordLabel"], "Primary Records");
     }
 
     #[test]

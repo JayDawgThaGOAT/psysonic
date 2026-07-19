@@ -26,9 +26,9 @@ describe('detailServerScope', () => {
     expect(readDetailServerId(params, 'srv-active')).toBe('srv-b');
   });
 
-  it('readDetailServerId falls back when server param is unknown', () => {
+  it('readDetailServerId fails closed when an explicit server param is unknown', () => {
     const params = new URLSearchParams('server=missing');
-    expect(readDetailServerId(params, 'srv-active')).toBe('srv-active');
+    expect(readDetailServerId(params, 'srv-active')).toBeNull();
   });
 
   it('resolves route and fallback index keys to profile ids', () => {

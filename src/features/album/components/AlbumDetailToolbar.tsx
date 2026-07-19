@@ -4,6 +4,9 @@ import type { TFunction } from 'i18next';
 import { useSelectionStore } from '@/store/selectionStore';
 import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/ContextMenu';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
+import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 
 interface Props {
   filterText: string;
@@ -14,7 +17,7 @@ interface Props {
   setShowPlPicker: React.Dispatch<React.SetStateAction<boolean>>;
   t: TFunction;
   actionPolicy?: OfflineActionPolicy;
-  serverId?: string;
+  songs: SubsonicSong[];
 }
 
 /**
@@ -35,9 +38,19 @@ export function AlbumDetailToolbar({
   setShowPlPicker,
   t,
   actionPolicy,
-  serverId,
+  songs,
 }: Props) {
   const policy = actionPolicy ?? offlineActionPolicy('albumDetail', false);
+  const selectedIds = useSelectionStore(s => s.selectedIds);
+  const selectedSongs = songs.filter(song => selectedIds.has(ownedEntityKey(song)));
+  const selectedOwnerKeys = new Set(
+    selectedSongs.map(song => song.serverId ? resolveIndexKey(song.serverId) : '').filter(Boolean),
+  );
+  const playlistOwner = selectedOwnerKeys.size === 1 ? selectedSongs[0]?.serverId : undefined;
+  const canAddSelectionToPlaylist = policy.canAddToPlaylist
+    && selectedSongs.length > 0
+    && selectedSongs.length === selectedIds.size
+    && !!playlistOwner;
   return (
     <div className="album-track-toolbar">
       <div className="album-track-toolbar-filter">
@@ -65,7 +78,7 @@ export function AlbumDetailToolbar({
             <span className="bulk-action-count">
               {t('common.bulkSelected', { count: selectedCount })}
             </span>
-            {policy.canAddToPlaylist && (
+            {canAddSelectionToPlaylist && (
               <div className="bulk-pl-picker-wrap">
                 <button
                   className="btn btn-surface btn-sm"
@@ -76,8 +89,8 @@ export function AlbumDetailToolbar({
                 </button>
                 {showPlPicker && (
                   <AddToPlaylistSubmenu
-                    songIds={[...useSelectionStore.getState().selectedIds]}
-                    serverId={serverId}
+                    songIds={selectedSongs.map(song => song.id)}
+                    serverId={playlistOwner}
                     onDone={() => { setShowPlPicker(false); useSelectionStore.getState().clearAll(); }}
                     dropDown
                   />

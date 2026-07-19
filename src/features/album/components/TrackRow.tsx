@@ -17,6 +17,8 @@ import i18n from '@/lib/i18n';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { sameQueueTrack } from '@/features/playback';
 
 type ContextMenuFn = (
   x: number,
@@ -30,7 +32,7 @@ interface TrackRowProps {
   globalIdx: number;
   visibleCols: readonly ColDef[];
   gridStyle: React.CSSProperties;
-  currentTrackId: string | null;
+  currentTrack: Track | null;
   isPlaying: boolean;
   ratingValue: number;
   isStarred: boolean;
@@ -38,12 +40,12 @@ interface TrackRowProps {
   isContextMenuSong: boolean;
   onPlaySong: (song: SubsonicSong) => void;
   onDoubleClickSong?: (song: SubsonicSong) => void;
-  onRate: (songId: string, rating: number) => void;
+  onRate: (song: SubsonicSong, rating: number) => void;
   onToggleSongStar: (song: SubsonicSong, e: React.MouseEvent) => void;
   onContextMenu: ContextMenuFn;
   onToggleSelect: (id: string, globalIdx: number, shift: boolean) => void;
   onDragStart: (song: SubsonicSong, me: MouseEvent) => void;
-  setContextMenuSongId: (id: string | null) => void;
+  setContextMenuSongKey: (id: string | null) => void;
   actionPolicy?: OfflineActionPolicy;
 }
 
@@ -57,7 +59,7 @@ export const TrackRow = React.memo(function TrackRow({
   globalIdx,
   visibleCols,
   gridStyle,
-  currentTrackId,
+  currentTrack,
   isPlaying,
   ratingValue,
   isStarred,
@@ -70,17 +72,18 @@ export const TrackRow = React.memo(function TrackRow({
   onContextMenu,
   onToggleSelect,
   onDragStart,
-  setContextMenuSongId,
+  setContextMenuSongKey,
   actionPolicy,
 }: TrackRowProps) {
   const policy = actionPolicy ?? offlineActionPolicy('trackRow', false);
   const { t } = useTranslation();
   const navigate = useNavigate();
   const showBitrate = useThemeStore(s => s.showBitrate);
-  const isSelected = useSelectionStore(s => s.selectedIds.has(song.id));
-  const isActive = currentTrackId === song.id;
-  const isPreviewing = usePreviewStore(s => s.previewingId === song.id);
-  const isPreviewAudioStarted = usePreviewStore(s => s.previewingId === song.id && s.audioStarted);
+  const songKey = ownedEntityKey(song);
+  const isSelected = useSelectionStore(s => s.selectedIds.has(songKey));
+  const isActive = sameQueueTrack(currentTrack, song);
+  const isPreviewing = usePreviewStore(s => sameQueueTrack(s.previewingTrack, song));
+  const isPreviewAudioStarted = usePreviewStore(s => sameQueueTrack(s.previewingTrack, song) && s.audioStarted);
 
   const renderCell = (colDef: ColDef) => {
     const key = colDef.key as ColKey;
@@ -93,7 +96,7 @@ export const TrackRow = React.memo(function TrackRow({
           >
             <span
               className={`bulk-check${isSelected ? ' checked' : ''}${inSelectMode ? ' bulk-check-visible' : ''}`}
-              onClick={e => { e.stopPropagation(); onToggleSelect(song.id, globalIdx, e.shiftKey); }}
+              onClick={e => { e.stopPropagation(); onToggleSelect(songKey, globalIdx, e.shiftKey); }}
             />
             {isActive && isPlaying ? (
               <span className="track-num-eq">
@@ -178,7 +181,7 @@ export const TrackRow = React.memo(function TrackRow({
           <StarRating
             key="rating"
             value={ratingValue}
-            onChange={r => onRate(song.id, r)}
+            onChange={r => onRate(song, r)}
             disabled={!policy.canRate}
           />
         );
@@ -232,9 +235,9 @@ export const TrackRow = React.memo(function TrackRow({
       onClick={e => {
         if ((e.target as HTMLElement).closest('button, a, input')) return;
         if (e.ctrlKey || e.metaKey) {
-          onToggleSelect(song.id, globalIdx, false);
+          onToggleSelect(songKey, globalIdx, false);
         } else if (inSelectMode) {
-          onToggleSelect(song.id, globalIdx, e.shiftKey);
+          onToggleSelect(songKey, globalIdx, e.shiftKey);
         } else {
           onPlaySong(song);
         }
@@ -246,7 +249,7 @@ export const TrackRow = React.memo(function TrackRow({
       } : undefined}
       onContextMenu={e => {
         e.preventDefault();
-        setContextMenuSongId(song.id);
+        setContextMenuSongKey(songKey);
         onContextMenu(e.clientX, e.clientY, songToTrack(song), 'album-song');
       }}
       role="row"

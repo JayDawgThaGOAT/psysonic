@@ -14,3 +14,4 @@ export {
   playbackProfileIdForTrack,
 } from './utils/playback/playbackServer';
 export { useVolumeToggle } from './hooks/useVolumeToggle';
+export { sameQueueTrack } from './utils/playback/queueIdentity';

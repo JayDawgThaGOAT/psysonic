@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
-import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
+import { ownedEntityKey, ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export type AlbumSortKey = 'natural' | 'title' | 'artist' | 'album' | 'favorite' | 'rating' | 'duration' | 'playCount' | 'lastPlayed' | 'bpm';
 
@@ -73,12 +73,12 @@ export function useAlbumDetailSort({
           case 'artist': av = a.artist ?? ''; bv = b.artist ?? ''; break;
           case 'album': av = a.album ?? ''; bv = b.album ?? ''; break;
           case 'favorite':
-            av = starredSongs.has(a.id) ? 1 : 0;
-            bv = starredSongs.has(b.id) ? 1 : 0;
+            av = starredSongs.has(ownedEntityKey(a)) ? 1 : 0;
+            bv = starredSongs.has(ownedEntityKey(b)) ? 1 : 0;
             break;
           case 'rating':
-            av = ratings[a.id] ?? ownedOverrideValue(userRatingOverrides, a) ?? a.userRating ?? 0;
-            bv = ratings[b.id] ?? ownedOverrideValue(userRatingOverrides, b) ?? b.userRating ?? 0;
+            av = ratings[ownedEntityKey(a)] ?? ownedOverrideValue(userRatingOverrides, a) ?? a.userRating ?? 0;
+            bv = ratings[ownedEntityKey(b)] ?? ownedOverrideValue(userRatingOverrides, b) ?? b.userRating ?? 0;
             break;
           case 'duration': av = a.duration ?? 0; bv = b.duration ?? 0; break;
           case 'playCount': av = a.playCount ?? 0; bv = b.playCount ?? 0; break;

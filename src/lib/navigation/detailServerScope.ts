@@ -44,8 +44,7 @@ export function readDetailServerId(
   fallback: string | null | undefined,
 ): string | null {
   const raw = searchParams.get('server');
-  const explicit = raw ? findServerByIdOrIndexKey(raw)?.id : undefined;
-  if (explicit) return explicit;
+  if (raw) return findServerByIdOrIndexKey(raw)?.id ?? null;
   if (!fallback) return null;
   return findServerByIdOrIndexKey(fallback)?.id ?? null;
 }

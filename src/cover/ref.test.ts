@@ -95,6 +95,20 @@ describe('resolveDistinctDiscCoversForAlbum', () => {
     ]);
     expect(resolveDistinctDiscCoversForAlbum('al-same')).toBe(false);
   });
+
+  it('isolates equal album ids by owner server', () => {
+    rememberAlbumDistinctDiscCovers('shared', [
+      { id: 'a1', albumId: 'shared', coverArt: 'mf-a', discNumber: 1 },
+      { id: 'a2', albumId: 'shared', coverArt: 'mf-b', discNumber: 2 },
+    ], 'srv-a');
+    rememberAlbumDistinctDiscCovers('shared', [
+      { id: 'b1', albumId: 'shared', coverArt: 'mf-same', discNumber: 1 },
+      { id: 'b2', albumId: 'shared', coverArt: 'mf-same', discNumber: 2 },
+    ], 'srv-b');
+
+    expect(resolveDistinctDiscCoversForAlbum('shared', 'srv-a')).toBe(true);
+    expect(resolveDistinctDiscCoversForAlbum('shared', 'srv-b')).toBe(false);
+  });
 });
 
 describe('albumCoverRefForSong', () => {
@@ -139,5 +153,27 @@ describe('albumCoverRefForPlayback', () => {
       { kind: 'active' },
     );
     expect(ref?.cacheEntityId).toBe('mf-b');
+  });
+
+  it('uses the playing track owner for duplicate album ids', () => {
+    rememberAlbumDistinctDiscCovers('shared', [
+      { id: 'a1', albumId: 'shared', coverArt: 'mf-a', discNumber: 1 },
+      { id: 'a2', albumId: 'shared', coverArt: 'mf-b', discNumber: 2 },
+    ], 'srv-a');
+
+    expect(albumCoverRefForPlayback({
+      albumId: 'shared',
+      coverArt: 'mf-b',
+      id: 'a2',
+      discNumber: 2,
+      serverId: 'srv-a',
+    }, { kind: 'active' })?.cacheEntityId).toBe('mf-b');
+    expect(albumCoverRefForPlayback({
+      albumId: 'shared',
+      coverArt: 'mf-b',
+      id: 'b2',
+      discNumber: 2,
+      serverId: 'srv-b',
+    }, { kind: 'active' })?.cacheEntityId).toBe('shared');
   });
 });
