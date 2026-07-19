@@ -9,6 +9,7 @@ import {
 } from '@/features/playback/store/applyServerPlayQueue';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { filterQueueRefsForServerProfile } from '@/features/playback/utils/playback/trackServerScope';
+import { sameQueueTrack } from '@/features/playback/utils/playback/queueIdentity';
 
 type StructuralQueue = {
   trackIds: string[];
@@ -64,7 +65,10 @@ function localSnapshotStillCurrent(snapshot: LocalQueueSnapshot): boolean {
   const state = usePlayerStore.getState();
   if (
     state.queueIndex !== snapshot.queueIndex
-    || state.currentTrack?.id !== snapshot.currentTrack?.id
+    || !(
+      state.currentTrack == null && snapshot.currentTrack == null
+      || sameQueueTrack(state.currentTrack, snapshot.currentTrack)
+    )
     || state.isPlaying !== snapshot.isPlaying
     || (state.currentRadio?.id ?? null) !== snapshot.currentRadioId
     || state.queueItems.length !== snapshot.queueItems.length

@@ -17,6 +17,10 @@
  */
 
 import type { QueueItemRef } from '@/lib/media/trackTypes';
+import {
+  queueItemIdentityKey,
+  queueTrackIdFromIdentity,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 /** Module-level, like the other non-render queue state: the UI never reads it. */
 let originalOrder: string[] = [];
@@ -44,7 +48,7 @@ export function shuffled<T>(items: T[]): T[] {
 }
 
 /**
- * Reorders `items` back into `order`, matching by track id.
+ * Reorders `items` back into `order`, matching by server + track id.
  *
  * Ids can repeat (the same track may sit in the queue twice), so each id consumes
  * one ref at a time rather than filtering. Refs the remembered order does not
@@ -53,19 +57,29 @@ export function shuffled<T>(items: T[]): T[] {
  * original list, so there is no position to restore them to.
  */
 export function restoreOriginalOrder(items: QueueItemRef[], order: string[]): QueueItemRef[] {
-  const pools = new Map<string, QueueItemRef[]>();
+  const identityPools = new Map<string, QueueItemRef[]>();
+  const legacyPools = new Map<string, QueueItemRef[]>();
   for (const ref of items) {
-    const pool = pools.get(ref.trackId);
-    if (pool) pool.push(ref);
-    else pools.set(ref.trackId, [ref]);
+    const identity = queueItemIdentityKey(ref);
+    const identityPool = identityPools.get(identity);
+    if (identityPool) identityPool.push(ref);
+    else identityPools.set(identity, [ref]);
+
+    const legacyPool = legacyPools.get(ref.trackId);
+    if (legacyPool) legacyPool.push(ref);
+    else legacyPools.set(ref.trackId, [ref]);
   }
 
   const restored: QueueItemRef[] = [];
-  for (const trackId of order) {
-    const ref = pools.get(trackId)?.shift();
+  const restoredSet = new Set<QueueItemRef>();
+  for (const identity of order) {
+    const legacyTrackId = queueTrackIdFromIdentity(identity) ?? identity;
+    const pool = identityPools.get(identity) ?? legacyPools.get(legacyTrackId);
+    let ref = pool?.shift();
+    while (ref && restoredSet.has(ref)) ref = pool?.shift();
     if (ref) restored.push(ref);
+    if (ref) restoredSet.add(ref);
   }
 
-  const restoredSet = new Set(restored);
   return [...restored, ...items.filter(ref => !restoredSet.has(ref))];
 }

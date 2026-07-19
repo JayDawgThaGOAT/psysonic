@@ -1,6 +1,9 @@
 import { playbackReportStart } from '@/features/playback/store/playbackReportSession';
 import { audioStop } from '@/lib/api/audio';
-import { getPlaybackServerId } from '@/features/playback/utils/playback/playbackServer';
+import {
+  getPlaybackServerId,
+  playbackProfileIdForTrack,
+} from '@/features/playback/utils/playback/playbackServer';
 import { getPlaybackSourceKind } from '@/features/playback/utils/playback/resolvePlaybackUrl';
 import {
   bumpPlayGeneration,
@@ -14,7 +17,10 @@ import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
 import { seedQueueResolver } from '@/features/playback/store/queueTrackResolver';
 import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
-import { sameQueueTrackId } from '@/features/playback/utils/playback/queueIdentity';
+import {
+  queueItemRefMatchesTrack,
+  sameQueueTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
 import { queueUndoRestoreAudioEngine } from '@/features/playback/store/queueUndoAudioRestore';
 import {
   setPendingQueueListScrollTop,
@@ -69,7 +75,7 @@ export function applyQueueHistorySnapshot(
 
   if (snap.currentTrack == null && prior.currentTrack) {
     const playing = prior.currentTrack;
-    const pos = nextQueue.findIndex(t => sameQueueTrackId(t.id, playing.id));
+    const pos = nextItems.findIndex(ref => queueItemRefMatchesTrack(ref, playing));
     if (pos === -1) {
       // Prepend ref must bind to the *snapshot's* playback server (H3): a live
       // server switch racing the undo would otherwise stamp the prepended ref
@@ -78,7 +84,8 @@ export function applyQueueHistorySnapshot(
       // fallback (they share the snapshot's server); live `queueServerId` is
       // last resort. Canonical key everywhere (B1).
       const snapshotSid =
-        snap.queueServerId
+        playing.serverId
+        ?? snap.queueServerId
         ?? snap.queueItems[0]?.serverId
         ?? get().queueServerId
         ?? '';
@@ -101,17 +108,17 @@ export function applyQueueHistorySnapshot(
   const keepPlaybackFromPrior =
     prior.currentTrack != null
     && nextTrack != null
-    && sameQueueTrackId(prior.currentTrack.id, nextTrack.id)
-    && nextQueue.some(t => sameQueueTrackId(t.id, prior.currentTrack!.id))
+    && sameQueueTrack(prior.currentTrack, nextTrack)
+    && nextItems.some(ref => queueItemRefMatchesTrack(ref, prior.currentTrack))
     && (
-      (snap.currentTrack != null && sameQueueTrackId(prior.currentTrack.id, snap.currentTrack.id))
+      (snap.currentTrack != null && sameQueueTrack(prior.currentTrack, snap.currentTrack))
       || snap.currentTrack == null
     );
 
   if (keepPlaybackFromPrior) {
     const playingKeep = prior.currentTrack;
     if (playingKeep) {
-      const idxPrior = nextQueue.findIndex(t => sameQueueTrackId(t.id, playingKeep.id));
+      const idxPrior = nextItems.findIndex(ref => queueItemRefMatchesTrack(ref, playingKeep));
       if (idxPrior >= 0) {
         nextIndex = idxPrior;
         nextTrack = { ...playingKeep };
@@ -143,7 +150,7 @@ export function applyQueueHistorySnapshot(
   const keepWaveform =
     prior.currentTrack?.id != null &&
     nextTrack?.id != null &&
-    sameQueueTrackId(prior.currentTrack.id, nextTrack.id);
+    sameQueueTrack(prior.currentTrack, nextTrack);
   const norm =
     nextTrack != null
       ? deriveNormalizationSnapshot(nextTrack, nextQueue, nextIndex)
@@ -155,7 +162,9 @@ export function applyQueueHistorySnapshot(
           PlayerState,
           'normalizationNowDb' | 'normalizationTargetLufs' | 'normalizationEngineLive'
         >);
-  const playbackSid = getPlaybackServerId();
+  const playbackSid = nextTrack
+    ? playbackProfileIdForTrack(nextTrack, nextItems[nextIndex])
+    : getPlaybackServerId();
   const playbackSourceUndo = nextTrack
     ? getPlaybackSourceKind(nextTrack.id, playbackSid, null)
     : null;
@@ -187,7 +196,8 @@ export function applyQueueHistorySnapshot(
   // source as the prepend above — keeps cache bucket and ref serverId in lockstep
   // even when a server switch races the undo.
   const seedSid = canonicalQueueServerKey(
-    snap.queueServerId
+    nextTrack?.serverId
+      ?? snap.queueServerId
       ?? snap.queueItems[0]?.serverId
       ?? get().queueServerId
       ?? '',

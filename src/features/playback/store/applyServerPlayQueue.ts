@@ -21,6 +21,7 @@ import {
   clearQueueNaturallyEnded,
 } from '@/features/playback/store/queuePlaybackIdle';
 import { clearQueueHandoffPending } from '@/features/playback/store/queueSyncUiState';
+import { sameQueueTrack } from '@/features/playback/utils/playback/queueIdentity';
 
 export type ApplyPlayQueueMode = 'startup' | 'idle' | 'manual';
 
@@ -111,7 +112,7 @@ export function applyMappedQueue(
 
   const player = usePlayerStore.getState();
   const wasPlaying = player.isPlaying;
-  const sameCurrent = player.currentTrack?.id === currentTrack.id;
+  const sameCurrent = sameQueueTrack(player.currentTrack, currentTrack);
 
   usePlayerStore.setState({
     queueItems,

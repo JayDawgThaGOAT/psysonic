@@ -39,7 +39,7 @@ import {
   getGaplessPreloadingId,
   getLastGaplessSwitchTime,
   markGaplessSwitch,
-  setBytePreloadingId,
+  setBytePreloadingRequest,
 } from '@/features/playback/store/gaplessPreloadState';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
 import {
@@ -89,6 +89,10 @@ import { isInterruptHandoffPending } from '@/features/playback/utils/playback/au
 import { isCrossfadeNextReady, maybeCrossfadeBytePreload } from '@/features/playback/store/crossfadePreload';
 import { armCrossfadeDynamicOverlap, getCrossfadeTransition } from '@/features/playback/store/crossfadeTrimCache';
 import { armAutodjMixing } from '@/features/playback/store/autodjTransitionUi';
+import {
+  queueItemIdentityKey,
+  sameQueueTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 // Silence-aware crossfade (A-tail): guards the early advance to once per play
 // generation so a single playback instance triggers at most one trim-advance
@@ -287,10 +291,11 @@ export function handleAudioProgress(
     ? nextQueueRefForTransition(store.queueItems, store.queueIndex, store.repeatMode)
     : null;
   const nextTrackId = nextRef ? resolveQueueTrack(nextRef)?.id : undefined;
+  const nextTrackIdentity = nextRef ? queueItemIdentityKey(nextRef) : undefined;
   if (trimActive && store.isPlaying && store.repeatMode !== 'one') {
     if (nextTrackId) {
       const cf = clampCrossfadeSecs(crossfadeSecs);
-      const plan = getCrossfadeTransition(nextTrackId);
+      const plan = getCrossfadeTransition(nextTrackIdentity ?? nextTrackId);
       let contentOverlap: number;
       // Scenario A: does A carry its own recorded fade-out? If so we let it ride
       // at full engine gain (no double fade) and bring B up underneath.
@@ -325,7 +330,7 @@ export function handleAudioProgress(
           )
         ) {
           crossfadeTrimAdvanceGen = gen;
-          armCrossfadeDynamicOverlap(nextTrackId, overlapSec, outgoingFadeSec);
+          armCrossfadeDynamicOverlap(nextTrackIdentity ?? nextTrackId, overlapSec, outgoingFadeSec);
           armAutodjMixing(overlapSec);
           store.next(false);
           return;
@@ -370,7 +375,7 @@ export function handleAudioProgress(
       ? track
       : (nextRef ? resolveQueueTrack(nextRef) : null);
 
-    if (nextTrack && nextTrack.id !== track.id) {
+    if (nextTrack && !sameQueueTrack(nextTrack, track)) {
       // Gapless backup: keep next-track bytes ready even if chain/decode misses
       // the boundary. Start earlier for larger files / slower conservative link.
       const estBytes = (() => {
@@ -389,6 +394,7 @@ export function handleAudioProgress(
         gaplessEnabled && remaining < gaplessBackupWindowSecs && remaining > 0;
 
       const serverId = nextRef ? playbackCacheKeyForRef(nextRef) : getPlaybackCacheServerKey();
+      const nextIdentity = nextRef ? queueItemIdentityKey(nextRef) : nextTrack.id;
       const analysisServerId = nextRef
         ? playbackCacheKeyForRef(nextRef)
         : getPlaybackIndexKey();
@@ -397,9 +403,9 @@ export function handleAudioProgress(
       // Byte pre-download — gapless backup; runs early so bytes are ready by chain time.
       if (
         shouldBytePreloadForGaplessBackup
-        && nextTrack.id !== getBytePreloadingId()
+        && nextIdentity !== getBytePreloadingId()
       ) {
-        setBytePreloadingId(nextTrack.id);
+        setBytePreloadingRequest(nextIdentity, nextUrl);
         // Loudness cache only — do not call refreshWaveformForTrack(next): it writes global
         // waveformBins and would replace the current track's seekbar while still playing it.
         void refreshLoudnessForTrack(nextTrack.id, { syncPlayingEngine: false });
@@ -421,7 +427,7 @@ export function handleAudioProgress(
       }
 
       // Gapless chain — decode + chain into Sink 30s before track boundary.
-      if (shouldChainGapless && nextTrack.id !== getGaplessPreloadingId()) {
+      if (shouldChainGapless && nextIdentity !== getGaplessPreloadingId()) {
         requestGaplessChainPreload({
           currentTrack: track,
           nextTrack,

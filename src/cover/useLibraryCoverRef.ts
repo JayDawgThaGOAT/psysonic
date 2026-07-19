@@ -12,7 +12,7 @@ import {
 } from './ref';
 import { coverServerScopeForServerId } from './serverScope';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
-import { sameQueueTrackId } from '@/features/playback/utils/playback/queueIdentity';
+import { queueItemRefMatchesTrack } from '@/features/playback/utils/playback/queueIdentity';
 import {
   resolveAlbumCoverRefFromLibrary,
   resolveArtistCoverRefFromLibrary,
@@ -302,7 +302,7 @@ export function usePlaybackTrackCoverRef(
   const scope = useMemo(() => {
     if (track?.id) {
       const ref = queueItems[queueIndex];
-      if (ref && sameQueueTrackId(ref.trackId, track.id)) {
+      if (ref && queueItemRefMatchesTrack(ref, track)) {
         const profileId = resolveServerIdForIndexKey(ref.serverId) || ref.serverId;
         return coverServerScopeForServerId(profileId);
       }

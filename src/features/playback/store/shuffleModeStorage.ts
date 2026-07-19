@@ -8,7 +8,7 @@
  * Shuffle physically reorders `queueItems`, so "next track" stays "the next one
  * in the list" for the gapless chain, the server play-queue and Orbit guests.
  * The price is that turning shuffle off has to put the queue back — hence the
- * original order, remembered as track ids and persisted alongside the flag so it
+ * original order, remembered as queue identity keys and persisted alongside the flag so it
  * survives a restart while shuffle is still on.
  */
 
@@ -16,7 +16,7 @@ const STORAGE_KEY = 'psysonic_shuffle_mode';
 
 export interface ShuffleModeSnapshot {
   enabled: boolean;
-  /** Track ids in their pre-shuffle order; empty when shuffle is off. */
+  /** Server-qualified queue identities in pre-shuffle order; legacy snapshots contain raw track ids. */
   originalOrder: string[];
 }
 

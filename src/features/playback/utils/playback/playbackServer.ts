@@ -7,7 +7,7 @@ import { useAuthStore } from '@/store/authStore';
 import type { ServerProfile } from '@/store/authStoreTypes';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { switchActiveServer } from '@/utils/server/switchActiveServer';
-import { sameQueueTrackId } from '@/features/playback/utils/playback/queueIdentity';
+import { queueItemRefMatchesTrack } from '@/features/playback/utils/playback/queueIdentity';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 import { findServerByIdOrIndexKey, resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import {
@@ -248,5 +248,5 @@ export function shouldBindQueueServerForPlay(
   if (prevQueue.length === 0) return true;
   if (explicitQueueArg === undefined) return false;
   if (explicitQueueArg.length !== prevQueue.length) return true;
-  return !explicitQueueArg.every((t, i) => sameQueueTrackId(prevQueue[i]?.trackId, t.id));
+  return !explicitQueueArg.every((track, index) => queueItemRefMatchesTrack(prevQueue[index], track));
 }

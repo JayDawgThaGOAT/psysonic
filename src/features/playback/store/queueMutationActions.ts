@@ -34,6 +34,11 @@ import {
   shuffled,
 } from '@/features/playback/store/shuffleModeActions';
 import { persistShuffleModeSnapshot } from '@/features/playback/store/shuffleModeStorage';
+import {
+  queueItemIdentityKey,
+  queueItemRefMatchesTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
+import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
@@ -104,8 +109,9 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       pushQueueUndoFromGetter(get);
 
       let result: QueueItemRef[];
+      const currentRef = items[queueIndex];
       if (enabling) {
-        setShuffleOriginalOrder(items.map(r => r.trackId));
+        setShuffleOriginalOrder(items.map(queueItemIdentityKey));
         // Everything up to and including the current track stays put: the playing
         // track must not move, and already-played rows are history.
         result = [...items.slice(0, queueIndex + 1), ...shuffled(items.slice(queueIndex + 1))];
@@ -117,7 +123,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       persistShuffleModeSnapshot({ enabled: enabling, originalOrder: getShuffleOriginalOrder() });
 
       const newIndex = currentTrack
-        ? Math.max(0, result.findIndex(r => r.trackId === currentTrack.id))
+        ? Math.max(0, currentRef ? result.indexOf(currentRef) : result.findIndex(ref => queueItemRefMatchesTrack(ref, currentTrack)))
         : 0;
       set({ shuffleMode: enabling, queueItems: result, queueIndex: newIndex });
       syncUserQueueMutationToServer(items, result, currentTrack, get().currentTime);
@@ -163,7 +169,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         setCurrentRadioArtistId(artistId);
       }
       pushQueueUndoFromGetter(get);
-      ensureQueueServerPinned();
+      ensureQueueServerPinned(tracks);
       set(state => {
         const items = itemsOf(state);
         // Drop all upcoming (not yet played) radio tracks — clicking "Start Radio"
@@ -176,12 +182,12 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         const droppedRadioIds = items
           .slice(state.queueIndex + 1)
           .filter(r => r.radioAdded)
-          .map(r => r.trackId);
+          .map(queueItemIdentityKey);
         for (const id of droppedRadioIds) deleteRadioSessionSeen(id);
         // Capture surviving queue ids in the seen-set so the next radio top-up
         // can dedupe against the seed track + already-queued non-radio items.
-        for (const r of beforeAndCurrent) addRadioSessionSeen(r.trackId);
-        for (const r of upcoming) addRadioSessionSeen(r.trackId);
+        for (const r of beforeAndCurrent) addRadioSessionSeen(queueItemIdentityKey(r));
+        for (const r of upcoming) addRadioSessionSeen(queueItemIdentityKey(r));
         // Drop incoming tracks already seen earlier this session AND
         // intra-batch duplicates (top + similar Last.fm responses commonly
         // overlap). The seen-set is mutated inside the loop so a repeated
@@ -189,8 +195,10 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
         // the first occurrence (issue #500).
         const dedupedTracks: Track[] = [];
         for (const t of tracks) {
-          if (hasRadioSessionSeen(t.id)) continue;
-          addRadioSessionSeen(t.id);
+          const serverId = canonicalQueueServerKey(t.serverId ?? state.queueServerId ?? '');
+          const identity = queueItemIdentityKey({ serverId, trackId: t.id });
+          if (hasRadioSessionSeen(identity)) continue;
+          addRadioSessionSeen(identity);
           dedupedTracks.push(t);
         }
         seedIncoming(state, dedupedTracks);
@@ -264,7 +272,10 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       // resolves even when it had not been in the cache window before.
       seedIncoming(s, [s.currentTrack]);
       const items = itemsOf(s);
-      const at = items.findIndex(r => r.trackId === s.currentTrack!.id);
+      const indexedRef = items[s.queueIndex];
+      const at = queueItemRefMatchesTrack(indexedRef, s.currentTrack)
+        ? s.queueIndex
+        : items.findIndex(ref => queueItemRefMatchesTrack(ref, s.currentTrack));
       const newItems = at >= 0
         ? items.slice(0, at + 1)
         : toQueueItemRefs(s.queueServerId ?? '', [s.currentTrack!]);
@@ -303,11 +314,16 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       const state = get();
       const { queueIndex, currentTrack } = state;
       const previousItems = itemsOf(state);
+      const currentRef = previousItems[queueIndex];
       const result = [...previousItems];
       const [removed] = result.splice(startIndex, 1);
       result.splice(endIndex, 0, removed);
       let newIndex = queueIndex;
-      if (currentTrack) newIndex = result.findIndex(r => r.trackId === currentTrack.id);
+      if (currentTrack) {
+        newIndex = currentRef
+          ? result.indexOf(currentRef)
+          : result.findIndex(ref => queueItemRefMatchesTrack(ref, currentTrack));
+      }
       set({ queueItems: result, queueIndex: Math.max(0, newIndex) });
       syncUserQueueMutationToServer(previousItems, result, currentTrack, get().currentTime);
     },
@@ -318,7 +334,9 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       if (state.queueItems.length < 2) return;
       pushQueueUndoFromGetter(get);
       const items = itemsOf(state);
-      const currentIdx = currentTrack ? items.findIndex(r => r.trackId === currentTrack.id) : -1;
+      const currentIdx = currentTrack && queueItemRefMatchesTrack(items[state.queueIndex], currentTrack)
+        ? state.queueIndex
+        : currentTrack ? items.findIndex(ref => queueItemRefMatchesTrack(ref, currentTrack)) : -1;
       const others = items.filter((_, i) => i !== currentIdx);
       for (let i = others.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));

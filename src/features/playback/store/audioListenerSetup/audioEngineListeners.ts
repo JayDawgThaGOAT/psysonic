@@ -1,7 +1,10 @@
 import { listen } from '@tauri-apps/api/event';
 import { streamUrlTrackId } from '@/features/playback/utils/playback/resolvePlaybackUrl';
 import { normalizationAlmostEqual } from '@/features/playback/utils/audio/normalizationCompare';
-import { normalizeAnalysisTrackId } from '@/features/playback/utils/playback/queueIdentity';
+import {
+  normalizeAnalysisTrackId,
+  queueIdentityContainsTrackId,
+} from '@/features/playback/utils/playback/queueIdentity';
 import {
   handleAudioEnded,
   handleAudioError,
@@ -26,7 +29,11 @@ import {
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
 import { bumpWaveformRefreshGen } from '@/features/playback/store/waveformRefreshGen';
-import { setBytePreloadingId } from '@/features/playback/store/gaplessPreloadState';
+import {
+  getBytePreloadingId,
+  getBytePreloadingUrl,
+  setBytePreloadingId,
+} from '@/features/playback/store/gaplessPreloadState';
 
 type PreloadEventPayload = {
   url: string;
@@ -174,7 +181,16 @@ export function setupAudioEngineListeners(): () => void {
           prevEnginePreloadedTrackId: usePlayerStore.getState().enginePreloadedTrackId,
         });
       }
-      if (tid) usePlayerStore.setState({ enginePreloadedTrackId: tid });
+      if (tid) {
+        const pendingIdentity = getBytePreloadingId();
+        const pendingUrl = getBytePreloadingUrl();
+        usePlayerStore.setState({
+          enginePreloadedTrackId: pendingUrl === payload.url
+            && queueIdentityContainsTrackId(pendingIdentity, tid)
+            ? pendingIdentity
+            : tid,
+        });
+      }
       else if (import.meta.env.DEV) {
         console.warn('[psysonic][preload-ready] could not parse track id from payload URL');
       }
@@ -183,7 +199,10 @@ export function setupAudioEngineListeners(): () => void {
       if (import.meta.env.DEV) {
         console.info('[psysonic][preload-cancelled]', payload);
       }
-      setBytePreloadingId(null);
+      const pendingUrl = getBytePreloadingUrl();
+      if (!pendingUrl || pendingUrl === payload.url) {
+        setBytePreloadingId(null);
+      }
     }),
   ];
 

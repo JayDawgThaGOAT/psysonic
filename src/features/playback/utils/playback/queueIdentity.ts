@@ -1,4 +1,5 @@
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
+import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 
 /**
  * Strip the `stream:` prefix that some Rust events attach to track ids when
@@ -19,12 +20,86 @@ export function sameQueueTrackId(a: string | undefined | null, b: string | undef
   return na === nb;
 }
 
+function normalizedQueueServerId(serverId?: string | null): string | null {
+  if (!serverId) return null;
+  return canonicalQueueServerKey(serverId) || serverId;
+}
+
+/** Compare full tracks by owner + normalized id, with raw-id fallback for legacy ownerless tracks. */
+export function sameQueueTrack(
+  a: Pick<Track, 'id' | 'serverId'> | null | undefined,
+  b: Pick<Track, 'id' | 'serverId'> | null | undefined,
+): boolean {
+  if (!a || !b || !sameQueueTrackId(a.id, b.id)) return false;
+  const aServerId = normalizedQueueServerId(a.serverId);
+  const bServerId = normalizedQueueServerId(b.serverId);
+  return !aServerId || !bServerId || aServerId === bServerId;
+}
+
+/** Stable mixed-queue identity for in-memory sets and persisted shuffle order. */
+export function queueItemIdentityKey(
+  item: Pick<QueueItemRef, 'serverId' | 'trackId'>,
+): string {
+  return queueTrackIdentityKey(item.trackId, item.serverId);
+}
+
+export function queueTrackIdentityKey(trackId: string, serverId?: string | null): string {
+  return JSON.stringify([
+    normalizedQueueServerId(serverId) ?? '',
+    normalizeAnalysisTrackId(trackId) ?? trackId,
+  ]);
+}
+
+/** Accepts legacy raw preload ids while preferring the server-qualified key. */
+export function queueTrackIdentityMatches(
+  identityOrTrackId: string | null | undefined,
+  trackId: string,
+  serverId?: string | null,
+): boolean {
+  if (!identityOrTrackId) return false;
+  if (sameQueueTrackId(identityOrTrackId, trackId)) return true;
+  return identityOrTrackId === queueTrackIdentityKey(trackId, serverId);
+}
+
+/** Match an engine event's raw id to a pending server-qualified preload key. */
+export function queueIdentityContainsTrackId(
+  identityOrTrackId: string | null | undefined,
+  trackId: string,
+): boolean {
+  if (!identityOrTrackId) return false;
+  if (sameQueueTrackId(identityOrTrackId, trackId)) return true;
+  const identityTrackId = queueTrackIdFromIdentity(identityOrTrackId);
+  return identityTrackId != null && sameQueueTrackId(identityTrackId, trackId);
+}
+
+export function queueTrackIdFromIdentity(identityOrTrackId: string): string | null {
+  try {
+    const parsed = JSON.parse(identityOrTrackId) as unknown;
+    return Array.isArray(parsed) && typeof parsed[1] === 'string'
+      ? parsed[1]
+      : identityOrTrackId;
+  } catch {
+    return identityOrTrackId;
+  }
+}
+
+/** Compare a thin queue ref to a resolved track without treating raw ids as global. */
+export function queueItemRefMatchesTrack(
+  ref: Pick<QueueItemRef, 'serverId' | 'trackId'> | null | undefined,
+  track: Pick<Track, 'id' | 'serverId'> | null | undefined,
+): boolean {
+  if (!ref || !track || !sameQueueTrackId(ref.trackId, track.id)) return false;
+  const refServerId = normalizedQueueServerId(ref.serverId);
+  const trackServerId = normalizedQueueServerId(track.serverId);
+  return !refServerId || !trackServerId || refServerId === trackServerId;
+}
+
 /** Canonical queue ref identity — server + track id (mixed-server safe). */
 export function sameQueueItemRef(
   a: Pick<QueueItemRef, 'serverId' | 'trackId'>,
   b: Pick<QueueItemRef, 'serverId' | 'trackId'>,
 ): boolean {
-  return a.serverId === b.serverId && sameQueueTrackId(a.trackId, b.trackId);
+  return queueItemIdentityKey(a) === queueItemIdentityKey(b);
 }
 
 export function findQueueItemRefIndex(
@@ -41,7 +116,7 @@ export function findQueueItemRefIndex(
 export function queuesStructuralEqual(a: Track[], b: Track[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (!sameQueueTrackId(a[i]?.id, b[i]?.id)) return false;
+    if (!sameQueueTrack(a[i], b[i])) return false;
   }
   return true;
 }

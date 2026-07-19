@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QueueItemRef } from '@/lib/media/trackTypes';
 import { restoreOriginalOrder, setShuffleOriginalOrder } from './shuffleModeActions';
 import { createQueueMutationActions } from './queueMutationActions';
+import { queueItemIdentityKey } from '@/features/playback/utils/playback/queueIdentity';
 
 vi.mock('@/features/playback/store/queueSync', () => ({
   syncUserQueueMutationToServer: vi.fn(),
@@ -16,7 +17,7 @@ vi.mock('@/features/playback/store/queueUndo', () => ({
   pushQueueUndoFromGetter: vi.fn(),
 }));
 
-const ref = (trackId: string): QueueItemRef => ({ serverId: 's1', trackId });
+const ref = (trackId: string, serverId = 's1'): QueueItemRef => ({ serverId, trackId });
 const ids = (items: QueueItemRef[]) => items.map(i => i.trackId);
 
 describe('restoreOriginalOrder', () => {
@@ -47,6 +48,17 @@ describe('restoreOriginalOrder', () => {
     expect(restored).toHaveLength(3);
   });
 
+  it('restores equal raw ids to their original server-qualified positions', () => {
+    const a = ref('shared', 'srv-a');
+    const b = ref('shared', 'srv-b');
+    const restored = restoreOriginalOrder(
+      [b, a],
+      [queueItemIdentityKey(a), queueItemIdentityKey(b)],
+    );
+
+    expect(restored).toEqual([a, b]);
+  });
+
   it('never loses or duplicates a row', () => {
     const current = [ref('c'), ref('x'), ref('a'), ref('b')];
     const restored = restoreOriginalOrder(current, ['a', 'b', 'c', 'ghost']);
@@ -69,7 +81,7 @@ describe('toggleShuffleMode', () => {
   /** Minimal player-state stub: only what the action reads and writes. */
   function harness(queue: string[], queueIndex: number, shuffleMode = false) {
     let state = {
-      queueItems: queue.map(ref),
+      queueItems: queue.map(trackId => ref(trackId)),
       queueIndex,
       shuffleMode,
       currentTrack: queue[queueIndex] ? { id: queue[queueIndex] } : null,
@@ -128,7 +140,9 @@ describe('toggleShuffleMode', () => {
     h.toggleShuffleMode();
     const stored = JSON.parse(window.localStorage.getItem('psysonic_shuffle_mode') ?? '{}');
     expect(stored.enabled).toBe(true);
-    expect(stored.originalOrder).toEqual(['a', 'b', 'c']);
+    expect(stored.originalOrder).toEqual(['a', 'b', 'c'].map(trackId => (
+      queueItemIdentityKey(ref(trackId))
+    )));
 
     h.toggleShuffleMode();
     expect(window.localStorage.getItem('psysonic_shuffle_mode')).toBeNull();

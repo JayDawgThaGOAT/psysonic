@@ -4,7 +4,13 @@ import { audioSeek } from '@/lib/api/audio';
 import { getMusicNetworkRuntimeOrNull } from '@/music-network';
 import { setDeferHotCachePrefetch } from '@/lib/cache/hotCacheGate';
 import { orbitBulkGuard, orbitSnapshot } from '@/store/orbitRuntime';
-import { sameQueueTrackId } from '@/features/playback/utils/playback/queueIdentity';
+import {
+  queueItemRefMatchesTrack,
+  queueItemIdentityKey,
+  queueTrackIdentityKey,
+  queueTrackIdentityMatches,
+  sameQueueTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
 import {
   computeAutodjManualBlendPlan,
   shouldAutodjInterruptBlend,
@@ -130,7 +136,7 @@ export function runPlayTrack(
   if (!_orbitConfirmed && queue && queue.length > 1) {
     const current = get().queueItems;
     const sameAsCurrent = queue.length === current.length
-      && queue.every((t, i) => sameQueueTrackId(current[i]?.trackId, t.id));
+      && queue.every((queueTrack, index) => queueItemRefMatchesTrack(current[index], queueTrack));
     if (!sameAsCurrent) {
       void orbitBulkGuard(queue.length).then(ok => {
         if (!ok) return;
@@ -163,9 +169,9 @@ export function runPlayTrack(
     const orbitRole = orbitSnapshot().role;
     if (orbitRole === 'host') {
       const currentItems = get().queueItems;
-      const currentTrackId = currentItems[get().queueIndex]?.trackId;
-      if (track.id !== currentTrackId) {
-        const existsAt = currentItems.findIndex(r => sameQueueTrackId(r.trackId, track.id));
+      const currentRef = currentItems[get().queueIndex];
+      if (!queueItemRefMatchesTrack(currentRef, track)) {
+        const existsAt = currentItems.findIndex(ref => queueItemRefMatchesTrack(ref, track));
         if (existsAt >= 0) {
           // Re-jump within the existing queue: pass undefined so playTrack keeps
           // the canonical queueItems and just moves the index.
@@ -193,7 +199,7 @@ export function runPlayTrack(
   const scopedTrackEarly = stampTrackServerId(track);
   if (
     prevTrackForHistory
-    && !sameQueueTrackId(prevTrackForHistory.id, scopedTrackEarly.id)
+    && !sameQueueTrack(prevTrackForHistory, scopedTrackEarly)
   ) {
     appendTimelineLeaveTrack(
       prevTrackForHistory,
@@ -210,10 +216,10 @@ export function runPlayTrack(
       return targetQueueIndex;
     }
     if (replacingEarly && queue) {
-      const i = queue.findIndex(t => sameQueueTrackId(t.id, scopedTrackEarly.id));
+      const i = queue.findIndex(queueTrack => sameQueueTrack(queueTrack, scopedTrackEarly));
       return i >= 0 ? i : 0;
     }
-    const i = stateBeforePlay.queueItems.findIndex(r => sameQueueTrackId(r.trackId, scopedTrackEarly.id));
+    const i = stateBeforePlay.queueItems.findIndex(ref => queueItemRefMatchesTrack(ref, scopedTrackEarly));
     return i >= 0 ? i : 0;
   })();
   const playingRefEarly = replacingEarly ? undefined : stateBeforePlay.queueItems[playIdxEarly];
@@ -247,7 +253,7 @@ export function runPlayTrack(
   const skipFromTimeSec = state.currentTime;
   const outgoingWaveformBins = state.waveformBins;
   const prevTrack = state.currentTrack;
-  if (prevTrack?.id !== scopedTrack.id) {
+  if (!prevTrack || !sameQueueTrack(prevTrack, scopedTrack)) {
     setSeekFallbackTrackId(null);
   }
   const visualOnEntry = getSeekFallbackVisualTarget();
@@ -271,8 +277,8 @@ export function runPlayTrack(
   // track twice — breaking radio playback (issue #500).
   const matchesAt = (i: number): boolean =>
     replacing
-      ? sameQueueTrackId(scopedQueue[i]?.id, scopedTrack.id)
-      : sameQueueTrackId(state.queueItems[i]?.trackId, scopedTrack.id);
+      ? sameQueueTrack(scopedQueue[i], scopedTrack)
+      : queueItemRefMatchesTrack(state.queueItems[i], scopedTrack);
   const explicitIdxValid =
     typeof targetQueueIndex === 'number'
     && targetQueueIndex >= 0
@@ -281,8 +287,8 @@ export function runPlayTrack(
   const idx = explicitIdxValid
     ? (targetQueueIndex as number)
     : replacing
-      ? scopedQueue.findIndex(t => sameQueueTrackId(t.id, scopedTrack.id))
-      : state.queueItems.findIndex(r => sameQueueTrackId(r.trackId, scopedTrack.id));
+      ? scopedQueue.findIndex(queueTrack => sameQueueTrack(queueTrack, scopedTrack))
+      : state.queueItems.findIndex(ref => queueItemRefMatchesTrack(ref, scopedTrack));
   const playIdx = idx >= 0 ? idx : 0;
   const playingRef = replacing ? undefined : state.queueItems[playIdx];
   const prevPlayingRef = replacing ? undefined : state.queueItems[state.queueIndex];
@@ -292,7 +298,7 @@ export function runPlayTrack(
   const nextPlaybackSid = playbackProfileIdForTrack(scopedTrack, playingRef) ?? '';
   if (
     prevTrack
-    && !sameQueueTrackId(prevTrack.id, scopedTrack.id)
+    && !sameQueueTrack(prevTrack, scopedTrack)
     && prevPlaybackSid
     && nextPlaybackSid
     && prevPlaybackSid !== nextPlaybackSid
@@ -344,7 +350,7 @@ export function runPlayTrack(
     && !(playbackProfileId && hasLocalPersistentPlaybackBytes(scopedTrack.id, playbackProfileId))
     && Boolean(
       prevTrack
-      && sameQueueTrackId(prevTrack.id, scopedTrack.id)
+      && sameQueueTrack(prevTrack, scopedTrack)
       && authState.hotCacheEnabled
       && getPlaybackCacheServerKey(),
     );
@@ -360,7 +366,11 @@ export function runPlayTrack(
       ?? resolvePlaybackUrlForTrack(trackForPlay, playbackCacheSid);
     recordEnginePlayUrl(trackForPlay.id, url);
     const preloadedTrackId = get().enginePreloadedTrackId;
-    const keepPreloadHint = preloadedTrackId === trackForPlay.id;
+    const keepPreloadHint = queueTrackIdentityMatches(
+      preloadedTrackId,
+      trackForPlay.id,
+      playbackCacheSid,
+    );
     const playbackSourceHint = playbackSourceHintForResolvedUrl(
       trackForPlay.id,
       playbackCacheSid,
@@ -396,11 +406,14 @@ export function runPlayTrack(
       seedQueueResolver(queueSid, [trackForPlay]);
     }
 
-    const hasJsAutoHandoff = !manual && peekArmedCrossfadeDynamicOverlap(trackForPlay.id);
+    const trackIdentity = playingRef
+      ? queueItemIdentityKey(playingRef)
+      : queueTrackIdentityKey(trackForPlay.id, playbackCacheSid);
+    const hasJsAutoHandoff = !manual && peekArmedCrossfadeDynamicOverlap(trackIdentity);
     const wantInterruptBlend = Boolean(
       shouldAutodjInterruptBlend(wasPlayingBeforeSkip, hasJsAutoHandoff)
       && prevTrack
-      && !sameQueueTrackId(prevTrack.id, trackForPlay.id),
+      && !sameQueueTrack(prevTrack, trackForPlay),
     );
     const bReadyNow = isCrossfadeNextReady(trackForPlay.id, playbackSid, playbackCacheSid);
     /** Cold interrupt: engine still on A — don't swap player-bar metadata until handoff. */
@@ -469,7 +482,7 @@ export function runPlayTrack(
     setDeferHotCachePrefetch(true);
     if (
       prevTrack
-      && !sameQueueTrackId(prevTrack.id, trackForPlay.id)
+      && !sameQueueTrack(prevTrack, trackForPlay)
       && authStateNow.hotCacheEnabled
     ) {
       const prevPromoteSid = playbackCacheKeyForTrack(prevTrack, prevPlayingRef);
@@ -501,8 +514,8 @@ export function runPlayTrack(
         && initialTime <= 0.05;
       const useManualBlend = manualBlend !== null;
 
-      const crossfadePlan = useTrimAuto ? getCrossfadeTransition(trackForPlay.id) : null;
-      const armedOverlap = useTrimAuto ? consumeCrossfadeDynamicOverlap(trackForPlay.id) : null;
+      const crossfadePlan = useTrimAuto ? getCrossfadeTransition(trackIdentity) : null;
+      const armedOverlap = useTrimAuto ? consumeCrossfadeDynamicOverlap(trackIdentity) : null;
       const crossfadeStartSecs = useManualBlend
         ? manualBlend.bStartSec
         : (crossfadePlan?.bStartSec ?? 0);

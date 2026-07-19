@@ -18,7 +18,8 @@ export interface PlayerState {
   /** Latches the source used to start the currently playing track. */
   currentPlaybackSource: PlaybackSourceKind | null;
   /**
-   * Subsonic track id for which `audio_preload` finished into the engine RAM slot (see `audio:preload-ready`).
+   * Server-qualified queue identity for which `audio_preload` finished into the engine RAM slot.
+   * Legacy engine events may temporarily provide a raw Subsonic track id.
    * Cleared after a successful `audio_play` consumed that preload, or when starting another track.
    */
   enginePreloadedTrackId: string | null;

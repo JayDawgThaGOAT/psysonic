@@ -15,6 +15,7 @@ import { touchHotCacheOnPlayback } from '@/features/playback/store/hotCacheTouch
 import { isReplayGainActive, loudnessGainDbForEngineBind } from '@/features/playback/store/loudnessGainCache';
 import { playbackSourceHintForResolvedUrl, recordEnginePlayUrl } from '@/features/playback/store/playbackUrlRouting';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { queueTrackIdentityMatches } from '@/features/playback/utils/playback/queueIdentity';
 
 /**
  * Load a track into the Rust engine at `atSeconds`, optionally leaving transport
@@ -45,7 +46,11 @@ export function engineLoadTrackAtPosition(opts: {
   usePlayerStore.setState({
     currentPlaybackSource: playbackSourceHintForResolvedUrl(track.id, playbackCacheSid, url),
   });
-  const keepPreloadHint = usePlayerStore.getState().enginePreloadedTrackId === track.id;
+  const keepPreloadHint = queueTrackIdentityMatches(
+    usePlayerStore.getState().enginePreloadedTrackId,
+    track.id,
+    playbackCacheSid,
+  );
   const startPaused = !wantPlaying;
   setDeferHotCachePrefetch(true);
   invoke('audio_play', {

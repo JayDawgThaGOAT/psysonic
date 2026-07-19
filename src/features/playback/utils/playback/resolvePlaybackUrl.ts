@@ -3,6 +3,7 @@ import { findLocalPlaybackUrl } from '@/store/localPlaybackResolve';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import { getPlaybackCacheServerKey, getPlaybackServerId } from '@/features/playback/utils/playback/playbackServer';
 import type { Track } from '@/lib/media/trackTypes';
+import { queueTrackIdentityMatches } from '@/features/playback/utils/playback/queueIdentity';
 
 /** Same resolution order as {@link resolvePlaybackUrl} — for UI hints only. */
 export type PlaybackSourceKind = 'offline' | 'hot' | 'stream';
@@ -38,8 +39,8 @@ function resolvePlaybackProfileId(serverIdOrKey: string): string {
 }
 
 /**
- * @param enginePreloadedTrackId — song id for which `audio_preload` finished into the engine RAM slot
- *   (parsed from `audio:preload-ready` payload URL).
+ * @param enginePreloadedTrackId — server-qualified queue identity for which `audio_preload`
+ *   finished into the engine RAM slot; legacy callers may pass a raw song id.
  */
 export function getPlaybackSourceKind(
   trackId: string,
@@ -54,7 +55,7 @@ export function getPlaybackSourceKind(
   if (
     !resolved.startsWith('psysonic-local://')
     && enginePreloadedTrackId
-    && trackId === enginePreloadedTrackId
+    && queueTrackIdentityMatches(enginePreloadedTrackId, trackId, serverId)
   ) {
     return 'hot';
   }

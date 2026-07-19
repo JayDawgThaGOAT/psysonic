@@ -3,6 +3,11 @@ import { coerceWaveformBins } from '@/lib/waveform/waveformParse';
 import { getPlaybackIndexKey } from '@/features/playback/utils/playback/playbackServer';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { getWaveformRefreshGen } from '@/features/playback/store/waveformRefreshGen';
+import {
+  queueItemIdentityKey,
+  queueTrackIdentityKey,
+  sameQueueTrackId,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 /** Subsonic-server waveform-cache row as Rust hands it back. */
 export type WaveformCachePayload = {
@@ -48,13 +53,27 @@ export async function fetchWaveformBins(
 export async function refreshWaveformForTrack(trackId: string): Promise<void> {
   if (!trackId) return;
   const gen = getWaveformRefreshGen(trackId);
+  const requestedServerId = getPlaybackIndexKey() || null;
+  const requestedIdentity = requestedServerId
+    ? queueTrackIdentityKey(trackId, requestedServerId)
+    : null;
   try {
-    const res = await commands.analysisGetWaveformForTrack(trackId, getPlaybackIndexKey() || null);
+    const res = await commands.analysisGetWaveformForTrack(trackId, requestedServerId);
     if (res.status === 'error') throw new Error(res.error);
     const row = res.data;
     if (getWaveformRefreshGen(trackId) !== gen) return;
     // Never apply bins for a non-current track (e.g. gapless byte-preload fetches the neighbour).
-    if (usePlayerStore.getState().currentTrack?.id !== trackId) return;
+    const state = usePlayerStore.getState();
+    if (!sameQueueTrackId(state.currentTrack?.id, trackId)) return;
+    if (requestedIdentity) {
+      const currentRef = state.queueItems?.[state.queueIndex];
+      const currentIdentity = currentRef
+        ? queueItemIdentityKey(currentRef)
+        : state.currentTrack
+          ? queueTrackIdentityKey(state.currentTrack.id, state.currentTrack.serverId)
+          : null;
+      if (currentIdentity !== requestedIdentity) return;
+    }
     const bins = row ? coerceWaveformBins(row.bins) : null;
     if (!bins || bins.length === 0) {
       usePlayerStore.setState({

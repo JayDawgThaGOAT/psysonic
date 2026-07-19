@@ -55,7 +55,8 @@ vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { onInvoke, invokeMock } from '@/test/mocks/tauri';
 import { resetPlayerStore, resetAuthStore } from '@/test/helpers/storeReset';
-import { makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import { makeServer, makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import { useAuthStore } from '@/store/authStore';
 
 function stubPlaybackInvokes(): void {
   onInvoke('audio_play', () => undefined);
@@ -234,6 +235,27 @@ describe('next', () => {
     expect(s.isPlaying).toBe(false);
     expect(s.currentTime).toBe(0);
     expect(s.progress).toBe(0);
+  });
+});
+
+describe('mixed-server play selection', () => {
+  it('jumps to the matching owner when raw track ids collide', async () => {
+    const serverA = makeServer({ id: 'srv-a', url: 'https://a.test' });
+    const serverB = makeServer({ id: 'srv-b', url: 'https://b.test' });
+    useAuthStore.setState({ servers: [serverA, serverB], activeServerId: serverA.id });
+    const a = makeTrack({ id: 'shared', serverId: serverA.id });
+    const b = makeTrack({ id: 'shared', serverId: serverB.id });
+    seedQueue([a, b], { index: 0, currentTrack: a });
+
+    usePlayerStore.getState().playTrack(b);
+    await vi.runAllTimersAsync();
+
+    const state = usePlayerStore.getState();
+    expect(state.queueIndex).toBe(1);
+    expect(state.currentTrack).toEqual(expect.objectContaining({
+      id: 'shared',
+      serverId: serverB.id,
+    }));
   });
 });
 

@@ -57,6 +57,12 @@ import {
 } from '@/test/mocks/tauri';
 import { resetPlayerStore, resetAuthStore } from '@/test/helpers/storeReset';
 import { makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import {
+  _resetGaplessPreloadStateForTest,
+  getBytePreloadingId,
+  setBytePreloadingRequest,
+} from '@/features/playback/store/gaplessPreloadState';
+import { queueTrackIdentityKey } from '@/features/playback/utils/playback/queueIdentity';
 
 function stubPlaybackInvokes(): void {
   onInvoke('audio_play', () => undefined);
@@ -77,6 +83,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   resetPlayerStore();
   resetAuthStore();
+  _resetGaplessPreloadStateForTest();
   stubPlaybackInvokes();
   cleanupListeners = initAudioListeners();
 });
@@ -231,6 +238,28 @@ describe('audio:ended', () => {
     // Queue not advanced.
     expect(s.queueIndex).toBe(0);
     expect(s.currentTrack?.id).toBe(queue[0].id);
+  });
+});
+
+describe('audio preload events', () => {
+  it('does not let a stale cancellation clear a newer owner-qualified request', () => {
+    const identity = queueTrackIdentityKey('shared', 'srv-b');
+    const currentUrl = 'https://b.test/stream?id=shared';
+    setBytePreloadingRequest(identity, currentUrl);
+
+    emitTauriEvent('audio:preload-cancelled', {
+      url: 'https://a.test/stream?id=shared',
+      trackId: 'shared',
+    });
+
+    expect(getBytePreloadingId()).toBe(identity);
+
+    emitTauriEvent('audio:preload-ready', {
+      url: currentUrl,
+      trackId: 'shared',
+    });
+
+    expect(usePlayerStore.getState().enginePreloadedTrackId).toBe(identity);
   });
 });
 

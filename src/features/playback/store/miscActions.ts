@@ -32,6 +32,8 @@ import {
   setSeekFallbackVisualTarget,
 } from '@/features/playback/store/seekFallbackState';
 import { clearSeekTarget } from '@/features/playback/store/seekTargetState';
+import { sameQueueTrack } from '@/features/playback/utils/playback/queueIdentity';
+import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
@@ -121,8 +123,9 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
       const currentTime = getPlaybackProgressSnapshot().currentTime;
       if (currentTime > 3) {
         // Restart current track from the beginning.
-        const authState = useAuthStore.getState();
-        const sid = authState.activeServerId ?? '';
+        const sid = queueItems[queueIndex]?.serverId
+          ?? currentTrack?.serverId
+          ?? '';
         if (currentTrack && shouldRebindPlaybackToHotCache(currentTrack.id, sid)) {
           setSeekFallbackVisualTarget({ trackId: currentTrack.id, seconds: 0, setAtMs: Date.now() });
           // No-arg queue: keep the canonical refs, restart in place.
@@ -169,13 +172,13 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
 
     reseedQueueForInstantMix: (track) => {
       const s = get();
-      if (s.currentTrack?.id !== track.id) {
+      if (!sameQueueTrack(s.currentTrack, track)) {
         get().playTrack(track, [track]);
         return;
       }
       pushQueueUndoFromGetter(get);
       const wasPlaying = s.isPlaying;
-      const sid = s.queueServerId ?? '';
+      const sid = canonicalQueueServerKey(track.serverId ?? s.queueServerId ?? '');
       if (sid) seedQueueResolver(sid, [track]);
       const newItems = toQueueItemRefs(sid, [track]);
       set({

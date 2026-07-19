@@ -45,6 +45,10 @@ import {
 import { isSeekDebouncePending } from '@/features/playback/store/seekDebounce';
 import { getSeekTarget } from '@/features/playback/store/seekTargetState';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
+import {
+  queueItemRefMatchesTrack,
+  sameQueueTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 export type GaplessQueueAdvanceResult = {
   advanced: boolean;
@@ -188,7 +192,7 @@ export function applyGaplessQueueAdvance(opts?: {
     ? { ...resolved, duration: hint }
     : resolved;
 
-  if (currentTrack && repeatMode !== 'one' && currentTrack.id === nextTrack.id && queueIndex === newIndex) {
+  if (currentTrack && repeatMode !== 'one' && sameQueueTrack(currentTrack, nextTrack) && queueIndex === newIndex) {
     return { advanced: false, nextTrack, newIndex };
   }
 
@@ -230,9 +234,9 @@ export function maybeReconcileGaplessFromProgress(
     store.repeatMode,
     store.currentTrack,
   );
-  if (!nextTrack || nextTrack.id === store.currentTrack.id) return;
+  if (!nextTrack || sameQueueTrack(nextTrack, store.currentTrack)) return;
   const slotRef = store.queueItems[store.queueIndex];
-  if (!slotRef || slotRef.trackId !== store.currentTrack.id) return;
+  if (!queueItemRefMatchesTrack(slotRef, store.currentTrack)) return;
   if (store.repeatMode !== 'one' && newIndex <= store.queueIndex) return;
 
   applyGaplessQueueAdvance({
