@@ -65,8 +65,8 @@ describe('runLocalAlbumBrowse multi-server readiness', () => {
       request: {
         serverId: 'a.test',
         libraryScopes: [
-          { serverId: 'a.test', libraryId: 'lib-a' },
-          { serverId: 'b.test', libraryId: 'lib-b' },
+          { serverId: 'a.test', libraryId: null },
+          { serverId: 'b.test', libraryId: null },
         ],
       },
     });

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { onInvoke } from '@/test/mocks/tauri';
 import {
+  libraryResolveEntitySources,
   libraryScopeAlbumDetail,
   libraryScopeArtistDetail,
   libraryScopeComposerDetail,
@@ -11,6 +12,7 @@ import {
   libraryScopeMostPlayed,
   libraryScopeSearchTracks,
   libraryScopeStatistics,
+  scopePairsFromLibrarySelection,
   type LibraryScopePair,
 } from './scopeReads';
 import { useAuthStore } from '@/store/authStore';
@@ -59,6 +61,14 @@ describe('libraryScopeListAlbums', () => {
         limit: 50,
       },
     });
+  });
+});
+
+describe('nullable whole-server scopes', () => {
+  it('keeps null distinct from an exact empty library id', () => {
+    expect(scopePairsFromLibrarySelection('profile-s1')).toEqual([
+      { serverId: 's1.example', libraryId: null },
+    ]);
   });
 });
 
@@ -223,6 +233,51 @@ describe('libraryScopeSearchTracks', () => {
         limit: 20,
       },
     });
+  });
+});
+
+describe('libraryResolveEntitySources', () => {
+  it('maps nullable scopes and concrete source owners in both directions', async () => {
+    let captured: unknown;
+    onInvoke('library_resolve_entity_sources', (args) => {
+      captured = args;
+      return [{
+        serverId: 's2.example',
+        id: 'track-2',
+        libraryId: '',
+        priority: 0,
+        durationSec: 120,
+        suffix: 'flac',
+        bitRate: 1_000,
+        sizeBytes: 30_000_000,
+        starredAt: null,
+        userRating: null,
+      }];
+    });
+
+    const response = await libraryResolveEntitySources('profile-s1', {
+      entityType: 'track',
+      anchorServerId: 'profile-s1',
+      anchorId: 'track-1',
+      scopes: [
+        { serverId: 'profile-s2', libraryId: null },
+        { serverId: 'profile-s1', libraryId: '' },
+      ],
+    });
+
+    expect(captured).toEqual({
+      request: {
+        entityType: 'track',
+        anchorServerId: 's1.example',
+        anchorId: 'track-1',
+        scopes: [
+          { serverId: 's2.example', libraryId: null },
+          { serverId: 's1.example', libraryId: '' },
+        ],
+      },
+    });
+    expect(response[0]?.serverId).toBe('profile-s2');
+    expect(response[0]?.libraryId).toBe('');
   });
 });
 

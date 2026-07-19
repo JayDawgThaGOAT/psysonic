@@ -43,7 +43,7 @@ export function useComposerCatalog() {
             ownerId,
             scope.pairs
               .filter(pair => pair.serverId === ownerId)
-              .map(pair => pair.libraryId),
+              .flatMap(pair => pair.libraryId === null ? [] : [pair.libraryId]),
           ))).then(results => {
             const rows = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
             if (rows.length === 0) {

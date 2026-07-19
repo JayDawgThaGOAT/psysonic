@@ -11,7 +11,7 @@ import {
 beforeEach(resetAuthStore);
 
 describe('getLibraryBrowseScope', () => {
-  it('builds concrete pairs in server and folder priority order', () => {
+  it('builds exact and whole-server pairs in server and folder priority order', () => {
     useAuthStore.setState({
       servers: [
         { id: 'a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
@@ -32,9 +32,9 @@ describe('getLibraryBrowseScope', () => {
       pairs: [
         { serverId: 'a', libraryId: 'a2' },
         { serverId: 'a', libraryId: 'a1' },
-        { serverId: 'b', libraryId: 'b1' },
+        { serverId: 'b', libraryId: null },
       ],
-      fingerprint: JSON.stringify([['a', ['a2', 'a1']], ['b', ['b1']]]),
+      fingerprint: JSON.stringify([['a', ['a2', 'a1']], ['b', [null]]]),
       multiServer: true,
     });
   });
@@ -50,7 +50,7 @@ describe('getLibraryBrowseScope', () => {
 
     expect(scope.anchorServerId).toBe('primary');
     expect(scope.multiServer).toBe(true);
-    expect(scope.fingerprint).toBe(JSON.stringify([['primary', []], ['active', []]]));
+    expect(scope.fingerprint).toBe(JSON.stringify([['primary', [null]], ['active', [null]]]));
   });
 
   it('excludes confirmed unavailable servers without changing persisted membership', () => {
@@ -73,8 +73,8 @@ describe('getLibraryBrowseScope', () => {
     expect(deriveLibraryBrowseScope(state, new Set(['primary']))).toEqual({
       anchorServerId: 'secondary',
       serverIds: ['secondary'],
-      pairs: [{ serverId: 'secondary', libraryId: 'secondary-music' }],
-      fingerprint: JSON.stringify([['secondary', ['secondary-music']]]),
+      pairs: [{ serverId: 'secondary', libraryId: null }],
+      fingerprint: JSON.stringify([['secondary', [null]]]),
       multiServer: false,
     });
     expect(state.libraryBrowseServerIds).toEqual(['primary', 'secondary']);
@@ -111,7 +111,7 @@ describe('getLibraryBrowseScope', () => {
       anchorServerId: 'active',
       serverIds: ['active'],
       pairs: [],
-      fingerprint: JSON.stringify([['active', ['music']]]),
+      fingerprint: JSON.stringify([['active', [null]]]),
       multiServer: false,
     });
   });

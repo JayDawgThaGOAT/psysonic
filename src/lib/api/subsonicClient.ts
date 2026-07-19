@@ -348,9 +348,14 @@ export function libraryScopesForServer(serverId: string): string[] {
   return librarySelectionForServer(serverId);
 }
 
-/** Ordered scope pairs for local index reads — profile `serverId` space; empty when all libraries. */
-export function libraryScopePairsForServer(serverId: string): { serverId: string; libraryId: string }[] {
-  return librarySelectionForServer(serverId).map(libraryId => ({ serverId, libraryId }));
+/** Ordered scope pairs for local index reads — `null` means every indexed library. */
+export function libraryScopePairsForServer(
+  serverId: string,
+): { serverId: string; libraryId: string | null }[] {
+  const selection = librarySelectionForServer(serverId);
+  return selection.length > 0
+    ? selection.map(libraryId => ({ serverId, libraryId }))
+    : [{ serverId, libraryId: null }];
 }
 
 /** Navidrome/Subsonic music folder id for the local library index, or undefined for all libraries. */

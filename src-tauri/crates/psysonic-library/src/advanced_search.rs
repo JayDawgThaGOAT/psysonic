@@ -194,12 +194,12 @@ pub fn run_advanced_search(
         &req.server_id,
         req.library_scope.as_deref(),
         req.library_scopes.as_deref(),
-    );
+    )?;
     // Any >1-library scope dedups album/artist rows via cluster keys, including
     // the Layer-1 same-server path — build keys first so dedup works on a cold
     // index (idempotent; only rebuilds when needed).
     if multi_library_merge_enabled(&scope_pairs) {
-        crate::identity::ensure_cluster_keys_built(store, &req.server_id)?;
+        crate::scope_merge::ensure_cluster_keys_for_scopes(store, &scope_pairs)?;
     }
     if scoped_layer1_eligible(&scope_pairs) {
         return run_advanced_search_layer1_scope(
@@ -229,7 +229,7 @@ pub fn run_advanced_search(
     let mut legacy = req.clone();
     if legacy.library_scope.is_none() {
         if let Some(pair) = scope_pairs.first() {
-            legacy.library_scope = Some(pair.library_id.clone());
+            legacy.library_scope = pair.library_id.clone();
         }
     }
 
@@ -1190,11 +1190,14 @@ fn push_artist_library_scope_pairs(
     pairs: &[LibraryScopePair],
     applied: &mut BTreeSet<String>,
 ) {
-    // Pairs may carry profile or index `server_id`; this query is already pinned to
-    // one server via `ar.server_id = ?`, so only drop empty library ids.
-    let scoped: Vec<&LibraryScopePair> = pairs
+    // A whole-server pair needs no additional predicate because this query is
+    // already pinned to `ar.server_id`. Empty-string ids remain exact scopes.
+    if pairs.iter().any(|pair| pair.library_id.is_none()) {
+        return;
+    }
+    let scoped: Vec<&String> = pairs
         .iter()
-        .filter(|p| !p.library_id.trim().is_empty())
+        .filter_map(|pair| pair.library_id.as_ref())
         .collect();
     if scoped.is_empty() {
         return;
@@ -1205,7 +1208,7 @@ fn push_artist_library_scope_pairs(
         let clause = library_scope_sargable_equals_sql("t");
         w.push_params(
             &format!("{exists_prefix}{clause})"),
-            vec![SqlValue::Text(scoped[0].library_id.clone())],
+            vec![SqlValue::Text(scoped[0].to_string())],
         );
     } else {
         let in_clause = library_scope_in_sql("t", scoped.len());
@@ -1213,20 +1216,25 @@ fn push_artist_library_scope_pairs(
             &format!("{exists_prefix}{in_clause})"),
             scoped
                 .iter()
-                .map(|p| SqlValue::Text(p.library_id.clone()))
+                .map(|library_id| SqlValue::Text((*library_id).clone()))
                 .collect(),
         );
     }
     applied.insert("library_scope".to_string());
 }
 
-fn push_artist_library_scope(w: &mut WhereBuilder, req: &LibraryAdvancedSearchRequest, applied: &mut BTreeSet<String>) {
+fn push_artist_library_scope(
+    w: &mut WhereBuilder,
+    req: &LibraryAdvancedSearchRequest,
+    applied: &mut BTreeSet<String>,
+) -> Result<(), String> {
     let pairs = ordered_library_scope_pairs(
         &req.server_id,
         req.library_scope.as_deref(),
         req.library_scopes.as_deref(),
-    );
+    )?;
     push_artist_library_scope_pairs(w, &req.server_id, &pairs, applied);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1383,7 +1391,7 @@ fn build_artist_from_table(
     }
     let mut w = WhereBuilder::new();
     w.push_param("ar.server_id = ?", SqlValue::Text(req.server_id.clone()));
-    push_artist_library_scope(&mut w, req, applied);
+    push_artist_library_scope(&mut w, req, applied)?;
     if album_artist_credit_mode(req) {
         w.push_raw("ar.album_count IS NOT NULL");
         applied.insert("artist_credit_mode".to_string());
@@ -3655,7 +3663,7 @@ mod tests {
     fn scope_pair(server: &str, lib: &str) -> crate::dto::LibraryScopePair {
         crate::dto::LibraryScopePair {
             server_id: server.into(),
-            library_id: lib.into(),
+            library_id: Some(lib.into()),
         }
     }
 

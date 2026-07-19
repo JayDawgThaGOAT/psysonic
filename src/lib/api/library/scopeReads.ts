@@ -8,6 +8,9 @@ import {
   type LibraryMostPlayedAlbumDto as LibraryScopeMostPlayedAlbum,
   type LibraryMostPlayedArtistDto as LibraryScopeMostPlayedArtist,
   type LibraryMostPlayedResponse as LibraryScopeMostPlayedResponse,
+  type LibraryEntitySourceDto,
+  type LibraryResolveEntitySourcesRequest,
+  type LibrarySourceEntityType,
 } from '@/generated/bindings';
 import { librarySelectionForServer } from '@/lib/api/subsonicClient';
 import {
@@ -56,9 +59,12 @@ export interface LibraryScopeMostPlayedRequest {
 }
 
 export type {
+  LibraryEntitySourceDto,
+  LibraryResolveEntitySourcesRequest,
   LibraryScopeMostPlayedAlbum,
   LibraryScopeMostPlayedArtist,
   LibraryScopeMostPlayedResponse,
+  LibrarySourceEntityType,
 };
 
 export interface LibraryScopeSearchRequest {
@@ -157,10 +163,10 @@ function mapArtistsServerId(
 /** Build ordered scope pairs from the persisted library selection for one server. */
 export function scopePairsFromLibrarySelection(serverId: string): LibraryScopePair[] {
   const indexKey = serverIndexKeyForId(serverId);
-  return librarySelectionForServer(serverId).map(libraryId => ({
-    serverId: indexKey,
-    libraryId,
-  }));
+  const selection = librarySelectionForServer(serverId);
+  return selection.length > 0
+    ? selection.map(libraryId => ({ serverId: indexKey, libraryId }))
+    : [{ serverId: indexKey, libraryId: null }];
 }
 
 /** Aggregate selected index scopes without cross-server entity merging. */
@@ -281,6 +287,29 @@ export function libraryScopeSearchTracks(
       scopes: mapScopePairs(request.scopes, serverId),
     },
   }).then(tracks => mapTracksServerId(tracks, serverId));
+}
+
+export function libraryResolveEntitySources(
+  serverId: string,
+  request: LibraryResolveEntitySourcesRequest,
+): Promise<LibraryEntitySourceDto[]> {
+  const ownerByIndexKey = new Map(
+    request.scopes.map(scope => [serverIndexKeyForId(scope.serverId), scope.serverId]),
+  );
+  const anchorIndexKey = serverIndexKeyForId(request.anchorServerId);
+  return invoke<LibraryEntitySourceDto[]>('library_resolve_entity_sources', {
+    request: {
+      ...request,
+      anchorServerId: anchorIndexKey,
+      scopes: mapScopePairs(request.scopes, serverId),
+    },
+  }).then(sources =>
+    sources.map(source => ({
+      ...source,
+      serverId:
+        ownerByIndexKey.get(source.serverId) ?? mapServerIdFromIndexKey(source.serverId),
+    })),
+  );
 }
 
 export function libraryScopeAlbumDetail(

@@ -93,7 +93,7 @@ export default function ComposerDetail() {
       }
       const selectedLibraryIds = scope.pairs
         .filter(pair => pair.serverId === ownerServerId)
-        .map(pair => pair.libraryId);
+        .flatMap(pair => pair.libraryId === null ? [] : [pair.libraryId]);
       const [artistData, composerAlbums] = await Promise.all([
         getArtistForServer(ownerServerId, id).catch(() => null),
         loadNetworkComposerAlbums(ownerServerId, id, selectedLibraryIds).catch(err => {

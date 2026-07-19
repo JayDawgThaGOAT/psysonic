@@ -65,7 +65,7 @@ async function fetchScopedTopSongs(
 ): Promise<SubsonicSong[]> {
   const libraryIds = options.scopes
     .filter(scope => scope.serverId === options.sourceServerId)
-    .map(scope => scope.libraryId);
+    .flatMap(scope => scope.libraryId === null ? [] : [scope.libraryId]);
   if (libraryIds.length === 0) return [];
 
   const candidates = await getTopSongsForServer(options.sourceServerId, options.artistName, {

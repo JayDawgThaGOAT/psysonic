@@ -2,7 +2,7 @@ import { getUnavailableServerIds } from '@/lib/network/serverReachability';
 
 export interface LibraryBrowseScopePair {
   serverId: string;
-  libraryId: string;
+  libraryId: string | null;
 }
 
 export interface LibraryBrowseScopeSource {
@@ -83,7 +83,7 @@ export function deriveLibraryBrowseIndexScopes(
   }));
 }
 
-/** Ordered concrete source pairs used only by Library pages and search. */
+/** Ordered scope pairs used only by Library pages and search. */
 export function deriveLibraryBrowseScope(
   state: LibraryBrowseScopeSource,
   unavailableServerIds: ReadonlySet<string> = getUnavailableServerIds(),
@@ -91,43 +91,39 @@ export function deriveLibraryBrowseScope(
   const orderedServerIds = deriveOrderedLibraryBrowseServerIds(state);
   const effectiveServerIds = orderedServerIds
     .filter(serverId => !unavailableServerIds.has(serverId));
-  const pairs: LibraryBrowseScopePair[] = [];
-  const fingerprintEntries: Array<[string, string[]]> = [];
-
-  for (const serverId of effectiveServerIds) {
-    const folders = state.musicFoldersByServer[serverId] ?? [];
-    const selection = state.libraryBrowseSelectionByServer[serverId] ?? [];
-    const libraryIds = selection.length > 0
-      ? selection
-      : folders.map(folder => folder.id);
-    fingerprintEntries.push([serverId, libraryIds]);
-    for (const libraryId of libraryIds) {
-      if (!libraryId) continue;
-      pairs.push({ serverId, libraryId });
-    }
-  }
-
   const fallbackServerIds = orderedServerIds.length === 0
     ? deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds)
     : [];
   const scopeServerIds = effectiveServerIds.length > 0 ? effectiveServerIds : fallbackServerIds;
-  const fallbackFingerprintEntries = fallbackServerIds.map(serverId => {
-    const folders = state.musicFoldersByServer[serverId] ?? [];
+  const pairs: LibraryBrowseScopePair[] = [];
+  const fingerprintEntries: Array<[string, Array<string | null>]> = [];
+
+  for (const serverId of effectiveServerIds) {
     const selection = state.libraryBrowseSelectionByServer[serverId] ?? [];
-    return [serverId, selection.length > 0 ? selection : folders.map(folder => folder.id)] as const;
-  });
-  const fingerprint = fingerprintEntries.length > 0
-    ? JSON.stringify(fingerprintEntries)
-    : (fallbackFingerprintEntries.length > 0
-        ? JSON.stringify(fallbackFingerprintEntries)
-        : '');
+    const libraryIds = selection.length > 0
+      ? selection
+      : [null];
+    fingerprintEntries.push([serverId, libraryIds]);
+    for (const libraryId of libraryIds) {
+      pairs.push({ serverId, libraryId });
+    }
+  }
+
+  if (fingerprintEntries.length === 0) {
+    for (const serverId of fallbackServerIds) {
+      const selection = state.libraryBrowseSelectionByServer[serverId] ?? [];
+      fingerprintEntries.push([serverId, selection.length > 0 ? selection : [null]]);
+    }
+  }
+
+  const fingerprint = fingerprintEntries.length > 0 ? JSON.stringify(fingerprintEntries) : '';
 
   return {
     anchorServerId: scopeServerIds[0] ?? null,
     serverIds: scopeServerIds,
     pairs,
     fingerprint,
-    multiServer: effectiveServerIds.length > 1,
+    multiServer: scopeServerIds.length > 1,
   };
 }
 

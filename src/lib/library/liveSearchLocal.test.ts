@@ -101,7 +101,7 @@ describe('runLocalLiveSearch', () => {
   });
 
   it('passes libraryScope from the sidebar music library filter', async () => {
-    useAuthStore.setState({ musicLibraryFilterByServer: { s1: 'lib7' } });
+    useAuthStore.setState({ libraryBrowseSelectionByServer: { s1: ['lib7'] } });
     let captured: unknown;
     onInvoke('library_live_search', (args) => {
       captured = args;
@@ -111,7 +111,6 @@ describe('runLocalLiveSearch', () => {
     expect(captured).toMatchObject({
       request: {
         serverId: 's.test',
-        libraryScope: 'lib7',
         libraryScopes: [{ serverId: 's.test', libraryId: 'lib7' }],
       },
     });
@@ -119,8 +118,7 @@ describe('runLocalLiveSearch', () => {
 
   it('passes ordered libraryScopes for multi-library selection', async () => {
     useAuthStore.setState({
-      musicLibrarySelectionByServer: { s1: ['lib-b', 'lib-a'] },
-      musicLibraryFilterByServer: { s1: 'lib-b' },
+      libraryBrowseSelectionByServer: { s1: ['lib-b', 'lib-a'] },
     });
     let captured: unknown;
     onInvoke('library_live_search', (args) => {
@@ -188,7 +186,7 @@ describe('runLocalLiveSearch', () => {
     expect(captured).toMatchObject({
       request: {
         serverId: 'b.test',
-        libraryScopes: [{ serverId: 'b.test', libraryId: 'lib-b' }],
+        libraryScopes: [{ serverId: 'b.test', libraryId: null }],
       },
     });
   });

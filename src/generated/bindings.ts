@@ -54,6 +54,7 @@ export const commands = {
 	libraryGenreTagsRun: () => typedError<null, string>(__TAURI_INVOKE("library_genre_tags_run")),
 	/**  Rebuild precomputed cluster identity keys (`library-cluster.db` attach). */
 	libraryClusterRebuild: (serverId: string | null) => typedError<number, string>(__TAURI_INVOKE("library_cluster_rebuild", { serverId })),
+	libraryResolveEntitySources: (request: LibraryResolveEntitySourcesRequest) => typedError<LibraryEntitySourceDto[], string>(__TAURI_INVOKE("library_resolve_entity_sources", { request })),
 	librarySyncBindSession: (serverId: string, baseUrl: string, username: string, password: string, libraryScope: string | null) => typedError<null, string>(__TAURI_INVOKE("library_sync_bind_session", { serverId, baseUrl, username, password, libraryScope })),
 	librarySyncClearSession: (serverId: string) => typedError<null, string>(__TAURI_INVOKE("library_sync_clear_session", { serverId })),
 	librarySetPlaybackHint: (hint: string) => typedError<null, string>(__TAURI_INVOKE("library_set_playback_hint", { hint })),
@@ -1059,6 +1060,23 @@ export type LibraryCoverProgressDto = {
 };
 
 /**
+ *  Concrete source metadata for one browse identity partition. Identity keys
+ *  remain internal so the frontend cannot persist raw cluster hashes.
+ */
+export type LibraryEntitySourceDto = {
+	serverId: string,
+	id: string,
+	libraryId: string,
+	priority: number,
+	durationSec: number | null,
+	suffix: string | null,
+	bitRate: number | null,
+	sizeBytes: number | null,
+	starredAt: number | null,
+	userRating: number | null,
+};
+
+/**
  *  Ranked album row over the selected Statistics-style server/library scopes.
  *  Equivalent albums remain distinct across folders and servers.
  */
@@ -1094,10 +1112,34 @@ export type LibraryMostPlayedResponse = {
 	hasMore: boolean,
 };
 
+/**
+ *  Resolve one concrete browse entity to every matching concrete source in an
+ *  explicitly ordered scope.
+ */
+export type LibraryResolveEntitySourcesRequest = {
+	entityType: LibrarySourceEntityType,
+	anchorServerId: string,
+	anchorId: string,
+	scopes: LibraryScopePair[],
+};
+
+/**
+ *  One `(server_id, library_id)` pair in priority order (index 0 = highest).
+ *  `None` selects every indexed library on the server; `Some("")` selects only
+ *  concrete rows whose library id is empty.
+ */
+export type LibraryScopePair = {
+	serverId: string,
+	libraryId: string | null,
+};
+
 export type LibraryServerKeyMigrationDto = {
 	legacyId: string,
 	indexKey: string,
 };
+
+/**  Entity kind accepted by `library_resolve_entity_sources`. */
+export type LibrarySourceEntityType = "track" | "album" | "artist";
 
 export type LibraryStatisticsDto = {
 	artistCount: number,

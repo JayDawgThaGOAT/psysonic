@@ -142,7 +142,13 @@ fn candidate_to_dto(candidate: AlbumCandidate) -> LibraryAlbumDto {
 fn scope_key(scopes: &[LibraryScopePair]) -> String {
     scopes
         .iter()
-        .map(|scope| format!("{}\u{1f}{}", scope.server_id, scope.library_id))
+        .map(|scope| {
+            format!(
+                "{}\u{1f}{}",
+                scope.server_id,
+                scope.library_id.as_deref().unwrap_or("\u{0}")
+            )
+        })
         .collect::<Vec<_>>()
         .join("\u{1e}")
 }
@@ -220,21 +226,24 @@ fn query_scope_candidates(
     limit: usize,
 ) -> Result<Vec<AlbumCandidate>, String> {
     let (seek, mut binds) = seek_sql(sort, cursor_position);
+    let library_filter = if pair.library_id.is_some() {
+        " AND library_id = ?"
+    } else {
+        ""
+    };
     let sql = format!(
         "SELECT server_id, library_id, album_id, identity_key, name, artist, artist_id, song_count, \
-                duration_sec, year, genre, cover_art_id, starred_at, synced_at \
+                 duration_sec, year, genre, cover_art_id, starred_at, synced_at \
          FROM album_browse_projection \
-         WHERE server_id = ? AND library_id = ? {seek} \
+         WHERE server_id = ? {library_filter} {seek} \
          ORDER BY {} LIMIT ?",
         order_sql(sort),
     );
-    binds.splice(
-        0..0,
-        [
-            SqlValue::Text(pair.server_id.clone()),
-            SqlValue::Text(pair.library_id.clone()),
-        ],
-    );
+    let mut scope_binds = vec![SqlValue::Text(pair.server_id.clone())];
+    if let Some(library_id) = &pair.library_id {
+        scope_binds.push(SqlValue::Text(library_id.clone()));
+    }
+    binds.splice(0..0, scope_binds);
     binds.push(SqlValue::Integer(limit as i64));
     store
         .with_read_conn(|conn| {
@@ -275,8 +284,16 @@ fn exists_in_higher_priority_scope(
     if priority == 0 || identity_key.is_empty() {
         return Ok(false);
     }
-    let clauses = (0..priority)
-        .map(|_| "(server_id = ? AND library_id = ?)")
+    let clauses = scopes
+        .iter()
+        .take(priority)
+        .map(|scope| {
+            if scope.library_id.is_some() {
+                "(server_id = ? AND library_id = ?)"
+            } else {
+                "(server_id = ?)"
+            }
+        })
         .collect::<Vec<_>>()
         .join(" OR ");
     let sql = format!(
@@ -286,7 +303,9 @@ fn exists_in_higher_priority_scope(
     let mut binds = vec![SqlValue::Text(identity_key.to_string())];
     for scope in scopes.iter().take(priority) {
         binds.push(SqlValue::Text(scope.server_id.clone()));
-        binds.push(SqlValue::Text(scope.library_id.clone()));
+        if let Some(library_id) = &scope.library_id {
+            binds.push(SqlValue::Text(library_id.clone()));
+        }
     }
     store
         .with_read_conn(|conn| {
@@ -431,30 +450,34 @@ fn query_track_scope_candidates(
         None => ("", Vec::new()),
     };
     let columns = crate::search::aliased_track_columns("t");
+    let library_filter = if pair.library_id.is_some() {
+        " AND t.library_id = ?"
+    } else {
+        ""
+    };
     let sql = format!(
         "SELECT {columns}, CASE WHEN ck.cluster_key IS NOT NULL \
          THEN ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT) END \
          FROM track t \
          LEFT JOIN cluster.track_cluster_key ck ON ck.server_id = t.server_id AND ck.track_id = t.id \
-         WHERE t.server_id = ? AND t.library_id = ? AND t.deleted = 0 {seek} \
+         WHERE t.server_id = ? {library_filter} AND t.deleted = 0 {seek} \
          ORDER BY t.title COLLATE NOCASE ASC, t.id ASC LIMIT ?",
     );
-    binds.splice(
-        0..0,
-        [
-            SqlValue::Text(pair.server_id.clone()),
-            SqlValue::Text(pair.library_id.clone()),
-        ],
-    );
+    let mut scope_binds = vec![SqlValue::Text(pair.server_id.clone())];
+    if let Some(library_id) = &pair.library_id {
+        scope_binds.push(SqlValue::Text(library_id.clone()));
+    }
+    binds.splice(0..0, scope_binds);
     binds.push(SqlValue::Integer(limit as i64));
     store
         .with_read_conn(|conn| {
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params_from_iter(binds.iter()), |row| {
+                let track = row_to_track_row(row)?;
                 Ok(TrackCandidate {
                     priority,
-                    library_id: pair.library_id.clone(),
-                    track: row_to_track_row(row)?,
+                    library_id: track.library_id.clone().unwrap_or_default(),
+                    track,
                     identity_key: row.get(crate::search::track_projection_column_count())?,
                 })
             })?;
@@ -487,32 +510,21 @@ fn track_identity_priorities(
     if identities.is_empty() {
         return Ok(HashMap::new());
     }
-    let scope_values = scopes
-        .iter()
-        .enumerate()
-        .map(|(priority, _)| format!("(?, ?, {priority})"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let (scope_cte, mut binds) = crate::scope_merge::scope_cte_sql(scopes);
     let placeholders = (0..identities.len())
         .map(|_| "?")
         .collect::<Vec<_>>()
         .join(", ");
     let identity_sql = "ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT)";
     let sql = format!(
-        "WITH scope(server_id, library_id, priority) AS (VALUES {scope_values}) \
-         SELECT {identity_sql}, MIN(scope.priority) \
-         FROM scope \
+        "{scope_cte} SELECT {identity_sql}, MIN(scope.pr) \
+         FROM scoped_track scope \
+         INNER JOIN track t ON t.rowid = scope.rowid \
          INNER JOIN cluster.track_cluster_key ck \
-           ON ck.server_id = scope.server_id AND ck.library_id = scope.library_id \
-         INNER JOIN track t ON t.server_id = ck.server_id AND t.id = ck.track_id \
+           ON ck.server_id = t.server_id AND ck.track_id = t.id \
          WHERE t.deleted = 0 AND {identity_sql} IN ({placeholders}) \
          GROUP BY {identity_sql}",
     );
-    let mut binds = Vec::with_capacity(scopes.len() * 2 + identities.len());
-    for scope in scopes {
-        binds.push(SqlValue::Text(scope.server_id.clone()));
-        binds.push(SqlValue::Text(scope.library_id.clone()));
-    }
     binds.extend(identities.into_iter().map(SqlValue::Text));
     store
         .with_read_conn(|conn| {
@@ -627,9 +639,7 @@ pub fn browse(
     store: &LibraryStore,
     request: &LibraryScopeBrowseRequest,
 ) -> Result<LibraryScopeBrowseResponse, String> {
-    if request.scopes.is_empty() {
-        return Err("scope browse requires at least one library scope".into());
-    }
+    crate::scope_merge::non_empty_scopes(&request.scopes)?;
     match request.entity {
         LibraryScopeBrowseEntity::Album => {
             if !crate::browse_projection::is_ready(store)? {
@@ -722,14 +732,46 @@ mod tests {
     }
 
     #[test]
+    fn whole_server_streams_include_empty_library_and_exact_empty_stays_narrow() {
+        let store = LibraryStore::open_in_memory();
+        insert_projection(&store, "s1", "", "empty-album", "Alpha", Some("empty"));
+        insert_projection(&store, "s1", "lib-b", "tagged-album", "Bravo", Some("tagged"));
+        insert_track(&store, "s1", "", "empty-track", "Alpha", Some("empty-track"));
+        insert_track(&store, "s1", "lib-b", "tagged-track", "Bravo", Some("tagged-track"));
+
+        let whole = vec![LibraryScopePair { server_id: "s1".into(), library_id: None }];
+        let albums = browse(&store, &request(whole.clone(), 10, None)).unwrap();
+        assert_eq!(
+            albums.albums.iter().map(|album| album.id.as_str()).collect::<Vec<_>>(),
+            vec!["empty-album", "tagged-album"]
+        );
+        let tracks = browse(&store, &track_request(whole, 10, None)).unwrap();
+        assert_eq!(
+            tracks.tracks.iter().map(|track| track.id.as_str()).collect::<Vec<_>>(),
+            vec!["empty-track", "tagged-track"]
+        );
+
+        let exact_empty = vec![LibraryScopePair {
+            server_id: "s1".into(),
+            library_id: Some(String::new()),
+        }];
+        let albums = browse(&store, &request(exact_empty.clone(), 10, None)).unwrap();
+        assert_eq!(albums.albums.len(), 1);
+        assert_eq!(albums.albums[0].id, "empty-album");
+        let tracks = browse(&store, &track_request(exact_empty, 10, None)).unwrap();
+        assert_eq!(tracks.tracks.len(), 1);
+        assert_eq!(tracks.tracks[0].id, "empty-track");
+    }
+
+    #[test]
     fn priority_scope_wins_even_when_its_duplicate_sorts_later() {
         let store = LibraryStore::open_in_memory();
         insert_projection(&store, "high", "lib", "high-dup", "Zulu", Some("same"));
         insert_projection(&store, "low", "lib", "low-dup", "Alpha", Some("same"));
         insert_projection(&store, "low", "lib", "low-unique", "Bravo", Some("other"));
         let response = browse(&store, &request(vec![
-            LibraryScopePair { server_id: "high".into(), library_id: "lib".into() },
-            LibraryScopePair { server_id: "low".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "high".into(), library_id: Some("lib".into()) },
+            LibraryScopePair { server_id: "low".into(), library_id: Some("lib".into()) },
         ], 10, None)).unwrap();
 
         assert_eq!(
@@ -746,8 +788,8 @@ mod tests {
         insert_projection(&store, "b", "lib", "b-alpha", "Alpha", Some("b-alpha"));
         insert_projection(&store, "b", "lib", "b-charlie", "Charlie", Some("b-charlie"));
         let scopes = vec![
-            LibraryScopePair { server_id: "a".into(), library_id: "lib".into() },
-            LibraryScopePair { server_id: "b".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "a".into(), library_id: Some("lib".into()) },
+            LibraryScopePair { server_id: "b".into(), library_id: Some("lib".into()) },
         ];
 
         let first = browse(&store, &request(scopes.clone(), 2, None)).unwrap();
@@ -769,8 +811,8 @@ mod tests {
         insert_track(&store, "low", "lib", "low-dup", "Same", Some("same"));
         insert_track(&store, "low", "lib", "low-unique", "Bravo", Some("other"));
         let response = browse(&store, &track_request(vec![
-            LibraryScopePair { server_id: "high".into(), library_id: "lib".into() },
-            LibraryScopePair { server_id: "low".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "high".into(), library_id: Some("lib".into()) },
+            LibraryScopePair { server_id: "low".into(), library_id: Some("lib".into()) },
         ], 10, None)).unwrap();
 
         assert_eq!(
@@ -787,8 +829,8 @@ mod tests {
         insert_track(&store, "b", "lib", "b-alpha", "Alpha", None);
         insert_track(&store, "b", "lib", "b-charlie", "Charlie", None);
         let scopes = vec![
-            LibraryScopePair { server_id: "a".into(), library_id: "lib".into() },
-            LibraryScopePair { server_id: "b".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "a".into(), library_id: Some("lib".into()) },
+            LibraryScopePair { server_id: "b".into(), library_id: Some("lib".into()) },
         ];
 
         let first = browse(&store, &track_request(scopes.clone(), 2, None)).unwrap();
@@ -809,8 +851,8 @@ mod tests {
         insert_track(&store, "high", "lib", "high-dup", "Same", Some("same"));
         insert_track(&store, "low", "lib", "low-dup", "Same", Some("same"));
         let scopes = vec![
-            LibraryScopePair { server_id: "high".into(), library_id: "lib".into() },
-            LibraryScopePair { server_id: "low".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "high".into(), library_id: Some("lib".into()) },
+            LibraryScopePair { server_id: "low".into(), library_id: Some("lib".into()) },
         ];
 
         let candidates = vec![

@@ -666,15 +666,15 @@ mod tests {
             vec![
                 LibraryScopePair {
                     server_id: "s1".into(),
-                    library_id: "lib-a".into(),
+                    library_id: Some("lib-a".into()),
                 },
                 LibraryScopePair {
                     server_id: "s1".into(),
-                    library_id: "lib-b".into(),
+                    library_id: Some("lib-b".into()),
                 },
                 LibraryScopePair {
                     server_id: "s2".into(),
-                    library_id: "lib-c".into(),
+                    library_id: Some("lib-c".into()),
                 },
             ],
         );
@@ -734,11 +734,11 @@ mod tests {
             vec![
                 LibraryScopePair {
                     server_id: "s1".into(),
-                    library_id: "lib-a".into(),
+                    library_id: Some("lib-a".into()),
                 },
                 LibraryScopePair {
                     server_id: "s2".into(),
-                    library_id: "lib-b".into(),
+                    library_id: Some("lib-b".into()),
                 },
             ],
         );

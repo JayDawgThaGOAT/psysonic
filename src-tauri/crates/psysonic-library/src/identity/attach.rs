@@ -26,6 +26,12 @@ CREATE INDEX IF NOT EXISTS cluster.idx_ck_scope_artist
   ON track_cluster_key(server_id, library_id, artist_key);
 CREATE INDEX IF NOT EXISTS cluster.idx_ck_scope_track
   ON track_cluster_key(server_id, library_id, cluster_key);
+CREATE INDEX IF NOT EXISTS cluster.idx_ck_server_album
+  ON track_cluster_key(server_id, album_key);
+CREATE INDEX IF NOT EXISTS cluster.idx_ck_server_artist
+  ON track_cluster_key(server_id, artist_key);
+CREATE INDEX IF NOT EXISTS cluster.idx_ck_server_track
+  ON track_cluster_key(server_id, cluster_key);
 CREATE TABLE IF NOT EXISTS cluster.cluster_meta (
   key TEXT PRIMARY KEY,
   value TEXT

@@ -38,6 +38,18 @@ const search = (over: Partial<LibraryAdvancedSearchResponse>): LibraryAdvancedSe
   appliedFilters: [], source: 'local', ...over,
 });
 
+const artistDetail = ({
+  albums = [],
+  tracks = [],
+}: {
+  albums?: LibraryAdvancedSearchResponse['albums'];
+  tracks?: LibraryAdvancedSearchResponse['tracks'];
+}) => ({
+  artist: { serverId: 's1', id: 'ar1', name: 'Artist One', syncedAt: 0, rawJson: {} },
+  albums,
+  tracks,
+});
+
 beforeEach(() => {
   useLibraryIndexStore.setState({ masterEnabled: true });
   vi.restoreAllMocks();
@@ -89,10 +101,9 @@ describe('resolveNpAlbum', () => {
 describe('resolveNpDiscography', () => {
   it('index hit → no getArtistForServer call', async () => {
     ready();
-    onInvoke('library_advanced_search', () => search({
+    onInvoke('library_scope_artist_detail', () => artistDetail({
       albums: [
         { serverId: 's1', id: 'al1', name: 'A1', artistId: 'ar1', syncedAt: 0, rawJson: {} },
-        { serverId: 's1', id: 'al2', name: 'A2', artistId: 'other', syncedAt: 0, rawJson: {} },
       ],
     }));
     const spy = vi.spyOn(subsonicArtists, 'getArtistForServer');
@@ -103,7 +114,7 @@ describe('resolveNpDiscography', () => {
 
   it('index empty + reachable → getArtistForServer fallback', async () => {
     ready();
-    onInvoke('library_advanced_search', () => search({ albums: [] }));
+    onInvoke('library_scope_artist_detail', () => artistDetail({ albums: [] }));
     const spy = vi.spyOn(subsonicArtists, 'getArtistForServer')
       .mockResolvedValue({ albums: [{ id: 'al9' }] } as never);
     const albums = await resolveNpDiscography('s1', 'ar1');
@@ -114,7 +125,7 @@ describe('resolveNpDiscography', () => {
   it('unreachable + index empty → no network, empty list', async () => {
     guard.mockReturnValue(false);
     ready();
-    onInvoke('library_advanced_search', () => search({ albums: [] }));
+    onInvoke('library_scope_artist_detail', () => artistDetail({ albums: [] }));
     const spy = vi.spyOn(subsonicArtists, 'getArtistForServer');
     const albums = await resolveNpDiscography('s1', 'ar1');
     expect(spy).not.toHaveBeenCalled();
@@ -126,13 +137,12 @@ describe('resolveNpTopSongs', () => {
   // Index path: artist's discography albums → their tracks → sort by play_count.
   it('index hit → top tracks from the artist albums, by play count', async () => {
     ready();
-    onInvoke('library_advanced_search', () => search({
-      albums: [{ serverId: 's1', id: 'al1', name: 'A1', artistId: 'ar1', syncedAt: 0, rawJson: {} }],
+    onInvoke('library_scope_artist_detail', () => artistDetail({
+      tracks: [
+        { serverId: 's1', id: 't-lo', title: 'Low', album: 'A1', artistId: 'ar1', durationSec: 1, playCount: 2, syncedAt: 0, rawJson: {} },
+        { serverId: 's1', id: 't-hi', title: 'High', album: 'A1', artistId: 'ar1', durationSec: 1, playCount: 9, syncedAt: 0, rawJson: {} },
+      ],
     }));
-    onInvoke('library_get_tracks_by_album', () => [
-      { serverId: 's1', id: 't-lo', title: 'Low', album: 'A1', artistId: 'ar1', durationSec: 1, playCount: 2, syncedAt: 0, rawJson: {} },
-      { serverId: 's1', id: 't-hi', title: 'High', album: 'A1', artistId: 'ar1', durationSec: 1, playCount: 9, syncedAt: 0, rawJson: {} },
-    ]);
     const spy = vi.spyOn(subsonicArtists, 'getTopSongsForServer');
     const songs = await resolveNpTopSongs('s1', 'ar1', 'Artist One');
     expect(spy).not.toHaveBeenCalled();
@@ -141,7 +151,7 @@ describe('resolveNpTopSongs', () => {
 
   it('index has no albums + reachable → getTopSongsForServer fallback', async () => {
     ready();
-    onInvoke('library_advanced_search', () => search({ albums: [] }));
+    onInvoke('library_scope_artist_detail', () => artistDetail({ albums: [], tracks: [] }));
     const spy = vi.spyOn(subsonicArtists, 'getTopSongsForServer')
       .mockResolvedValue([{ id: 'net1' } as never]);
     const songs = await resolveNpTopSongs('s1', 'ar1', 'Artist One');
@@ -152,7 +162,7 @@ describe('resolveNpTopSongs', () => {
   it('unreachable + no index albums → no network, empty', async () => {
     guard.mockReturnValue(false);
     ready();
-    onInvoke('library_advanced_search', () => search({ albums: [] }));
+    onInvoke('library_scope_artist_detail', () => artistDetail({ albums: [], tracks: [] }));
     const spy = vi.spyOn(subsonicArtists, 'getTopSongsForServer');
     const songs = await resolveNpTopSongs('s1', 'ar1', 'Artist One');
     expect(spy).not.toHaveBeenCalled();

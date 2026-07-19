@@ -202,10 +202,10 @@ export interface LibrarySortClause {
   dir: SortDir;
 }
 
-/** One server + library folder id — profile `serverId` space until IPC wrappers remap. */
+/** One server scope; `null` means every indexed library, while `''` is an exact id. */
 export interface LibraryScopePair {
   serverId: string;
-  libraryId: string;
+  libraryId: string | null;
 }
 
 export type LibraryScopeBrowseEntity = 'album' | 'artist' | 'track';

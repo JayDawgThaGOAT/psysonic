@@ -5,7 +5,7 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params_from_iter, OptionalExtension};
 use serde_json::Value;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::album_compilation_filter::pick_album_group_artist;
@@ -15,7 +15,8 @@ use crate::dto::{
     LibraryAlbumDto, LibraryArtistDto, LibraryScopeAlbumDetailRequest,
     LibraryScopeAlbumDetailResponse, LibraryScopeArtistDetailRequest,
     LibraryScopeArtistDetailResponse, LibraryScopeListRequest, LibraryScopePair,
-    LibraryScopeSearchRequest, LibraryTrackDto,
+    LibraryScopeSearchRequest, LibraryTrackDto, LibraryEntitySourceDto,
+    LibraryResolveEntitySourcesRequest, LibrarySourceEntityType,
 };
 use crate::repos::row_to_track_row;
 use crate::search::{
@@ -51,9 +52,42 @@ const ARTIST_PICK_KEY: &str = "printf('%08d|%s', pr, artist_id)";
 
 const TRACK_FTS_BM25_RANK: &str = "bm25(track_fts, 10.0, 3.0, 5.0, 3.0, 0.0)";
 
+pub(crate) fn normalize_scope_pairs(
+    scopes: &[LibraryScopePair],
+) -> Result<Vec<LibraryScopePair>, String> {
+    let mut normalized = Vec::with_capacity(scopes.len());
+    let mut seen = HashSet::new();
+    let mut server_modes: HashMap<String, bool> = HashMap::new();
+    for pair in scopes {
+        let server_id = pair.server_id.trim();
+        if server_id.is_empty() {
+            return Err("scope server_id must not be empty".into());
+        }
+        let whole_server = pair.library_id.is_none();
+        if let Some(previous_whole_server) = server_modes.insert(server_id.to_string(), whole_server) {
+            if previous_whole_server != whole_server {
+                return Err(format!(
+                    "server {server_id} cannot mix whole-server and exact-library scopes"
+                ));
+            }
+        }
+        let normalized_pair = LibraryScopePair {
+            server_id: server_id.to_string(),
+            library_id: pair.library_id.clone(),
+        };
+        if seen.insert((normalized_pair.server_id.clone(), normalized_pair.library_id.clone())) {
+            normalized.push(normalized_pair);
+        }
+    }
+    Ok(normalized)
+}
+
 pub(crate) fn non_empty_scopes(scopes: &[LibraryScopePair]) -> Result<&[LibraryScopePair], String> {
     if scopes.is_empty() {
         return Err("scopes must not be empty".into());
+    }
+    if normalize_scope_pairs(scopes)?.len() != scopes.len() {
+        return Err("duplicate scope pair".into());
     }
     Ok(scopes)
 }
@@ -66,37 +100,87 @@ fn clamp_offset(offset: Option<u32>) -> u32 {
     offset.unwrap_or(0)
 }
 
-/// `WITH scope(server_id, library_id, pr) AS (VALUES …)` — filters and yields priority.
+/// Compile exact-library and whole-server sources into separate indexed branches.
+/// `scoped_track` carries rowids and priority for track readers; `scope` expands
+/// whole-server pairs to concrete library ids for projection-table readers.
 pub(crate) fn scope_cte_sql(scopes: &[LibraryScopePair]) -> (String, Vec<SqlValue>) {
-    let values = scopes
+    let exact = scopes
         .iter()
         .enumerate()
-        .map(|(i, _)| format!("(?, ?, {i})"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!("WITH scope(server_id, library_id, pr) AS (VALUES {values})");
-    let mut binds = Vec::with_capacity(scopes.len() * 2);
-    for pair in scopes {
+        .filter(|(_, pair)| pair.library_id.is_some())
+        .collect::<Vec<_>>();
+    let whole = scopes
+        .iter()
+        .enumerate()
+        .filter(|(_, pair)| pair.library_id.is_none())
+        .collect::<Vec<_>>();
+    let exact_values = if exact.is_empty() {
+        "SELECT NULL, NULL, NULL WHERE 0".to_string()
+    } else {
+        format!(
+            "VALUES {}",
+            exact
+                .iter()
+                .map(|(priority, _)| format!("(?, ?, {priority})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let whole_values = if whole.is_empty() {
+        "SELECT NULL, NULL WHERE 0".to_string()
+    } else {
+        format!(
+            "VALUES {}",
+            whole
+                .iter()
+                .map(|(priority, _)| format!("(?, {priority})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let sql = format!(
+        "WITH exact_scope(server_id, library_id, pr) AS ({exact_values}), \
+         whole_scope(server_id, pr) AS ({whole_values}), \
+         scope(server_id, library_id, pr) AS ( \
+           SELECT server_id, library_id, pr FROM exact_scope \
+           UNION ALL \
+           SELECT t.server_id, t.library_id, s.pr FROM whole_scope s \
+           CROSS JOIN track t ON t.server_id = s.server_id \
+           WHERE t.deleted = 0 GROUP BY t.server_id, t.library_id, s.pr \
+         ), \
+         scoped_track(rowid, pr) AS ( \
+           SELECT t.rowid, s.pr FROM exact_scope s \
+           CROSS JOIN track t ON t.server_id = s.server_id AND t.library_id = s.library_id \
+           WHERE t.deleted = 0 \
+           UNION ALL \
+           SELECT t.rowid, s.pr FROM whole_scope s \
+           CROSS JOIN track t ON t.server_id = s.server_id \
+           WHERE t.deleted = 0 \
+         )"
+    );
+    let mut binds = Vec::with_capacity(exact.len() * 2 + whole.len());
+    for (_, pair) in exact {
         binds.push(SqlValue::Text(pair.server_id.clone()));
-        binds.push(SqlValue::Text(pair.library_id.clone()));
+        binds.push(SqlValue::Text(pair.library_id.clone().unwrap_or_default()));
+    }
+    for (_, pair) in whole {
+        binds.push(SqlValue::Text(pair.server_id.clone()));
     }
     (sql, binds)
 }
 
 fn scoped_track_join_layer1() -> &'static str {
-    "FROM scope s \
-     CROSS JOIN track t ON t.server_id = s.server_id AND t.library_id = s.library_id \
+    "FROM scoped_track s \
+     CROSS JOIN track t ON t.rowid = s.rowid \
      WHERE t.deleted = 0"
 }
 
 fn scoped_track_join() -> &'static str {
-    // Drive from the tiny `scope` VALUES table and CROSS JOIN so SQLite cannot
-    // reorder to a full `track` scan: each scope row seeks its library's tracks
-    // via idx_track_library_* instead of scanning all tracks and probing scope.
-    // This only visits tracks in the selected libraries, so a subset of libraries
-    // is proportionally cheaper than the whole server.
-    "FROM scope s \
-     CROSS JOIN track t ON t.server_id = s.server_id AND t.library_id = s.library_id \
+    // `scoped_track` already compiled exact-library and whole-server scans into
+    // separate indexed branches. Rejoin by rowid so downstream SQL keeps one
+    // track shape without broad OR predicates.
+    "FROM scoped_track s \
+     CROSS JOIN track t ON t.rowid = s.rowid \
      LEFT JOIN cluster.track_cluster_key ck ON ck.server_id = t.server_id AND ck.track_id = t.id \
      WHERE t.deleted = 0"
 }
@@ -107,17 +191,35 @@ fn keyed_detail_track_source(
     fallback_filter: &'static str,
 ) -> (String, &'static str, &'static str, &'static str) {
     if let Some(key_column) = key_column {
+        let index_suffix = match key_column {
+            "cluster_key" => "track",
+            "album_key" => "album",
+            "artist_key" => "artist",
+            _ => key_column,
+        };
+        let scope_index = format!("idx_ck_scope_{index_suffix}");
+        let server_index = format!("idx_ck_server_{index_suffix}");
         let cte = format!(
             "{scope_cte}, \
+             detail_key(value) AS (VALUES (?)), \
              detail_tracks AS MATERIALIZED ( \
-               SELECT ck.server_id, ck.library_id, ck.track_id, ck.cluster_key, \
-                      ck.album_key, ck.artist_key, ck.duration_sec, s.pr \
-               FROM scope s \
-               CROSS JOIN cluster.track_cluster_key ck \
-                 ON ck.server_id = s.server_id \
-                AND ck.library_id = s.library_id \
-                AND ck.{key_column} = ? \
-             )"
+                SELECT ck.server_id, ck.library_id, ck.track_id, ck.cluster_key, \
+                       ck.album_key, ck.artist_key, ck.duration_sec, s.pr \
+                FROM exact_scope s \
+                CROSS JOIN detail_key key \
+                CROSS JOIN cluster.track_cluster_key ck INDEXED BY {scope_index} \
+                  ON ck.server_id = s.server_id \
+                 AND ck.library_id = s.library_id \
+                 AND ck.{key_column} = key.value \
+                UNION ALL \
+                SELECT ck.server_id, ck.library_id, ck.track_id, ck.cluster_key, \
+                       ck.album_key, ck.artist_key, ck.duration_sec, s.pr \
+                FROM whole_scope s \
+                CROSS JOIN detail_key key \
+                CROSS JOIN cluster.track_cluster_key ck INDEXED BY {server_index} \
+                  ON ck.server_id = s.server_id \
+                 AND ck.{key_column} = key.value \
+              )"
         );
         (
             cte,
@@ -473,7 +575,7 @@ pub(crate) fn list_albums_layer1_filtered(
         let where_sql = where_parts.join(" AND ");
         let mut params = vec![
             SqlValue::Text(pair.server_id.clone()),
-            SqlValue::Text(pair.library_id.clone()),
+            SqlValue::Text(pair.library_id.clone().unwrap_or_default()),
         ];
         params.extend_from_slice(extra_params);
 
@@ -531,7 +633,7 @@ pub(crate) fn list_albums_layer1_filtered(
             );
             let mut params = vec![SqlValue::Text(server_id.clone())];
             for p in scopes {
-                params.push(SqlValue::Text(p.library_id.clone()));
+                params.push(SqlValue::Text(p.library_id.clone().unwrap_or_default()));
             }
             let count_sql = format!("SELECT COUNT(DISTINCT t.album_id) FROM track t WHERE {where_sql}");
             // Grouped shape — same reasoning as the single-scope branch above.
@@ -1553,6 +1655,195 @@ fn lookup_artist_key(
     .map(Option::flatten)
 }
 
+fn lookup_track_partition(
+    conn: &rusqlite::Connection,
+    server_id: &str,
+    track_id: &str,
+) -> rusqlite::Result<Option<(Option<String>, i64)>> {
+    conn.query_row(
+        "SELECT ck.cluster_key, ck.duration_sec / 5 FROM track t \
+         INNER JOIN cluster.track_cluster_key ck ON ck.server_id = t.server_id AND ck.track_id = t.id \
+         WHERE t.server_id = ? AND t.id = ? AND t.deleted = 0 LIMIT 1",
+        rusqlite::params![server_id, track_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+fn map_entity_source_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryEntitySourceDto> {
+    let priority = r.get::<_, i64>(3)?;
+    Ok(LibraryEntitySourceDto {
+        server_id: r.get(0)?,
+        id: r.get(1)?,
+        library_id: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        priority: u32::try_from(priority).unwrap_or(u32::MAX),
+        duration_sec: r.get(4)?,
+        suffix: r.get(5)?,
+        bit_rate: r.get(6)?,
+        size_bytes: r.get(7)?,
+        starred_at: r.get(8)?,
+        user_rating: r.get(9)?,
+    })
+}
+
+fn fetch_track_sources(
+    conn: &rusqlite::Connection,
+    scopes: &[LibraryScopePair],
+    cluster_key: Option<&str>,
+    duration_bucket: i64,
+    anchor_server: &str,
+    anchor_id: &str,
+) -> rusqlite::Result<Vec<LibraryEntitySourceDto>> {
+    let (scope_cte, scope_binds) = scope_cte_sql(scopes);
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        cluster_key.map(|_| "cluster_key"),
+        "AND t.server_id = ? AND t.id = ?",
+    );
+    let bucket_filter = if cluster_key.is_some() {
+        "AND ck.duration_sec / 5 = ?"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "{cte} SELECT t.server_id, t.id, t.library_id, {priority}, t.duration_sec, t.suffix, \
+         t.bit_rate, t.size_bytes, t.starred_at, t.user_rating \
+         {scoped} {key_filter} {bucket_filter} \
+         ORDER BY {priority} ASC, t.server_id ASC, t.id ASC"
+    );
+    let mut binds = scope_binds;
+    if let Some(key) = cluster_key {
+        binds.push(SqlValue::Text(key.to_string()));
+        binds.push(SqlValue::Integer(duration_bucket));
+    } else {
+        binds.push(SqlValue::Text(anchor_server.to_string()));
+        binds.push(SqlValue::Text(anchor_id.to_string()));
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(binds.iter()), map_entity_source_row)?
+        .collect();
+    rows
+}
+
+fn fetch_grouped_entity_sources(
+    conn: &rusqlite::Connection,
+    scopes: &[LibraryScopePair],
+    entity_type: LibrarySourceEntityType,
+    identity_key: Option<&str>,
+    anchor_server: &str,
+    anchor_id: &str,
+) -> rusqlite::Result<Vec<LibraryEntitySourceDto>> {
+    let (entity_column, cluster_column) = match entity_type {
+        LibrarySourceEntityType::Album => ("album_id", "album_key"),
+        LibrarySourceEntityType::Artist => ("artist_id", "artist_key"),
+        LibrarySourceEntityType::Track => unreachable!("track sources use fetch_track_sources"),
+    };
+    let (scope_cte, scope_binds) = scope_cte_sql(scopes);
+    let fallback_filter = match entity_type {
+        LibrarySourceEntityType::Album => "AND t.server_id = ? AND t.album_id = ?",
+        LibrarySourceEntityType::Artist => "AND t.server_id = ? AND t.artist_id = ?",
+        LibrarySourceEntityType::Track => unreachable!(),
+    };
+    let (cte, scoped, key_filter, priority) = keyed_detail_track_source(
+        scope_cte,
+        identity_key.map(|_| cluster_column),
+        fallback_filter,
+    );
+    let (metadata_join, duration_column, starred_column) = match entity_type {
+        LibrarySourceEntityType::Album => (
+            "LEFT JOIN album e ON e.server_id = candidates.server_id AND e.id = candidates.entity_id",
+            "e.duration_sec",
+            "e.starred_at",
+        ),
+        LibrarySourceEntityType::Artist => ("", "NULL", "NULL"),
+        LibrarySourceEntityType::Track => unreachable!(),
+    };
+    let sql = format!(
+        "{cte}, candidates AS ( \
+           SELECT t.server_id, t.{entity_column} AS entity_id, t.library_id, {priority} AS pr, \
+                  ROW_NUMBER() OVER ( \
+                    PARTITION BY t.server_id, t.{entity_column} \
+                    ORDER BY {priority} ASC, t.id ASC \
+                  ) AS rn \
+           {scoped} AND t.{entity_column} IS NOT NULL AND t.{entity_column} != '' {key_filter} \
+         ) \
+         SELECT candidates.server_id, candidates.entity_id, candidates.library_id, candidates.pr, \
+                {duration_column}, NULL, NULL, NULL, {starred_column}, NULL \
+         FROM candidates {metadata_join} \
+         WHERE candidates.rn = 1 \
+         ORDER BY candidates.pr ASC, candidates.server_id ASC, candidates.entity_id ASC"
+    );
+    let mut binds = scope_binds;
+    if let Some(key) = identity_key {
+        binds.push(SqlValue::Text(key.to_string()));
+    } else {
+        binds.push(SqlValue::Text(anchor_server.to_string()));
+        binds.push(SqlValue::Text(anchor_id.to_string()));
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(binds.iter()), map_entity_source_row)?
+        .collect();
+    rows
+}
+
+/// Resolve a concrete anchor to all matching concrete rows in caller-supplied
+/// pair priority. Track identity includes browse's fixed five-second bucket.
+pub fn resolve_entity_sources(
+    store: &LibraryStore,
+    request: &LibraryResolveEntitySourcesRequest,
+) -> Result<Vec<LibraryEntitySourceDto>, String> {
+    let scopes = non_empty_scopes(&request.scopes)?;
+    let anchor_server = request.anchor_server_id.trim();
+    let anchor_id = request.anchor_id.trim();
+    if anchor_server.is_empty() || anchor_id.is_empty() {
+        return Err("anchor_server_id and anchor_id are required".into());
+    }
+    crate::identity::ensure_cluster_keys_built(store, anchor_server)?;
+    ensure_cluster_keys_for_all_scopes(store, scopes)?;
+
+    store.with_scope_detail_read_conn(|conn| match request.entity_type {
+        LibrarySourceEntityType::Track => {
+            let Some((cluster_key, duration_bucket)) =
+                lookup_track_partition(conn, anchor_server, anchor_id)?
+            else {
+                return Ok(Vec::new());
+            };
+            fetch_track_sources(
+                conn,
+                scopes,
+                cluster_key.as_deref(),
+                duration_bucket,
+                anchor_server,
+                anchor_id,
+            )
+        }
+        LibrarySourceEntityType::Album => {
+            let key = lookup_album_key(conn, anchor_server, anchor_id)?;
+            fetch_grouped_entity_sources(
+                conn,
+                scopes,
+                request.entity_type,
+                key.as_deref(),
+                anchor_server,
+                anchor_id,
+            )
+        }
+        LibrarySourceEntityType::Artist => {
+            let key = lookup_artist_key(conn, anchor_server, anchor_id)?;
+            fetch_grouped_entity_sources(
+                conn,
+                scopes,
+                request.entity_type,
+                key.as_deref(),
+                anchor_server,
+                anchor_id,
+            )
+        }
+    })
+}
+
 /// Caller must pre-sort `candidates` by full scope-pair priority (lowest index first).
 fn priority_album_candidate(candidates: &[LibraryAlbumDto]) -> LibraryAlbumDto {
     candidates.first().cloned().unwrap_or_else(|| LibraryAlbumDto {
@@ -2157,7 +2448,14 @@ mod tests {
     fn scope_pair(server: &str, lib: &str) -> LibraryScopePair {
         LibraryScopePair {
             server_id: server.into(),
-            library_id: lib.into(),
+            library_id: Some(lib.into()),
+        }
+    }
+
+    fn whole_scope(server: &str) -> LibraryScopePair {
+        LibraryScopePair {
+            server_id: server.into(),
+            library_id: None,
         }
     }
 
@@ -2237,6 +2535,209 @@ mod tests {
             })
             .unwrap();
         rebuild_cluster_keys(store, None).unwrap();
+    }
+
+    #[test]
+    fn scope_normalization_preserves_empty_library_and_rejects_overlap() {
+        let scopes = vec![
+            scope_pair("s1", ""),
+            scope_pair("s1", ""),
+            whole_scope("s2"),
+        ];
+        assert_eq!(normalize_scope_pairs(&scopes).unwrap(), vec![scope_pair("s1", ""), whole_scope("s2")]);
+        assert_eq!(non_empty_scopes(&scopes).unwrap_err(), "duplicate scope pair");
+
+        let overlap = vec![whole_scope("s1"), scope_pair("s1", "lib-a")];
+        assert!(non_empty_scopes(&overlap)
+            .unwrap_err()
+            .contains("cannot mix whole-server and exact-library scopes"));
+    }
+
+    #[test]
+    fn whole_server_scope_includes_empty_library_rows_without_broad_or_predicate() {
+        let store = LibraryStore::open_in_memory();
+        seed_and_rebuild(
+            &store,
+            &[
+                track(
+                    "s1", "exact", "Exact", Some("Artist"), "Exact Album", "exact-album",
+                    Some("artist"), 100, "lib-a", None, None, None,
+                ),
+                track(
+                    "s2", "empty", "Empty", Some("Artist"), "Empty Album", "empty-album",
+                    Some("artist"), 101, "", None, None, None,
+                ),
+                track(
+                    "s2", "tagged", "Tagged", Some("Artist"), "Tagged Album", "tagged-album",
+                    Some("artist"), 102, "lib-b", None, None, None,
+                ),
+            ],
+        );
+        let scopes = vec![scope_pair("s1", "lib-a"), whole_scope("s2")];
+        let (cte, binds) = scope_cte_sql(&scopes);
+        assert!(cte.contains("exact_scope"));
+        assert!(cte.contains("whole_scope"));
+        assert!(cte.contains("UNION ALL"));
+        assert!(!cte.contains("IS NULL OR"));
+        let sql = format!(
+            "{cte} SELECT t.id, s.pr FROM scoped_track s \
+             INNER JOIN track t ON t.rowid = s.rowid ORDER BY s.pr, t.id"
+        );
+        let rows = store
+            .with_read_conn(|conn| {
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt
+                    .query_map(params_from_iter(binds.iter()), |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>();
+                rows
+            })
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("exact".into(), 0), ("empty".into(), 1), ("tagged".into(), 1)]
+        );
+
+        let exact_empty = list_albums(
+            &store,
+            &LibraryScopeListRequest {
+                scopes: vec![scope_pair("s2", "")],
+                sort: None,
+                limit: Some(10),
+                offset: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(exact_empty.len(), 1);
+        assert_eq!(exact_empty[0].id, "empty-album");
+    }
+
+    #[test]
+    fn source_resolver_track_matches_browse_partition_and_pair_priority() {
+        let store = LibraryStore::open_in_memory();
+        let mut high = track(
+            "s1", "t-high", "Shared", Some("Artist"), "Album", "al-high",
+            Some("ar-high"), 104, "lib-high", None, None, None,
+        );
+        high.suffix = Some("flac".into());
+        high.bit_rate = Some(1_000);
+        high.size_bytes = Some(30_000_000);
+        high.starred_at = Some(1_700_000_000);
+        high.user_rating = Some(5);
+        let mut low = track(
+            "s2", "t-low", "Shared", Some("Artist"), "Album", "al-low",
+            Some("ar-low"), 104, "", None, None, None,
+        );
+        low.suffix = Some("mp3".into());
+        low.bit_rate = Some(320);
+        low.size_bytes = Some(8_000_000);
+        let boundary = track(
+            "s3", "t-boundary", "Shared", Some("Artist"), "Album", "al-boundary",
+            Some("ar-boundary"), 105, "lib-boundary", None, None, None,
+        );
+        seed_and_rebuild(&store, &[high, low, boundary]);
+
+        let scopes = vec![whole_scope("s2"), scope_pair("s1", "lib-high"), whole_scope("s3")];
+        let sources = resolve_entity_sources(
+            &store,
+            &LibraryResolveEntitySourcesRequest {
+                entity_type: LibrarySourceEntityType::Track,
+                anchor_server_id: "s1".into(),
+                anchor_id: "t-high".into(),
+                scopes: scopes.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(),
+            vec!["t-low", "t-high"]
+        );
+        assert_eq!(sources[0].library_id, "");
+        assert_eq!(sources[0].priority, 0);
+        assert_eq!(sources[1].priority, 1);
+        assert_eq!(sources[1].duration_sec, Some(104));
+        assert_eq!(sources[1].suffix.as_deref(), Some("flac"));
+        assert_eq!(sources[1].bit_rate, Some(1_000));
+        assert_eq!(sources[1].size_bytes, Some(30_000_000));
+        assert_eq!(sources[1].starred_at, Some(1_700_000_000));
+        assert_eq!(sources[1].user_rating, Some(5));
+
+        let browse = search_tracks(
+            &store,
+            &LibraryScopeSearchRequest {
+                scopes,
+                query: "Shared".into(),
+                limit: Some(10),
+            },
+        )
+        .unwrap();
+        assert_eq!(browse.len(), 2, "the 105-second boundary is a separate partition");
+        assert_eq!(browse[0].id, "t-low");
+    }
+
+    #[test]
+    fn source_resolver_album_and_artist_use_browse_identity() {
+        let store = LibraryStore::open_in_memory();
+        seed_and_rebuild(
+            &store,
+            &[
+                track(
+                    "s1", "t-a", "One", Some("Shared Artist"), "Shared Album", "al-a",
+                    Some("ar-a"), 100, "lib-a", None, None, None,
+                ),
+                track(
+                    "s2", "t-b", "Two", Some("Shared Artist"), "Shared Album", "al-b",
+                    Some("ar-b"), 110, "lib-b", None, None, None,
+                ),
+            ],
+        );
+        store
+            .with_conn_mut("test.source_resolver_album_metadata", |conn| {
+                conn.execute(
+                    "INSERT INTO album(server_id, id, name, duration_sec, starred_at, synced_at, raw_json) \
+                     VALUES ('s1', 'al-a', 'Shared Album', 100, 11, 1, '{}'), \
+                            ('s2', 'al-b', 'Shared Album', 110, 22, 1, '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let scopes = vec![whole_scope("s2"), scope_pair("s1", "lib-a")];
+
+        let albums = resolve_entity_sources(
+            &store,
+            &LibraryResolveEntitySourcesRequest {
+                entity_type: LibrarySourceEntityType::Album,
+                anchor_server_id: "s1".into(),
+                anchor_id: "al-a".into(),
+                scopes: scopes.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            albums.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(),
+            vec!["al-b", "al-a"]
+        );
+        assert_eq!(albums[0].priority, 0);
+        assert_eq!(albums[0].duration_sec, Some(110));
+        assert_eq!(albums[0].starred_at, Some(22));
+
+        let artists = resolve_entity_sources(
+            &store,
+            &LibraryResolveEntitySourcesRequest {
+                entity_type: LibrarySourceEntityType::Artist,
+                anchor_server_id: "s1".into(),
+                anchor_id: "ar-a".into(),
+                scopes,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            artists.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(),
+            vec!["ar-b", "ar-a"]
+        );
+        assert!(artists.iter().all(|source| source.duration_sec.is_none()));
     }
 
     #[test]

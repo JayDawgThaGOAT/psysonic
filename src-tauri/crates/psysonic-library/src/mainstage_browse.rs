@@ -39,8 +39,13 @@ fn new_release_candidates_sql(scopes: &[LibraryScopePair], genre_count: usize) -
     scopes
         .iter()
         .enumerate()
-        .map(|(priority, _)| {
+        .map(|(priority, pair)| {
             let columns = candidate_columns("t.server_created_at", priority);
+            let library_predicate = if pair.library_id.is_some() {
+                " AND t.library_id = ?"
+            } else {
+                ""
+            };
             let genre_predicate = if genre_count == 0 {
                 String::new()
             } else {
@@ -57,7 +62,7 @@ fn new_release_candidates_sql(scopes: &[LibraryScopePair], genre_count: usize) -
                    FROM track t INDEXED BY idx_track_library_created_album \
                    LEFT JOIN cluster.track_cluster_key ck \
                      ON ck.server_id = t.server_id AND ck.track_id = t.id \
-                   WHERE t.server_id = ? AND t.library_id = ? \
+                    WHERE t.server_id = ? {library_predicate} \
                      AND t.deleted = 0 AND t.server_created_at IS NOT NULL \
                       AND t.album_id IS NOT NULL AND t.album_id != '' {genre_predicate} \
                    ORDER BY t.server_created_at DESC, t.album_id ASC, t.id ASC \
@@ -101,7 +106,9 @@ fn build_mainstage_query(
         LibraryMainstageAlbumFeed::NewReleases => {
             for pair in scopes {
                 binds.push(SqlValue::Text(pair.server_id.clone()));
-                binds.push(SqlValue::Text(pair.library_id.clone()));
+                if let Some(library_id) = &pair.library_id {
+                    binds.push(SqlValue::Text(library_id.clone()));
+                }
                 for genre in genres {
                     binds.push(SqlValue::Text(genre.clone()));
                 }
@@ -316,7 +323,14 @@ mod tests {
     fn scope(server_id: &str, library_id: &str) -> LibraryScopePair {
         LibraryScopePair {
             server_id: server_id.into(),
-            library_id: library_id.into(),
+            library_id: Some(library_id.into()),
+        }
+    }
+
+    fn whole_scope(server_id: &str) -> LibraryScopePair {
+        LibraryScopePair {
+            server_id: server_id.into(),
+            library_id: None,
         }
     }
 
@@ -434,6 +448,27 @@ mod tests {
             vec!["New", "Mid", "Old"]
         );
         assert_eq!(response.albums[0].raw_json["createdMs"], 300);
+    }
+
+    #[test]
+    fn whole_server_new_releases_include_empty_library_rows() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track("s1", "t-empty", "Empty", "a-empty", "", Some(100)),
+                track("s1", "t-tagged", "Tagged", "a-tagged", "lib-b", Some(200)),
+            ])
+            .unwrap();
+
+        let response = list_mainstage_albums(
+            &store,
+            &request(vec![whole_scope("s1")], LibraryMainstageAlbumFeed::NewReleases),
+        )
+        .unwrap();
+        assert_eq!(
+            response.albums.iter().map(|album| album.id.as_str()).collect::<Vec<_>>(),
+            vec!["a-tagged", "a-empty"]
+        );
     }
 
     #[test]

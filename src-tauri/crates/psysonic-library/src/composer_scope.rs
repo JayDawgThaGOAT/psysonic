@@ -291,9 +291,38 @@ mod tests {
 
     fn scopes() -> Vec<LibraryScopePair> {
         vec![
-            LibraryScopePair { server_id: "s1".into(), library_id: "lib".into() },
-            LibraryScopePair { server_id: "s2".into(), library_id: "lib".into() },
+            LibraryScopePair { server_id: "s1".into(), library_id: Some("lib".into()) },
+            LibraryScopePair { server_id: "s2".into(), library_id: Some("lib".into()) },
         ]
+    }
+
+    #[test]
+    fn whole_server_scope_includes_empty_library_composers() {
+        let store = LibraryStore::open_in_memory();
+        let mut empty = track("s1", "t-empty", "a-empty", "c-empty", "Empty Composer");
+        empty.library_id = Some(String::new());
+        let tagged = track("s1", "t-tagged", "a-tagged", "c-tagged", "Tagged Composer");
+        TrackRepository::new(&store)
+            .upsert_batch(&[empty, tagged])
+            .unwrap();
+
+        let composers = list_composers(
+            &store,
+            &LibraryScopeListRequest {
+                scopes: vec![LibraryScopePair {
+                    server_id: "s1".into(),
+                    library_id: None,
+                }],
+                sort: None,
+                limit: None,
+                offset: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            composers.iter().map(|composer| composer.name.as_str()).collect::<Vec<_>>(),
+            vec!["Empty Composer", "Tagged Composer"]
+        );
     }
 
     #[test]
@@ -370,7 +399,7 @@ mod tests {
             .unwrap();
         let single_scope = vec![LibraryScopePair {
             server_id: "s1".into(),
-            library_id: "lib".into(),
+            library_id: Some("lib".into()),
         }];
         let composers = list_composers(
             &store,
