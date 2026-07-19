@@ -5,6 +5,7 @@ import {
   libraryFilterParamsForServer,
 } from '@/lib/api/subsonicClient';
 import { searchQueryIsFtsSafe } from '@/lib/library/searchQueryFtsSafe';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 import type {
   SearchResults,
   SubsonicAlbum,
@@ -86,11 +87,36 @@ export async function searchForServer(
     ...libraryFilterParamsForServer(serverId),
   }, options?.timeout ?? 15000);
   const r = data.searchResult3 ?? {};
+  const ownerServerKey = resolveIndexKey(serverId);
   return {
-    artists: filterSearchArtistsWithNoAlbums(r.artist ?? []).map(artist => ({ ...artist, serverId })),
-    albums: (r.album ?? []).map(album => ({ ...album, serverId })),
-    songs: (r.song ?? []).map(song => ({ ...song, serverId })),
+    artists: filterSearchArtistsWithNoAlbums(r.artist ?? []).map(artist => ({ ...artist, serverId: ownerServerKey })),
+    albums: (r.album ?? []).map(album => ({ ...album, serverId: ownerServerKey })),
+    songs: (r.song ?? []).map(song => ({ ...song, serverId: ownerServerKey })),
   };
+}
+
+export async function searchSongsPagedForServer(
+  serverId: string,
+  query: string,
+  songCount: number,
+  songOffset: number,
+): Promise<SubsonicSong[]> {
+  const q = query.trim();
+  if (q && !searchQueryIsFtsSafe(q)) return [];
+  const data = await apiForServer<{ searchResult3: { song?: SubsonicSong[] } }>(
+    serverId,
+    'search3.view',
+    {
+      query,
+      artistCount: 0,
+      albumCount: 0,
+      songCount,
+      songOffset,
+      ...libraryFilterParamsForServer(serverId),
+    },
+  );
+  const ownerServerKey = resolveIndexKey(serverId);
+  return (data.searchResult3?.song ?? []).map(song => ({ ...song, serverId: ownerServerKey }));
 }
 
 /**
@@ -99,7 +125,8 @@ export async function searchForServer(
  * Caller handles empty results gracefully (Tracks page falls back to its random pool).
  */
 export async function searchSongsPaged(query: string, songCount: number, songOffset: number): Promise<SubsonicSong[]> {
-  if (!searchQueryIsFtsSafe(query.trim())) return [];
+  const q = query.trim();
+  if (q && !searchQueryIsFtsSafe(q)) return [];
   const data = await api<{ searchResult3: { song?: SubsonicSong[] } }>('search3.view', {
     query,
     artistCount: 0,

@@ -27,6 +27,8 @@ export type AdvancedSearchResultsStash = {
 
 /** Session snapshot when leaving Search → album/artist detail. */
 export type AdvancedSearchSessionStash = AdvancedSearchFormStash & {
+  browseScopeFingerprint: string;
+  librarySyncRevision: number;
   results: AdvancedSearchResultsStash | null;
   hasSearched: boolean;
   activeSearch: AdvancedSearchQueryStash | null;

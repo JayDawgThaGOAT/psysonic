@@ -14,6 +14,7 @@ import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/track
 import { tooltipAttrs } from '@/ui/tooltipAttrs';
 import { OptionalBrowseTrackRowCoverThumb } from '@/cover/TrackRowCoverThumb';
 import { useTrackListCoverArtEnabled } from '@/cover/useTrackListCoverArtSettings';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 
 interface Props {
   song: SubsonicSong;
@@ -26,7 +27,12 @@ function SongRow({ song, showBpm }: Props) {
   const { t } = useTranslation();
   const enqueue = usePlayerStore(s => s.enqueue);
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
-  const isCurrent = usePlayerStore(s => s.currentTrack?.id === song.id);
+  const isCurrent = usePlayerStore(s => {
+    const current = s.currentTrack;
+    if (!current || current.id !== song.id) return false;
+    if (!current.serverId || !song.serverId) return true;
+    return resolveIndexKey(current.serverId) === resolveIndexKey(song.serverId);
+  });
   const psyDrag = useDragDrop();
   const { orbitActive, addTrackToOrbit } = useOrbitSongRowBehavior();
   const showCovers = useTrackListCoverArtEnabled('pages');
@@ -125,7 +131,10 @@ function SongRow({ song, showBpm }: Props) {
           <span
             className="track-artist-link"
             style={{ cursor: 'pointer' }}
-            onClick={(e) => { e.stopPropagation(); navigateToAlbum(song.albumId!); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              navigateToAlbum(song.albumId!, { serverId: song.serverId });
+            }}
             title={song.album}
           >{song.album}</span>
         ) : <span title={song.album}>{song.album}</span>}

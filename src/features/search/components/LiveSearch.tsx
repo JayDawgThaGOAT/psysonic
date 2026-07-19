@@ -158,7 +158,11 @@ export default function LiveSearch() {
       setOpen(false);
       setQuery('');
     } }))),
-    ...(results.albums.map(a => ({ id: a.id, action: () => { navigateToAlbum(a.id); setOpen(false); setQuery(''); } }))),
+    ...(results.albums.map(a => ({ id: a.id, action: () => {
+      navigateToAlbum(a.id, { serverId: a.serverId ?? activeServerId });
+      setOpen(false);
+      setQuery('');
+    } }))),
    ...(results.songs.map(s => ({ id: s.id, action: () => {
        const track = songToTrack(s);
        enqueue([track]);

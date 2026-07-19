@@ -107,19 +107,26 @@ export function deriveLibraryBrowseScope(
     }
   }
 
+  const fallbackServerIds = orderedServerIds.length === 0
+    ? deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds)
+    : [];
+  const scopeServerIds = effectiveServerIds.length > 0 ? effectiveServerIds : fallbackServerIds;
+  const fallbackFingerprintEntries = fallbackServerIds.map(serverId => {
+    const folders = state.musicFoldersByServer[serverId] ?? [];
+    const selection = state.libraryBrowseSelectionByServer[serverId] ?? [];
+    return [serverId, selection.length > 0 ? selection : folders.map(folder => folder.id)] as const;
+  });
+  const fingerprint = fingerprintEntries.length > 0
+    ? JSON.stringify(fingerprintEntries)
+    : (fallbackFingerprintEntries.length > 0
+        ? JSON.stringify(fallbackFingerprintEntries)
+        : '');
+
   return {
-    anchorServerId: effectiveServerIds[0]
-      ?? (orderedServerIds.length === 0
-        ? deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds)[0]
-        : undefined)
-      ?? null,
-    serverIds: effectiveServerIds.length > 0
-      ? effectiveServerIds
-      : (orderedServerIds.length === 0
-          ? deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds)
-          : []),
+    anchorServerId: scopeServerIds[0] ?? null,
+    serverIds: scopeServerIds,
     pairs,
-    fingerprint: fingerprintEntries.length > 0 ? JSON.stringify(fingerprintEntries) : '',
+    fingerprint,
     multiServer: effectiveServerIds.length > 1,
   };
 }

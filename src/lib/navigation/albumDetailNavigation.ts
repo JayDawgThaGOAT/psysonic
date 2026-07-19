@@ -13,6 +13,7 @@ import {
   saveAdvancedSearchLeaveSnapshot,
 } from '@/lib/navigation/advancedSearchScrollSnapshot';
 import {
+  buildAlbumDetailPath,
   buildArtistDetailPath,
   buildComposerDetailPath,
   type ArtistDetailPathOptions,
@@ -178,13 +179,13 @@ export function navigateToAlbumDetail(
   navigate: NavigateFunction,
   location: Pick<Location, 'pathname' | 'search' | 'hash' | 'state'>,
   albumId: string,
-  opts?: { search?: string },
+  opts?: ArtistDetailPathOptions,
 ): void {
   saveSearchLeaveIfNeeded(location);
   const returnTo = buildReturnTo(location);
-  const raw = opts?.search ?? '';
-  const qs = raw ? (raw.startsWith('?') ? raw : `?${raw}`) : '';
-  navigate(`/album/${albumId}${qs}`, { state: { returnTo } satisfies AlbumDetailLocationState });
+  navigate(buildAlbumDetailPath(albumId, opts), {
+    state: { returnTo } satisfies AlbumDetailLocationState,
+  });
 }
 
 export function navigateToArtistDetail(

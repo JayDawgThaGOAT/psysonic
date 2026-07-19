@@ -6,6 +6,7 @@ import {
 import { api, apiForServer, libraryFilterParams, libraryFilterParamsForServer, librarySelectionForServer } from '@/lib/api/subsonicClient';
 import { getLuckyMixLibraryScopeOverride } from '@/lib/library/luckyMixScopeOverride';
 import { mirrorAlbumMetadataFromServerOnUse } from '@/lib/library/patchOnUse';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 import type {
   RandomSongsFilters,
   SubsonicAlbum,
@@ -242,7 +243,8 @@ export async function getRandomSongsForServer(
     timeout,
   );
   const songs = await filterSongsToServerLibrary(data.randomSongs?.song ?? [], serverId);
-  return songs.map(song => ({ ...song, serverId }));
+  const ownerServerKey = resolveIndexKey(serverId);
+  return songs.map(song => ({ ...song, serverId: ownerServerKey }));
 }
 
 /** Extended random song fetch with server-side year/genre filtering. */
@@ -284,7 +286,8 @@ export async function getAlbumListForServer(
     },
     timeout,
   );
-  return (data.albumList2?.album ?? []).map(album => ({ ...album, serverId }));
+  const ownerServerKey = resolveIndexKey(serverId);
+  return (data.albumList2?.album ?? []).map(album => ({ ...album, serverId: ownerServerKey }));
 }
 
 export async function getSong(id: string): Promise<SubsonicSong | null> {

@@ -5,13 +5,17 @@ import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import MobileSearchOverlay from '@/features/search/components/MobileSearchOverlay';
 import { useLiveSearchScopeStore } from '@/store/liveSearchScopeStore';
 
+const { useLiveSearchQueryMock } = vi.hoisted(() => ({
+  useLiveSearchQueryMock: vi.fn(() => ({ indexIncomplete: false })),
+}));
+
 // The overlay's only behaviour-bearing change in PR #1165 was renaming the
 // recent-search handler `useRecent` → `applyRecentSearch` (it was a plain
 // function mis-flagged as a hook). Smoke-test that the recent-search path still
 // applies the term to the live-search store. Heavy collaborators are stubbed.
 vi.mock('@/features/search/hooks/useShareSearch', () => ({ useShareSearch: () => ({ shareMatch: null }) }));
-vi.mock('@/lib/api/subsonicSearch', () => ({
-  search: vi.fn(() => Promise.resolve({ artists: [], albums: [], songs: [] })),
+vi.mock('@/features/search/hooks/useLiveSearchQuery', () => ({
+  useLiveSearchQuery: useLiveSearchQueryMock,
 }));
 vi.mock('@/cover/AlbumCoverArtImage', () => ({ AlbumCoverArtImage: () => null }));
 vi.mock('@/cover/ArtistCoverArtImage', () => ({ ArtistCoverArtImage: () => null }));
@@ -21,6 +25,7 @@ const RECENT_KEY = 'psysonic_recent_searches';
 
 describe('MobileSearchOverlay — recent search (applyRecentSearch, PR #1165)', () => {
   beforeEach(() => {
+    useLiveSearchQueryMock.mockClear();
     useLiveSearchScopeStore.setState({ query: '', scope: null, undoStack: [] });
     localStorage.setItem(RECENT_KEY, JSON.stringify(['first query', 'second query']));
   });
@@ -38,5 +43,8 @@ describe('MobileSearchOverlay — recent search (applyRecentSearch, PR #1165)', 
     await user.click(screen.getByText('first query'));
 
     expect(useLiveSearchScopeStore.getState().query).toBe('first query');
+    expect(useLiveSearchQueryMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      query: 'first query',
+    }));
   });
 });

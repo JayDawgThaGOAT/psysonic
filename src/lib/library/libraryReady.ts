@@ -83,10 +83,12 @@ export type ReadyLibraryBrowseScope = {
 
 /** Resolve an all-or-nothing local scope so selected servers are never silently omitted. */
 export async function resolveReadyLibraryBrowseScope(
-  anchorServerId: string,
+  _anchorServerId: string,
   scope: LibraryBrowseScope,
 ): Promise<ReadyLibraryBrowseScope | null> {
-  const requestedServerIds = scope.serverIds.length > 0 ? scope.serverIds : [anchorServerId];
+  const effectiveAnchorServerId = scope.anchorServerId;
+  if (!effectiveAnchorServerId) return null;
+  const requestedServerIds = scope.serverIds.length > 0 ? scope.serverIds : [effectiveAnchorServerId];
   const serverKeys = await readyLibraryServerKeys(requestedServerIds);
   if (!serverKeys) return null;
   const readySet = new Set(serverKeys);
@@ -99,7 +101,7 @@ export async function resolveReadyLibraryBrowseScope(
     const represented = new Set(pairs.map(pair => pair.serverId));
     if (serverKeys.some(serverKey => !represented.has(serverKey))) return null;
   }
-  const anchorServerKey = resolveIndexKey(anchorServerId);
+  const anchorServerKey = resolveIndexKey(effectiveAnchorServerId);
   if (!readySet.has(anchorServerKey)) return null;
   return { anchorServerKey, serverKeys, pairs };
 }

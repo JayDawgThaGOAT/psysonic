@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetAuthStore } from '@/test/helpers/storeReset';
+import { useAuthStore } from '@/store/authStore';
 
 const apiForServerMock = vi.hoisted(() => vi.fn());
 
@@ -14,6 +16,16 @@ import { searchForServer } from '@/lib/api/subsonicSearch';
 describe('searchForServer', () => {
   beforeEach(() => {
     apiForServerMock.mockReset();
+    resetAuthStore();
+    useAuthStore.setState({
+      servers: [{
+        id: 'srv-b',
+        name: 'B',
+        url: 'https://b.test/rest',
+        username: 'u',
+        password: 'p',
+      }],
+    });
   });
 
   it('queries and stamps every result with the explicit owner server', async () => {
@@ -31,9 +43,9 @@ describe('searchForServer', () => {
       songCount: 500,
       timeout: 4321,
     })).resolves.toEqual({
-      artists: [{ id: 'artist-1', name: 'Artist', serverId: 'srv-b' }],
-      albums: [{ id: 'album-1', name: 'Album', serverId: 'srv-b' }],
-      songs: [{ id: 'song-1', title: 'Song', serverId: 'srv-b' }],
+      artists: [{ id: 'artist-1', name: 'Artist', serverId: 'b.test/rest' }],
+      albums: [{ id: 'album-1', name: 'Album', serverId: 'b.test/rest' }],
+      songs: [{ id: 'song-1', title: 'Song', serverId: 'b.test/rest' }],
     });
     expect(apiForServerMock).toHaveBeenCalledWith('srv-b', 'search3.view', {
       query: 'Artist',

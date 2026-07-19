@@ -63,35 +63,44 @@ export function useLiveSearchQuery({
   const serverId = useAuthStore(s => s.activeServerId);
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
-  const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
-  const readinessServerIds = useMemo(() => {
+  const browseScopeSnapshot = useMemo(() => {
     // The scope version is the invalidation token for this imperative store snapshot.
     void libraryBrowseScopeVersion;
-    const browseScope = getLibraryBrowseScope();
-    return browseScope.serverIds.length > 0
-      ? browseScope.serverIds
-      : (serverId ? [serverId] : []);
+    void serverId;
+    return getLibraryBrowseScope();
   }, [libraryBrowseScopeVersion, serverId]);
+  const searchServerId = browseScopeSnapshot.anchorServerId;
+  const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(searchServerId));
+  const readinessServerIds = useMemo(() => (
+    browseScopeSnapshot.serverIds.length > 0
+      ? browseScopeSnapshot.serverIds
+      : []
+  ), [browseScopeSnapshot]);
   const readinessScopeKey = readinessServerIds.join(',');
   const librarySyncRevision = useLibraryScopeSyncRevision(readinessServerIds);
   const localReadyRef = useRef(false);
+  const readinessGenerationRef = useRef(0);
+  const resultScopeFingerprintRef = useRef(browseScopeSnapshot.fingerprint);
   const [indexIncomplete, setIndexIncomplete] = useState(false);
 
   const refreshIndexStatus = useCallback(async () => {
-    if (!serverId || !indexEnabled) {
+    const generation = ++readinessGenerationRef.current;
+    if (!searchServerId || !indexEnabled) {
       localReadyRef.current = false;
       setIndexIncomplete(false);
       return;
     }
     try {
       const ready = (await readyLibraryServerKeys(readinessServerIds)) != null;
+      if (generation !== readinessGenerationRef.current) return;
       localReadyRef.current = ready;
       setIndexIncomplete(!ready);
     } catch {
+      if (generation !== readinessGenerationRef.current) return;
       localReadyRef.current = false;
       setIndexIncomplete(false);
     }
-  }, [serverId, indexEnabled, readinessScopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [searchServerId, indexEnabled, readinessScopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
@@ -100,7 +109,8 @@ export function useLiveSearchQuery({
   }, [refreshIndexStatus, musicLibraryFilterVersion, librarySyncRevision]);
 
   useEffect(() => {
-    if (!indexEnabled || !serverId) return;
+    if (!indexEnabled || !searchServerId) return;
+    let disposed = false;
     let unlistenProgress: (() => void) | undefined;
     const indexKeys = new Set(readinessServerIds.map(resolveIndexKey));
     void subscribeLibrarySyncProgress(p => {
@@ -108,12 +118,17 @@ export function useLiveSearchQuery({
         void refreshIndexStatus();
       }
     }).then(fn => {
+      if (disposed) {
+        fn();
+        return;
+      }
       unlistenProgress = fn;
     });
     return () => {
+      disposed = true;
       unlistenProgress?.();
     };
-  }, [indexEnabled, serverId, refreshIndexStatus, readinessScopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [indexEnabled, searchServerId, refreshIndexStatus, readinessScopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (isLiveSearchDropdownBlocked(scope)) {
@@ -153,20 +168,29 @@ export function useLiveSearchQuery({
 
         if (isStale()) return;
         const browseScope = getLibraryBrowseScope();
-        const raceCtx = { epoch: gen, isStale, suppressLog: indexEnabled && !!serverId };
+        const queryServerId = browseScope.anchorServerId;
+        const scopeChanged = resultScopeFingerprintRef.current !== browseScope.fingerprint;
+        const raceCtx = { epoch: gen, isStale, suppressLog: indexEnabled && !!queryServerId };
         const queryRejected = liveSearchQueryRejected(q);
         let multiServerResult: SearchResults | null = null;
+
+        if (scopeChanged) {
+          resultScopeFingerprintRef.current = browseScope.fingerprint;
+          setResults(EMPTY_SEARCH_RESULTS);
+          setSearchSource(null);
+          setOpen(true);
+        }
 
         if (
           !queryRejected
           && indexEnabled
-          && serverId
+          && queryServerId
           && browseScope.multiServer
         ) {
           if ((await readyLibraryServerKeys(readinessServerIds)) == null) return;
           if (isStale()) return;
           try {
-            multiServerResult = await runLocalLiveSearch(serverId, q, raceCtx);
+            multiServerResult = await runLocalLiveSearch(queryServerId, q, raceCtx, browseScope);
           } catch (err) {
             if (isStale()) return;
             const name = err instanceof Error ? err.name : '';
@@ -193,7 +217,14 @@ export function useLiveSearchQuery({
             return;
           }
 
-          if (indexEnabled && serverId) {
+          if (!queryServerId) {
+            setResults(EMPTY_SEARCH_RESULTS);
+            setSearchSource(null);
+            setOpen(true);
+            return;
+          }
+
+          if (indexEnabled && queryServerId) {
             if (browseScope.multiServer) {
               if (multiServerResult) {
                 setResults(multiServerResult);
@@ -203,8 +234,8 @@ export function useLiveSearchQuery({
               }
             }
             const winner = await raceLiveSearch(
-              () => runLocalLiveSearch(serverId, q, raceCtx),
-              () => runNetworkLiveSearch(q, abort.signal),
+              () => runLocalLiveSearch(queryServerId, q, raceCtx, browseScope),
+              () => runNetworkLiveSearch(q, abort.signal, queryServerId),
               isStale,
               meta => {
                 emitLiveSearchDebug('race_settled', {
@@ -273,8 +304,8 @@ export function useLiveSearchQuery({
               return;
             }
             showToast(t('search.liveSearchFailed'), 3200, 'error');
-          } else if (serverId) {
-            const network = await runNetworkLiveSearch(q, abort.signal);
+          } else if (queryServerId) {
+            const network = await runNetworkLiveSearch(q, abort.signal, queryServerId);
             if (isStale()) return;
             if (network) {
               setResults(network);

@@ -38,9 +38,18 @@ const ready = () =>
     syncedAt: 0,
   }));
 
+function seedSingleServerScope() {
+  useAuthStore.setState({
+    activeServerId: 's1',
+    servers: [{ id: 's1', name: 'S1', url: 'https://s1', username: 'u', password: 'p' }],
+    libraryBrowseServerIds: [],
+  });
+}
+
 describe('runLocalAdvancedSearch', () => {
   beforeEach(() => {
     resetAuthStore();
+    seedSingleServerScope();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
@@ -312,6 +321,7 @@ describe('runLocalAdvancedSearch', () => {
 describe('runLocalSongBrowse', () => {
   beforeEach(() => {
     resetAuthStore();
+    seedSingleServerScope();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
@@ -391,6 +401,7 @@ describe('runLocalSongBrowse', () => {
 describe('tryRunLocalAdvancedSearch', () => {
   beforeEach(() => {
     resetAuthStore();
+    seedSingleServerScope();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
@@ -441,6 +452,7 @@ describe('runNetworkAdvancedYearAlbums', () => {
       expect.objectContaining({ year: { to: 1990 } }),
       0,
       100,
+      undefined,
     );
     spy.mockRestore();
   });

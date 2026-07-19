@@ -88,6 +88,8 @@ describe('advancedSearchScrollSnapshot', () => {
       JSON.stringify({ scrollTop: 100, albumRowScrollLeft: 80, artistRowScrollLeft: 55 }),
     );
     expect(resolveAdvancedSearchLeaveSnapshot({
+      browseScopeFingerprint: 'scope-a',
+      librarySyncRevision: 0,
       query: '',
       genre: '',
       yearFrom: '',
@@ -122,6 +124,8 @@ describe('advancedSearchScrollSnapshot', () => {
     document.body.appendChild(viewport);
 
     const unregister = registerAdvancedSearchSessionProvider(() => ({
+      browseScopeFingerprint: 'scope-a',
+      librarySyncRevision: 0,
       query: 'rock',
       genre: 'Jazz',
       yearFrom: '',

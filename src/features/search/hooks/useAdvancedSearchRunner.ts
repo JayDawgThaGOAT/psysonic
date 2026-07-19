@@ -1,7 +1,10 @@
 import { useRef, useCallback, type Dispatch, type SetStateAction } from 'react';
-import { getAlbumsByGenre } from '@/lib/api/subsonicGenres';
-import { search, searchSongsPaged } from '@/lib/api/subsonicSearch';
-import { getRandomSongs } from '@/lib/api/subsonicLibrary';
+import { getAlbumsByGenreForServer } from '@/lib/api/subsonicGenres';
+import {
+  searchForServer,
+  searchSongsPagedForServer,
+} from '@/lib/api/subsonicSearch';
+import { getRandomSongsForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicArtist, SubsonicAlbum, SubsonicSong } from '@/lib/api/subsonicTypes';
 import {
   loadMoreLocalSongs,
@@ -21,8 +24,12 @@ import {
   runNetworkBrowseFullSearch,
 } from '@/lib/library/browseTextSearch';
 import type { SearchOpts, Results } from '@/features/search/searchBrowseTypes';
-import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import {
+  getLibraryBrowseScope,
+  type LibraryBrowseScope,
+} from '@/lib/library/libraryBrowseScope';
 import { readyLibraryServerKeys } from '@/lib/library/libraryReady';
+import { dedupeById } from '@/lib/util/dedupeById';
 
 const MOOD_UI_ENABLED = OXIMEDIA_MOOD_SEARCH_ENABLED;
 
@@ -54,6 +61,7 @@ function applySongFilters(
 interface UseAdvancedSearchRunnerParams {
   serverId: string | null;
   indexEnabled: boolean;
+  librarySyncRevision: number;
   loadingMoreSongs: boolean;
   songsHasMore: boolean;
   activeSearch: SearchOpts | null;
@@ -71,6 +79,7 @@ interface UseAdvancedSearchRunnerParams {
   setLocalMode: Dispatch<SetStateAction<boolean>>;
   setResults: Dispatch<SetStateAction<Results | null>>;
   setLoadingMoreSongs: Dispatch<SetStateAction<boolean>>;
+  onResultsCommitted: (scopeFingerprint: string, syncRevision: number) => void;
 }
 
 /**
@@ -79,8 +88,8 @@ interface UseAdvancedSearchRunnerParams {
  * run-id staleness guard; the shell owns the result/filter state passed in via setters.
  */
 export function useAdvancedSearchRunner({
-  serverId,
   indexEnabled,
+  librarySyncRevision,
   loadingMoreSongs,
   songsHasMore,
   activeSearch,
@@ -98,14 +107,28 @@ export function useAdvancedSearchRunner({
   setLocalMode,
   setResults,
   setLoadingMoreSongs,
+  onResultsCommitted,
 }: UseAdvancedSearchRunnerParams) {
   const searchRunRef = useRef(0);
+  const resultScopeRef = useRef<LibraryBrowseScope | null>(getLibraryBrowseScope());
 
   const runBasicSearch = async (rawQuery: string) => {
     const q = rawQuery.trim();
     const runId = ++searchRunRef.current;
     const isStale = () => runId !== searchRunRef.current;
     const browseScope = getLibraryBrowseScope();
+    const searchServerId = browseScope.anchorServerId;
+    const commitResults = (next: Results | null) => {
+      resultScopeRef.current = browseScope;
+      onResultsCommitted(browseScope.fingerprint, librarySyncRevision);
+      setResults(next);
+    };
+    const clearResultsForScopeChange = () => {
+      commitResults(q ? { artists: [], albums: [], songs: [] } : null);
+      setSongsServerOffset(0);
+      setSongsHasMore(false);
+      setLocalMode(false);
+    };
     const pendingSearch: SearchOpts = {
       query: q,
       genre: '',
@@ -124,16 +147,36 @@ export function useAdvancedSearchRunner({
     setBasicSearchMode(true);
     setQuery(q);
     setActiveSearch(pendingSearch);
+    setLoading(false);
+    setLoadingMoreSongs(false);
+
+    if (!searchServerId) {
+      commitResults(q ? { artists: [], albums: [], songs: [] } : null);
+      setSongsServerOffset(0);
+      setSongsHasMore(false);
+      setLocalMode(false);
+      return;
+    }
 
     if (
       q
-      && serverId
+      && searchServerId
       && indexEnabled
       && browseScope.multiServer
     ) {
-      if ((await readyLibraryServerKeys(browseScope.serverIds)) == null) return;
+      if ((await readyLibraryServerKeys(browseScope.serverIds)) == null) {
+        if (resultScopeRef.current?.fingerprint !== browseScope.fingerprint) {
+          clearResultsForScopeChange();
+        }
+        return;
+      }
       try {
-        multiServerResult = await runLocalBrowseFullSearch(serverId, q, BASIC_SONGS_INITIAL);
+        multiServerResult = await runLocalBrowseFullSearch(
+          searchServerId,
+          q,
+          BASIC_SONGS_INITIAL,
+          browseScope,
+        );
       } catch {
         return;
       }
@@ -147,17 +190,17 @@ export function useAdvancedSearchRunner({
     setLocalMode(false);
 
     if (!q) {
-      setResults(null);
+      commitResults(null);
       setLoading(false);
       return;
     }
 
     try {
-      if (serverId && indexEnabled) {
+      if (searchServerId && indexEnabled) {
         if (browseScope.multiServer) {
           const result = multiServerResult;
           if (!result) return;
-          setResults(result);
+          commitResults(result);
           setSongsServerOffset(result.songs.length);
           setSongsHasMore(result.songs.length >= BASIC_SONGS_INITIAL);
           setLocalMode(true);
@@ -165,8 +208,8 @@ export function useAdvancedSearchRunner({
         }
         const outcome = await raceBrowseWithLocalFallback(
           isStale,
-          () => runLocalBrowseFullSearch(serverId, q, BASIC_SONGS_INITIAL),
-          () => runNetworkBrowseFullSearch(q, BASIC_SONGS_INITIAL),
+          () => runLocalBrowseFullSearch(searchServerId, q, BASIC_SONGS_INITIAL, browseScope),
+          () => runNetworkBrowseFullSearch(q, BASIC_SONGS_INITIAL, searchServerId),
           {
             surface: 'search_results',
             query: q,
@@ -176,7 +219,7 @@ export function useAdvancedSearchRunner({
         );
         if (isStale()) return;
         if (outcome) {
-          setResults(outcome.result);
+          commitResults(outcome.result);
           setSongsServerOffset(outcome.result.songs.length);
           setSongsHasMore(outcome.result.songs.length >= BASIC_SONGS_INITIAL);
           setLocalMode(outcome.source === 'local');
@@ -184,17 +227,17 @@ export function useAdvancedSearchRunner({
         }
       }
 
-      const network = await runNetworkBrowseFullSearch(q, BASIC_SONGS_INITIAL);
+      const network = await runNetworkBrowseFullSearch(q, BASIC_SONGS_INITIAL, searchServerId);
       if (isStale()) return;
       if (network) {
-        setResults(network);
+        commitResults(network);
         setSongsServerOffset(network.songs.length);
         setSongsHasMore(network.songs.length >= BASIC_SONGS_INITIAL);
       } else {
-        setResults({ artists: [], albums: [], songs: [] });
+        commitResults({ artists: [], albums: [], songs: [] });
       }
     } catch {
-      if (!isStale()) setResults(null);
+      if (!isStale()) commitResults(null);
     } finally {
       if (!isStale()) setLoading(false);
     }
@@ -205,21 +248,54 @@ export function useAdvancedSearchRunner({
     const isStale = () => runId !== searchRunRef.current;
     const q = opts.query.trim();
     const browseScope = getLibraryBrowseScope();
+    const searchServerId = browseScope.anchorServerId;
+    const commitResults = (next: Results) => {
+      resultScopeRef.current = browseScope;
+      onResultsCommitted(browseScope.fingerprint, librarySyncRevision);
+      setResults(next);
+    };
+    const clearResultsForScopeChange = () => {
+      commitResults({ artists: [], albums: [], songs: [] });
+      setSongsServerOffset(0);
+      setSongsHasMore(false);
+      setLocalMode(false);
+    };
     let multiServerPage: Awaited<ReturnType<typeof tryRunLocalAdvancedSearch>> = null;
 
     setHasSearched(true);
     setGenreNote(false);
     setBasicSearchMode(false);
     setActiveSearch(opts);
+    setLoading(false);
+    setLoadingMoreSongs(false);
+
+    if (!searchServerId) {
+      commitResults({ artists: [], albums: [], songs: [] });
+      setSongsServerOffset(0);
+      setSongsHasMore(false);
+      setLocalMode(false);
+      return;
+    }
 
     if (
-      serverId
+      searchServerId
       && indexEnabled
       && browseScope.multiServer
     ) {
-      if ((await readyLibraryServerKeys(browseScope.serverIds)) == null) return;
+      if ((await readyLibraryServerKeys(browseScope.serverIds)) == null) {
+        if (resultScopeRef.current?.fingerprint !== browseScope.fingerprint) {
+          clearResultsForScopeChange();
+        }
+        return;
+      }
       try {
-        multiServerPage = await tryRunLocalAdvancedSearch(serverId, opts, SONGS_INITIAL);
+        multiServerPage = await tryRunLocalAdvancedSearch(
+          searchServerId,
+          opts,
+          SONGS_INITIAL,
+          false,
+          browseScope,
+        );
       } catch {
         return;
       }
@@ -238,41 +314,47 @@ export function useAdvancedSearchRunner({
 
     // Track-only filters (BPM dual-storage, mood) need the local index for full coverage.
     // Lossless skips the race — network search3 cannot filter albums by format reliably.
-    if (serverId && indexEnabled && browseScope.multiServer) {
+    if (searchServerId && indexEnabled && browseScope.multiServer) {
       const page = multiServerPage;
       if (!page) return;
-      setResults({ artists: page.artists, albums: page.albums, songs: page.songs });
-      setSongsServerOffset(page.songs.length);
-      setSongsHasMore(page.songs.length >= SONGS_INITIAL);
+      commitResults({ artists: page.artists, albums: page.albums, songs: page.songs });
+      setSongsServerOffset(page.songsConsumed);
+      setSongsHasMore(page.songsConsumed >= SONGS_INITIAL);
       setLocalMode(true);
       setLoading(false);
       return;
     }
 
-    if (q && serverId && indexEnabled && !trackOnlyFilterActive && !losslessFilterActive) {
+    if (q && searchServerId && indexEnabled && !trackOnlyFilterActive && !losslessFilterActive) {
       try {
         const winner = await raceSearchSources(
           [
             {
               source: 'local',
-              run: () => tryRunLocalAdvancedSearch(serverId, opts, SONGS_INITIAL, true),
+              run: () => tryRunLocalAdvancedSearch(
+                searchServerId,
+                opts,
+                SONGS_INITIAL,
+                true,
+                browseScope,
+              ),
             },
             {
               source: 'network',
-              run: () => runNetworkAdvancedTextSearch(opts, SONGS_INITIAL),
+              run: () => runNetworkAdvancedTextSearch(opts, SONGS_INITIAL, searchServerId),
             },
           ],
           isStale,
         );
         if (isStale()) return;
         if (winner) {
-          setResults({
+          commitResults({
             artists: winner.result.artists,
             albums: winner.result.albums,
             songs: winner.result.songs,
           });
-          setSongsServerOffset(winner.result.songs.length);
-          setSongsHasMore(winner.result.songs.length >= SONGS_INITIAL);
+          setSongsServerOffset(winner.result.songsConsumed);
+          setSongsHasMore(winner.result.songsConsumed >= SONGS_INITIAL);
           setLocalMode(winner.source === 'local');
           logLibrarySearch({
             at: new Date().toISOString(),
@@ -296,23 +378,29 @@ export function useAdvancedSearchRunner({
         if (isStale()) return;
       }
       setLocalMode(false);
-    } else if (serverId && indexEnabled) {
-      const localPage = await tryRunLocalAdvancedSearch(serverId, opts, SONGS_INITIAL);
+    } else if (searchServerId && indexEnabled) {
+      const localPage = await tryRunLocalAdvancedSearch(
+        searchServerId,
+        opts,
+        SONGS_INITIAL,
+        false,
+        browseScope,
+      );
       if (isStale()) return;
       if (localPage) {
-        setResults({
+        commitResults({
           artists: localPage.artists,
           albums: localPage.albums,
           songs: localPage.songs,
         });
-        setSongsServerOffset(localPage.songs.length);
-        setSongsHasMore(localPage.songs.length >= SONGS_INITIAL);
+        setSongsServerOffset(localPage.songsConsumed);
+        setSongsHasMore(localPage.songsConsumed >= SONGS_INITIAL);
         setLocalMode(true);
         setLoading(false);
         return;
       }
       if (trackOnlyFilterActive) {
-        setResults({ artists: [], albums: [], songs: [] });
+        commitResults({ artists: [], albums: [], songs: [] });
         setLoading(false);
         return;
       }
@@ -322,7 +410,7 @@ export function useAdvancedSearchRunner({
     }
 
     if ((trackOnlyFilterActive || losslessFilterActive) && !indexEnabled) {
-      setResults({ artists: [], albums: [], songs: [] });
+      commitResults({ artists: [], albums: [], songs: [] });
       setLoading(false);
       return;
     }
@@ -339,7 +427,9 @@ export function useAdvancedSearchRunner({
 
     try {
       if (q.trim()) {
-        const r = await search(q.trim(), { artistCount: 30, albumCount: 50, songCount: SONGS_INITIAL });
+        const searchOptions = { artistCount: 30, albumCount: 50, songCount: SONGS_INITIAL };
+        const r = await searchForServer(searchServerId, q.trim(), searchOptions);
+        if (isStale()) return;
         artists = r.artists;
         albums = r.albums;
         songs = applySongFilters(r.songs, g, from, to, bpmLo, bpmHi, lossless);
@@ -366,9 +456,14 @@ export function useAdvancedSearchRunner({
         setSongsHasMore(r.songs.length === SONGS_INITIAL);
       } else if (g) {
         const [albumRes, songRes] = await Promise.all([
-          rt === 'songs' || rt === 'artists' ? Promise.resolve([]) : getAlbumsByGenre(g, 50),
-          rt === 'albums' || rt === 'artists' ? Promise.resolve([]) : getRandomSongs(100, g),
+          rt === 'songs' || rt === 'artists'
+            ? Promise.resolve([])
+            : getAlbumsByGenreForServer(searchServerId, g, 50),
+          rt === 'albums' || rt === 'artists'
+            ? Promise.resolve([])
+            : getRandomSongsForServer(searchServerId, 100, g),
         ]);
+        if (isStale()) return;
         albums = albumRes as SubsonicAlbum[];
         songs = songRes as SubsonicSong[];
         songs = applySongFilters(songs, g, from, to, bpmLo, bpmHi, lossless);
@@ -377,7 +472,8 @@ export function useAdvancedSearchRunner({
         if (songs.length > 0) setGenreNote(true);
       } else if (from !== null || to !== null) {
         if (rt !== 'artists' && rt !== 'songs') {
-          albums = await runNetworkAdvancedYearAlbums(opts, 100);
+          albums = await runNetworkAdvancedYearAlbums(opts, 100, searchServerId);
+          if (isStale()) return;
         }
       }
 
@@ -386,7 +482,8 @@ export function useAdvancedSearchRunner({
         albums: rt === 'artists' || rt === 'songs' ? [] : albums,
         songs: rt === 'artists' || rt === 'albums' ? [] : songs,
       };
-      setResults(finalResults);
+      if (isStale()) return;
+      commitResults(finalResults);
       if (q.trim()) {
         logLibrarySearch({
           at: new Date().toISOString(),
@@ -404,46 +501,74 @@ export function useAdvancedSearchRunner({
         });
       }
     } catch {
-      setResults({ artists: [], albums: [], songs: [] });
+      if (isStale()) return;
+      commitResults({ artists: [], albums: [], songs: [] });
     }
-    setLoading(false);
+    if (!isStale()) setLoading(false);
   };
 
   const loadMoreSongs = useCallback(async () => {
     if (loadingMoreSongs || !songsHasMore || !activeSearch) return;
+    const runId = searchRunRef.current;
+    const isStale = () => runId !== searchRunRef.current;
+    const browseScope = resultScopeRef.current ?? getLibraryBrowseScope();
+    const searchServerId = browseScope.anchorServerId;
+    if (!searchServerId) {
+      setSongsHasMore(false);
+      return;
+    }
 
     if (basicSearchMode) {
       const q = activeSearch.query.trim();
       if (!q) return;
       setLoadingMoreSongs(true);
       try {
-        const page = localMode && serverId
-          ? await loadMoreLocalBrowseSongs(serverId, q, songsServerOffset, BASIC_SONGS_PAGE_SIZE)
-          : await searchSongsPaged(q, BASIC_SONGS_PAGE_SIZE, songsServerOffset);
-        setResults(prev => prev ? { ...prev, songs: [...prev.songs, ...page] } : prev);
+        const page = localMode
+          ? await loadMoreLocalBrowseSongs(
+              searchServerId,
+              q,
+              songsServerOffset,
+              BASIC_SONGS_PAGE_SIZE,
+              browseScope,
+            )
+          : await searchSongsPagedForServer(
+              searchServerId,
+              q,
+              BASIC_SONGS_PAGE_SIZE,
+              songsServerOffset,
+            );
+        if (isStale()) return;
+        setResults(prev => prev ? { ...prev, songs: dedupeById([...prev.songs, ...page]) } : prev);
         setSongsServerOffset(o => o + page.length);
         if (page.length < BASIC_SONGS_PAGE_SIZE) setSongsHasMore(false);
       } catch {
-        setSongsHasMore(false);
+        if (!isStale()) setSongsHasMore(false);
       } finally {
-        setLoadingMoreSongs(false);
+        if (!isStale()) setLoadingMoreSongs(false);
       }
       return;
     }
 
     // Local mode pages every result type (genre/year too), not just free-text.
     if (localMode) {
-      if (!serverId) return;
+      if (!searchServerId) return;
       setLoadingMoreSongs(true);
       try {
-        const more = await loadMoreLocalSongs(serverId, activeSearch, songsServerOffset, SONGS_PAGE_SIZE);
-        setResults(prev => (prev ? { ...prev, songs: [...prev.songs, ...more] } : prev));
+        const more = await loadMoreLocalSongs(
+          searchServerId,
+          activeSearch,
+          songsServerOffset,
+          SONGS_PAGE_SIZE,
+          browseScope,
+        );
+        if (isStale()) return;
+        setResults(prev => (prev ? { ...prev, songs: dedupeById([...prev.songs, ...more]) } : prev));
         setSongsServerOffset(o => o + more.length);
         if (more.length < SONGS_PAGE_SIZE) setSongsHasMore(false);
       } catch {
-        setSongsHasMore(false);
+        if (!isStale()) setSongsHasMore(false);
       } finally {
-        setLoadingMoreSongs(false);
+        if (!isStale()) setLoadingMoreSongs(false);
       }
       return;
     }
@@ -457,7 +582,13 @@ export function useAdvancedSearchRunner({
       const to = activeSearch.yearTo ? parseInt(activeSearch.yearTo) : null;
       const bpmLo = activeSearch.bpmFrom ? parseInt(activeSearch.bpmFrom) : null;
       const bpmHi = activeSearch.bpmTo ? parseInt(activeSearch.bpmTo) : null;
-      const page = await searchSongsPaged(q, SONGS_PAGE_SIZE, songsServerOffset);
+      const page = await searchSongsPagedForServer(
+        searchServerId,
+        q,
+        SONGS_PAGE_SIZE,
+        songsServerOffset,
+      );
+      if (isStale()) return;
       const filtered = applySongFilters(
         page,
         g,
@@ -467,17 +598,20 @@ export function useAdvancedSearchRunner({
         bpmHi,
         activeSearch.losslessOnly,
       );
-      setResults(prev => prev ? { ...prev, songs: [...prev.songs, ...filtered] } : prev);
+      setResults(prev => prev ? {
+        ...prev,
+        songs: dedupeById([...prev.songs, ...filtered]),
+      } : prev);
       setSongsServerOffset(o => o + page.length);
       // No more pages when the server returned a non-full page (regardless of how many survived filtering).
       if (page.length < SONGS_PAGE_SIZE) setSongsHasMore(false);
     } catch {
-      setSongsHasMore(false);
+      if (!isStale()) setSongsHasMore(false);
     } finally {
-      setLoadingMoreSongs(false);
+      if (!isStale()) setLoadingMoreSongs(false);
     }
   }, [
-    loadingMoreSongs, songsHasMore, activeSearch, songsServerOffset, localMode, serverId, basicSearchMode,
+    loadingMoreSongs, songsHasMore, activeSearch, songsServerOffset, localMode, basicSearchMode,
     setResults, setSongsServerOffset, setSongsHasMore, setLoadingMoreSongs,
   ]);
 

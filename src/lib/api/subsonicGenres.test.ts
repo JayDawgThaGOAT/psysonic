@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchAllSongsByGenre, getGenresForServer, getSongsByGenre } from '@/lib/api/subsonicGenres';
+import {
+  fetchAllSongsByGenre,
+  getAlbumsByGenreForServer,
+  getGenresForServer,
+  getSongsByGenre,
+} from '@/lib/api/subsonicGenres';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { resetAuthStore } from '@/test/helpers/storeReset';
+import { useAuthStore } from '@/store/authStore';
 
 const { apiMock, apiForServerMock } = vi.hoisted(() => ({ apiMock: vi.fn(), apiForServerMock: vi.fn() }));
 
@@ -30,7 +37,10 @@ describe('getSongsByGenre', () => {
 });
 
 describe('getGenresForServer', () => {
-  beforeEach(() => apiForServerMock.mockReset());
+  beforeEach(() => {
+    apiForServerMock.mockReset();
+    resetAuthStore();
+  });
 
   it('uses the selected server and its library filter', async () => {
     apiForServerMock.mockResolvedValue({ genres: { genre: { value: 'Jazz', songCount: 3, albumCount: 2 } } });
@@ -41,6 +51,23 @@ describe('getGenresForServer', () => {
     expect(apiForServerMock).toHaveBeenCalledWith('server-b', 'getGenres.view', {
       musicFolderId: ['folder-a'],
     });
+  });
+
+  it('stamps genre albums with the canonical owner key', async () => {
+    useAuthStore.setState({
+      servers: [{
+        id: 'server-b',
+        name: 'B',
+        url: 'https://b.test/rest',
+        username: 'u',
+        password: 'p',
+      }],
+    });
+    apiForServerMock.mockResolvedValue({ albumList2: { album: [{ id: 'album-1' }] } });
+
+    await expect(getAlbumsByGenreForServer('server-b', 'Jazz')).resolves.toEqual([
+      { id: 'album-1', serverId: 'b.test/rest' },
+    ]);
   });
 });
 

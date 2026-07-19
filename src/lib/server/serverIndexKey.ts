@@ -30,7 +30,9 @@ export function resolveStorageServerIndexKey(serverIdOrKey: string): string | nu
 }
 
 export function resolveIndexKey(serverIdOrKey: string): string {
-  const server = useAuthStore.getState().servers.find(s => s.id === serverIdOrKey);
+  const servers = useAuthStore.getState().servers;
+  if (!servers) return serverIdOrKey;
+  const server = servers.find(s => s.id === serverIdOrKey);
   if (!server) return serverIdOrKey;
   return serverIndexKeyFromUrl(server.url) || serverIdOrKey;
 }

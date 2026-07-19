@@ -111,8 +111,25 @@ describe('getLibraryBrowseScope', () => {
       anchorServerId: 'active',
       serverIds: ['active'],
       pairs: [],
-      fingerprint: '',
+      fingerprint: JSON.stringify([['active', ['music']]]),
       multiServer: false,
     });
+  });
+
+  it('includes fallback library selection in the scope fingerprint', () => {
+    const state = {
+      servers: [{ id: 'active' }],
+      activeServerId: 'active',
+      libraryBrowseServerIds: [],
+      musicFoldersByServer: { active: [{ id: 'one' }, { id: 'two' }] },
+      libraryBrowseSelectionByServer: { active: ['two'] },
+    };
+
+    expect(deriveLibraryBrowseScope(state).fingerprint)
+      .toBe(JSON.stringify([['active', ['two']]]));
+    expect(deriveLibraryBrowseScope({
+      ...state,
+      libraryBrowseSelectionByServer: { active: ['one'] },
+    }).fingerprint).toBe(JSON.stringify([['active', ['one']]]));
   });
 });

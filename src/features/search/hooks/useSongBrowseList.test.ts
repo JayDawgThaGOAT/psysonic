@@ -10,7 +10,9 @@ import { resetAuthStore } from '@/test/helpers/storeReset';
 
 const { browseScopeState, readyLibraryServerKeysMock, revisionState } = vi.hoisted(() => ({
   browseScopeState: {
+    anchorServerId: 'srv-1' as string | null,
     serverIds: ['srv-1'] as string[],
+    pairs: [] as Array<{ serverId: string; libraryId: string }>,
     multiServer: false,
     fingerprint: 'srv-1',
   },
@@ -75,7 +77,12 @@ function deferred<T>() {
 }
 
 function seedMultiServerScope() {
+  browseScopeState.anchorServerId = 'a';
   browseScopeState.serverIds = ['a', 'b'];
+  browseScopeState.pairs = [
+    { serverId: 'a', libraryId: 'lib-a' },
+    { serverId: 'b', libraryId: 'lib-b' },
+  ];
   browseScopeState.multiServer = true;
   browseScopeState.fingerprint = 'a,b';
   useAuthStore.setState({
@@ -98,9 +105,12 @@ describe('useSongBrowseList restore hold', () => {
     resetAuthStore();
     useAuthStore.setState({ activeServerId: 'srv-1' });
     useLibraryIndexStore.setState({ masterEnabled: true });
+    vi.mocked(runLocalSongScopeBrowse).mockReset().mockResolvedValue(null);
     readyLibraryServerKeysMock.mockReset().mockResolvedValue(['srv-1']);
     revisionState.value = 0;
     browseScopeState.serverIds = ['srv-1'];
+    browseScopeState.anchorServerId = 'srv-1';
+    browseScopeState.pairs = [];
     browseScopeState.multiServer = false;
     browseScopeState.fingerprint = 'srv-1';
   });
@@ -111,6 +121,8 @@ describe('useSongBrowseList restore hold', () => {
         enabled: true,
         searchQuery,
         initialRestore: {
+          browseScopeFingerprint: 'srv-1',
+          librarySyncRevision: 0,
           query: 'jazz',
           songs: [stashedSong],
           offset: 1,
@@ -136,6 +148,68 @@ describe('useSongBrowseList restore hold', () => {
       expect(result.current.songs[0]?.id).toBe('fresh');
     }, { timeout: 500 });
   });
+
+  it('discards a restored cursor and songs when the browse scope changed', async () => {
+    const { result } = renderHook(() => useSongBrowseList({
+      enabled: true,
+      searchQuery: '',
+      initialRestore: {
+        browseScopeFingerprint: 'old-scope',
+        librarySyncRevision: 0,
+        query: '',
+        songs: [stashedSong],
+        offset: 50,
+        hasMore: true,
+        browseCursor: 'old-cursor',
+        localSearchMode: true,
+        browseUnsupported: false,
+        hasSearched: true,
+      },
+    }));
+
+    await waitFor(() => expect(runLocalSongScopeBrowse).toHaveBeenCalled());
+    expect(result.current.songs).not.toContainEqual(stashedSong);
+    expect(result.current.browseCursor).toBeNull();
+  });
+
+  it('discards a valid restore when its scope or sync revision changes after mount', async () => {
+    vi.mocked(runLocalSongScopeBrowse).mockResolvedValue({
+      songs: [{ id: 'fresh', title: 'Fresh' } as SubsonicSong],
+      hasMore: false,
+      nextCursor: null,
+    });
+    const view = renderHook(() => useSongBrowseList({
+      enabled: true,
+      searchQuery: '',
+      initialRestore: {
+        browseScopeFingerprint: 'srv-1',
+        librarySyncRevision: 0,
+        query: '',
+        songs: [stashedSong],
+        offset: 50,
+        hasMore: true,
+        browseCursor: 'old-cursor',
+        localSearchMode: true,
+        browseUnsupported: false,
+        hasSearched: true,
+      },
+    }));
+    expect(view.result.current.songs).toEqual([stashedSong]);
+
+    browseScopeState.fingerprint = 'srv-1:new-library';
+    revisionState.value = 1;
+    view.rerender();
+
+    await waitFor(() => expect(view.result.current.songs.map(song => song.id)).toEqual(['fresh']));
+    expect(view.result.current.resultBrowseScopeFingerprint).toBe('srv-1:new-library');
+    expect(view.result.current.resultLibrarySyncRevision).toBe(1);
+    expect(runLocalSongScopeBrowse).toHaveBeenCalledWith(
+      'srv-1',
+      50,
+      null,
+      expect.objectContaining({ fingerprint: 'srv-1:new-library' }),
+    );
+  });
 });
 
 describe('useSongBrowseList scoped browse', () => {
@@ -147,8 +221,24 @@ describe('useSongBrowseList scoped browse', () => {
     readyLibraryServerKeysMock.mockReset().mockResolvedValue(['srv-1']);
     revisionState.value = 0;
     browseScopeState.serverIds = ['srv-1'];
+    browseScopeState.anchorServerId = 'srv-1';
+    browseScopeState.pairs = [];
     browseScopeState.multiServer = false;
     browseScopeState.fingerprint = 'srv-1';
+  });
+
+  it('does not fall back to the active server when the effective scope is empty', async () => {
+    browseScopeState.anchorServerId = null;
+    browseScopeState.serverIds = [];
+    browseScopeState.pairs = [];
+    browseScopeState.fingerprint = '';
+
+    const { result } = renderHook(() => useSongBrowseList({ enabled: true, searchQuery: '' }));
+
+    await waitFor(() => expect(result.current.hasSearched).toBe(true));
+    expect(result.current.songs).toEqual([]);
+    expect(result.current.browseUnsupported).toBe(true);
+    expect(runLocalSongScopeBrowse).not.toHaveBeenCalled();
   });
 
   it('continues the ordinary Tracks catalogue with its opaque scoped cursor', async () => {
@@ -168,8 +258,20 @@ describe('useSongBrowseList scoped browse', () => {
     await waitFor(() => expect(result.current.songs.map(song => song.id)).toEqual(['one']));
     void result.current.loadMore();
     await waitFor(() => expect(result.current.songs.map(song => song.id)).toEqual(['one', 'two']));
-    expect(runLocalSongScopeBrowse).toHaveBeenNthCalledWith(1, 'srv-1', 50, null);
-    expect(runLocalSongScopeBrowse).toHaveBeenNthCalledWith(2, 'srv-1', 50, 'cursor-1');
+    expect(runLocalSongScopeBrowse).toHaveBeenNthCalledWith(
+      1,
+      'srv-1',
+      50,
+      null,
+      expect.objectContaining({ anchorServerId: 'srv-1' }),
+    );
+    expect(runLocalSongScopeBrowse).toHaveBeenNthCalledWith(
+      2,
+      'srv-1',
+      50,
+      'cursor-1',
+      expect.objectContaining({ anchorServerId: 'srv-1' }),
+    );
     expect(result.current.hasMore).toBe(false);
   });
 

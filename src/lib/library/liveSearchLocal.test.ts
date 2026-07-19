@@ -165,6 +165,33 @@ describe('runLocalLiveSearch', () => {
     await expect(runLocalLiveSearch('a', 'foo', neverStale)).resolves.toBeNull();
     expect(invoked).toBe(false);
   });
+
+  it('queries the selected owner when the active server is outside the browse scope', async () => {
+    useAuthStore.setState({
+      servers: [
+        { id: 'a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
+      activeServerId: 'a',
+      libraryBrowseServerIds: ['b'],
+      musicFoldersByServer: { b: [{ id: 'lib-b', name: 'B' }] },
+      libraryBrowseSelectionByServer: {},
+    });
+    let captured: unknown;
+    onInvoke('library_live_search', args => {
+      captured = args;
+      return { artists: [], albums: [], tracks: [], source: 'local' };
+    });
+
+    await runLocalLiveSearch('a', 'foo', neverStale);
+
+    expect(captured).toMatchObject({
+      request: {
+        serverId: 'b.test',
+        libraryScopes: [{ serverId: 'b.test', libraryId: 'lib-b' }],
+      },
+    });
+  });
 });
 
 describe('liveSearchQueryRejected', () => {
@@ -200,5 +227,23 @@ describe('mergeLiveSearchResults', () => {
     expect(merged.artists.map(a => a.id)).toEqual(['a1', 'a2']);
     expect(merged.albums.map(a => a.id)).toEqual(['al1']);
     expect(merged.songs.map(s => s.id)).toEqual(['s1', 's2']);
+  });
+
+  it('preserves equal raw ids owned by different servers', () => {
+    const primary: SearchResults = {
+      artists: [{ serverId: 'a', id: 'same', name: 'A' }],
+      albums: [],
+      songs: [],
+    };
+    const supplement: SearchResults = {
+      artists: [{ serverId: 'b', id: 'same', name: 'B' }],
+      albums: [],
+      songs: [],
+    };
+
+    expect(mergeLiveSearchResults(primary, supplement).artists).toEqual([
+      { serverId: 'a', id: 'same', name: 'A' },
+      { serverId: 'b', id: 'same', name: 'B' },
+    ]);
   });
 });

@@ -5,7 +5,10 @@ const { invokeMock, loginMock, getServerByIdMock, connectBaseUrlMock, authState 
   loginMock: vi.fn(),
   getServerByIdMock: vi.fn(),
   connectBaseUrlMock: vi.fn(),
-  authState: { activeServerId: 'srv-a' as string | null },
+  authState: {
+    activeServerId: 'srv-a' as string | null,
+    servers: [] as Array<{ id: string; url: string }>,
+  },
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
@@ -36,6 +39,7 @@ describe('explicit-server lossless album browsing', () => {
   beforeEach(() => {
     ndClearTokenCache();
     authState.activeServerId = 'srv-a';
+    authState.servers = Object.values(servers);
     invokeMock.mockReset();
     loginMock.mockReset();
     getServerByIdMock.mockReset();
@@ -64,8 +68,8 @@ describe('explicit-server lossless album browsing', () => {
     const pageB = await ndListLosslessAlbumsPageForServer('srv-b', request);
     await ndListLosslessAlbumsPageForServer('srv-a', request);
 
-    expect(firstA.entries[0]?.album.serverId).toBe('srv-a');
-    expect(pageB.entries[0]?.album.serverId).toBe('srv-b');
+    expect(firstA.entries[0]?.album.serverId).toBe('a.example');
+    expect(pageB.entries[0]?.album.serverId).toBe('b.example');
     expect(loginMock).toHaveBeenCalledTimes(2);
     expect(loginMock).toHaveBeenCalledWith('https://srv-a.connect', 'alice', 'a-pass');
     expect(loginMock).toHaveBeenCalledWith('https://srv-b.connect', 'bob', 'b-pass');
@@ -98,8 +102,8 @@ describe('explicit-server lossless album browsing', () => {
       'srv-b', 'composer-1', 'composer', 0, 100, 'name', 'ASC', 'lib-b',
     );
 
-    expect(composers[0]).toEqual(expect.objectContaining({ id: 'composer-1', serverId: 'srv-b', albumCount: 2 }));
-    expect(albums[0]).toEqual(expect.objectContaining({ id: 'album-1', serverId: 'srv-b' }));
+    expect(composers[0]).toEqual(expect.objectContaining({ id: 'composer-1', serverId: 'b.example', albumCount: 2 }));
+    expect(albums[0]).toEqual(expect.objectContaining({ id: 'album-1', serverId: 'b.example' }));
     expect(invokeMock).toHaveBeenNthCalledWith(1, 'nd_list_artists_by_role', expect.objectContaining({
       serverUrl: 'https://srv-b.connect',
       token: 'token:https://srv-b.connect',

@@ -6,6 +6,7 @@ const { apiForServerMock, authState, guardMock } = vi.hoisted(() => ({
     activeServerId: 'active',
     musicLibraryFilterByServer: {} as Record<string, string>,
     musicLibraryFilterVersion: 1,
+    servers: [] as Array<{ id: string; url: string }>,
   },
   guardMock: vi.fn(() => true),
 }));
@@ -55,13 +56,17 @@ describe('explicit-server library wrappers', () => {
     guardMock.mockReturnValue(true);
     authState.activeServerId = 'active';
     authState.musicLibraryFilterByServer = {};
+    authState.servers = [
+      { id: 'srv-a', url: 'https://a.example/rest' },
+      { id: 'srv-random', url: 'https://random.example' },
+    ];
   });
 
   it('forwards album-list timeout and stamps albums', async () => {
     apiForServerMock.mockResolvedValue({ albumList2: { album: [album] } });
 
     await expect(getAlbumListForServer('srv-a', 'newest', 12, 4, { fromYear: 2020 }, 4321)).resolves.toEqual([
-      { ...album, serverId: 'srv-a' },
+      { ...album, serverId: 'a.example/rest' },
     ]);
     expect(apiForServerMock).toHaveBeenCalledWith(
       'srv-a',
@@ -80,7 +85,7 @@ describe('explicit-server library wrappers', () => {
     });
 
     await expect(getRandomSongsForServer('srv-random', 8, 'Rock', 2468)).resolves.toEqual([
-      { ...song, serverId: 'srv-random' },
+      { ...song, serverId: 'random.example' },
     ]);
     expect(guardMock).toHaveBeenCalledWith('srv-random');
     expect(apiForServerMock).toHaveBeenNthCalledWith(

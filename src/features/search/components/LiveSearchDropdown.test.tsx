@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
+import userEvent from '@testing-library/user-event';
 import LiveSearchDropdown from '@/features/search/components/LiveSearchDropdown';
 import type { useShareSearch } from '@/features/search/hooks/useShareSearch';
 import type { SearchResults } from '@/lib/api/subsonicTypes';
+
+const { navigateToAlbumMock } = vi.hoisted(() => ({
+  navigateToAlbumMock: vi.fn(),
+}));
 
 vi.mock('@/store/liveSearchScopeStore', () => ({
   useLiveSearchScopeStore: (selector: (s: { query: string; setQuery: () => void }) => unknown) =>
@@ -19,7 +24,7 @@ vi.mock('react-router-dom', async importOriginal => {
 });
 
 vi.mock('@/features/album', () => ({
-  useNavigateToAlbum: () => vi.fn(),
+  useNavigateToAlbum: () => navigateToAlbumMock,
   albumArtistDisplayName: (album: { artist?: string }) => album.artist ?? '',
 }));
 
@@ -112,5 +117,39 @@ describe('LiveSearchDropdown index incomplete banner', () => {
     );
 
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('preserves the album owner when opening a local result', async () => {
+    navigateToAlbumMock.mockReset();
+    const user = userEvent.setup();
+    renderWithProviders(
+      <LiveSearchDropdown
+        dropdownRef={{ current: null }}
+        results={{
+          artists: [],
+          albums: [{
+            serverId: 'srv-b',
+            id: 'album-1',
+            name: 'Owned Album',
+            artist: 'Artist',
+            artistId: 'artist-1',
+            songCount: 1,
+            duration: 60,
+            coverArt: 'cover-1',
+          }],
+          songs: [],
+        }}
+        searchSource="local"
+        activeIndex={-1}
+        loading={false}
+        indexIncomplete={false}
+        share={shareStub}
+        setOpen={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('option', { name: /Owned Album/i }));
+
+    expect(navigateToAlbumMock).toHaveBeenCalledWith('album-1', { serverId: 'srv-b' });
   });
 });

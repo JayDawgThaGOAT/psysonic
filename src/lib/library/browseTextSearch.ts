@@ -4,7 +4,11 @@
 import { getStarred } from '@/lib/api/subsonicStarRating';
 import { getArtists } from '@/lib/api/subsonicArtists';
 import type { ArtistCreditMode } from '@/lib/api/library';
-import { search, searchSongsPaged } from '@/lib/api/subsonicSearch';
+import {
+  search,
+  searchSongsPaged,
+  searchSongsPagedForServer,
+} from '@/lib/api/subsonicSearch';
 import type { SearchResults, SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
 import {
   libraryAdvancedSearch,
@@ -45,7 +49,7 @@ import {
 import { artistBrowseTimed, emitArtistsBrowseDebug } from './artistBrowseDebug';
 import { raceSearchSources, type SearchRaceWinner } from './searchRace';
 import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
-import { getLibraryBrowseScope } from './libraryBrowseScope';
+import { getLibraryBrowseScope, type LibraryBrowseScope } from './libraryBrowseScope';
 
 export type { LibrarySearchSurface };
 
@@ -324,17 +328,21 @@ export async function runLocalBrowseSongPage(
   query: string,
   offset: number,
   pageSize: number,
+  browseScope: LibraryBrowseScope = getLibraryBrowseScope(),
 ): Promise<SubsonicSong[] | null> {
   if (!serverId) return null;
-  const readyScope = await resolveReadyLibraryBrowseScope(serverId, getLibraryBrowseScope());
+  const readyScope = await resolveReadyLibraryBrowseScope(
+    browseScope.anchorServerId ?? serverId,
+    browseScope,
+  );
   if (!readyScope) return null;
   const q = query.trim();
   if (!q) return null;
   try {
     const resp = await libraryAdvancedSearch({
       serverId: readyScope.anchorServerKey,
-      libraryScope: readyScope.pairs.length > 0 ? undefined : libraryScopeForServer(serverId),
-      libraryScopes: readyScope.pairs.length > 0 ? readyScope.pairs : libraryScopePairsForServer(serverId),
+      libraryScope: readyScope.pairs.length > 0 ? undefined : libraryScopeForServer(readyScope.anchorServerKey),
+      libraryScopes: readyScope.pairs.length > 0 ? readyScope.pairs : libraryScopePairsForServer(readyScope.anchorServerKey),
       query: q,
       entityTypes: ['track'],
       limit: pageSize,
@@ -353,11 +361,14 @@ export async function runNetworkBrowseSongPage(
   query: string,
   offset: number,
   pageSize: number,
+  serverId?: string | null,
 ): Promise<SubsonicSong[] | null> {
   const q = query.trim();
   if (!q) return null;
   try {
-    return await searchSongsPaged(q, pageSize, offset);
+    return serverId
+      ? await searchSongsPagedForServer(serverId, q, pageSize, offset)
+      : await searchSongsPaged(q, pageSize, offset);
   } catch {
     return null;
   }
@@ -368,6 +379,7 @@ export async function runLocalBrowseFullSearch(
   serverId: string | null | undefined,
   query: string,
   songsLimit: number,
+  browseScope: LibraryBrowseScope = getLibraryBrowseScope(),
 ): Promise<SearchResults | null> {
   const page = await runLocalAdvancedSearch(
     serverId,
@@ -375,6 +387,7 @@ export async function runLocalBrowseFullSearch(
     songsLimit,
     true,
     true,
+    browseScope,
   );
   if (!page) return null;
   return {
@@ -388,9 +401,10 @@ export async function runLocalBrowseFullSearch(
 export async function runNetworkBrowseFullSearch(
   query: string,
   songsLimit: number,
+  serverId?: string | null,
 ): Promise<SearchResults | null> {
   try {
-    const page = await runNetworkAdvancedTextSearch(fullSearchOpts(query), songsLimit);
+    const page = await runNetworkAdvancedTextSearch(fullSearchOpts(query), songsLimit, serverId);
     if (!page) return null;
     return {
       artists: page.artists,
@@ -408,8 +422,9 @@ export async function loadMoreLocalBrowseSongs(
   query: string,
   offset: number,
   pageSize: number,
+  browseScope: LibraryBrowseScope = getLibraryBrowseScope(),
 ): Promise<SubsonicSong[]> {
-  return loadMoreLocalSongs(serverId, songBrowseOpts(query), offset, pageSize);
+  return loadMoreLocalSongs(serverId, songBrowseOpts(query), offset, pageSize, browseScope);
 }
 
 export type { AlbumBrowseSort } from './albumBrowseSort';

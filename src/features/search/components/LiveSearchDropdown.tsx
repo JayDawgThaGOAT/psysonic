@@ -17,6 +17,7 @@ import {
 import type { useShareSearch } from '@/features/search/hooks/useShareSearch';
 import { useAuthStore } from '@/store/authStore';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export type LiveSearchSource = 'local' | 'network';
 
@@ -51,7 +52,10 @@ export default function LiveSearchDropdown({
   const enqueue = usePlayerStore(state => state.enqueue);
   const openContextMenu = usePlayerStore(state => state.openContextMenu);
   const ctxIsOpen = usePlayerStore(state => state.contextMenu.isOpen);
-  const ctxItemId = usePlayerStore(state => (state.contextMenu.item as { id?: string } | null)?.id);
+  const ctxItem = usePlayerStore(state => state.contextMenu.item as {
+    id?: string;
+    serverId?: string;
+  } | null);
   const ctxType   = usePlayerStore(state => state.contextMenu.type);
 
   const hasResults =
@@ -138,9 +142,12 @@ export default function LiveSearchDropdown({
               <div className="search-section-label"><Users size={12} /> {t('search.artists')}</div>
               {results.artists.map(a => {
                 const i = idx++;
-                const isCtxActive = ctxIsOpen && ctxType === 'artist' && ctxItemId === a.id;
+                const isCtxActive = ctxIsOpen
+                  && ctxType === 'artist'
+                  && !!ctxItem?.id
+                  && ownedEntityKey(a) === ownedEntityKey({ id: ctxItem.id, serverId: ctxItem.serverId });
                 return (
-                  <button key={a.id} className={`search-result-item${activeIndex === i ? ' active' : ''}${isCtxActive ? ' context-active' : ''}`}
+                  <button key={ownedEntityKey(a)} className={`search-result-item${activeIndex === i ? ' active' : ''}${isCtxActive ? ' context-active' : ''}`}
                     onClick={() => {
                       navigate(buildArtistDetailPath(a.id, { serverId: a.serverId ?? activeServerId }));
                       setOpen(false);
@@ -166,17 +173,24 @@ export default function LiveSearchDropdown({
               <div className="search-section-label"><Disc3 size={12} /> {t('search.albums')}</div>
               {results.albums.map(a => {
                 const i = idx++;
-                const isCtxActive = ctxIsOpen && ctxType === 'album' && ctxItemId === a.id;
+                const isCtxActive = ctxIsOpen
+                  && ctxType === 'album'
+                  && !!ctxItem?.id
+                  && ownedEntityKey(a) === ownedEntityKey({ id: ctxItem.id, serverId: ctxItem.serverId });
                 return (
-                  <button key={a.id} className={`search-result-item${activeIndex === i ? ' active' : ''}${isCtxActive ? ' context-active' : ''}`}
-                    onClick={() => { navigateToAlbum(a.id); setOpen(false); setQuery(''); }}
+                  <button key={ownedEntityKey(a)} className={`search-result-item${activeIndex === i ? ' active' : ''}${isCtxActive ? ' context-active' : ''}`}
+                    onClick={() => {
+                      navigateToAlbum(a.id, { serverId: a.serverId ?? activeServerId });
+                      setOpen(false);
+                      setQuery('');
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       openContextMenu(e.clientX, e.clientY, a, 'album');
                     }}
                     role="option" aria-selected={activeIndex === i}>
                     {a.coverArt ? (
-                      <LiveSearchAlbumThumb albumId={a.id} coverArt={a.coverArt} />
+                      <LiveSearchAlbumThumb albumId={a.id} coverArt={a.coverArt} serverId={a.serverId} />
                     ) : (
                       <div className="search-result-icon"><Disc3 size={14} /></div>
                     )}
@@ -195,9 +209,12 @@ export default function LiveSearchDropdown({
               <div className="search-section-label"><Music size={12} /> {t('search.songs')}</div>
               {results.songs.map(s => {
                 const i = idx++;
-                const isCtxActive = ctxIsOpen && ctxType === 'song' && ctxItemId === s.id;
+                const isCtxActive = ctxIsOpen
+                  && ctxType === 'song'
+                  && !!ctxItem?.id
+                  && ownedEntityKey(s) === ownedEntityKey({ id: ctxItem.id, serverId: ctxItem.serverId });
                 return (
-                  <button key={s.id} className={`search-result-item${activeIndex === i ? ' active' : ''}${isCtxActive ? ' context-active' : ''}`}
+                  <button key={ownedEntityKey(s)} className={`search-result-item${activeIndex === i ? ' active' : ''}${isCtxActive ? ' context-active' : ''}`}
                     onClick={() => {
                       const track = songToTrack(s);
                       enqueue([track]);

@@ -1,3 +1,5 @@
+import { ownedEntityKey } from './ownedEntityKey';
+
 /**
  * Keeps the first occurrence of each `id`. Subsonic responses (and merged pages)
  * occasionally repeat the same album/song id; duplicate React keys then warn and
@@ -14,4 +16,3 @@ export function dedupeById<T extends { id: string; serverId?: string }>(items: T
   }
   return out;
 }
-import { ownedEntityKey } from './ownedEntityKey';

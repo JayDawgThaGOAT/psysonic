@@ -4,7 +4,7 @@
  * Falls back to search3 when the index isn't ready (caller orchestrates).
  */
 import type { SearchResults } from '@/lib/api/subsonicTypes';
-import { search } from '@/lib/api/subsonicSearch';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
 import { libraryScopeForServer, libraryScopePairsForServer } from '@/lib/api/subsonicClient';
 import { libraryLiveSearch } from '@/lib/api/library';
 import { filterSearchArtistsWithNoAlbums } from '@/lib/api/subsonicSearch';
@@ -15,8 +15,9 @@ import {
 } from './advancedSearchLocal';
 import { logLibrarySearch, timed } from './libraryDevLog';
 import { searchQueryIsFtsSafe } from './searchQueryFtsSafe';
-import { getLibraryBrowseScope } from './libraryBrowseScope';
+import { getLibraryBrowseScope, type LibraryBrowseScope } from './libraryBrowseScope';
 import { resolveReadyLibraryBrowseScope } from './libraryReady';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export const LIVE_SEARCH_DEBOUNCE_LOCAL_MS = 200;
 export const LIVE_SEARCH_DEBOUNCE_NETWORK_MS = 300;
@@ -69,11 +70,16 @@ export async function runLocalLiveSearch(
   serverId: string | null | undefined,
   query: string,
   ctx: LiveSearchRunContext,
+  browseScope: LibraryBrowseScope = getLibraryBrowseScope(),
 ): Promise<SearchResults | null> {
   if (!serverId || ctx.isStale()) return null;
   const q = query.trim();
   if (liveSearchQueryRejected(q)) return null;
-  const readyScope = await resolveReadyLibraryBrowseScope(serverId, getLibraryBrowseScope());
+  if (!browseScope.anchorServerId) return null;
+  const readyScope = await resolveReadyLibraryBrowseScope(
+    browseScope.anchorServerId ?? serverId,
+    browseScope,
+  );
   if (!readyScope || ctx.isStale()) return null;
   const t0 = performance.now();
   try {
@@ -81,8 +87,8 @@ export async function runLocalLiveSearch(
       libraryLiveSearch({
         serverId: readyScope.anchorServerKey,
         query: q,
-        libraryScope: readyScope.pairs.length > 0 ? undefined : libraryScopeForServer(serverId),
-        libraryScopes: readyScope.pairs.length > 0 ? readyScope.pairs : libraryScopePairsForServer(serverId),
+        libraryScope: readyScope.pairs.length > 0 ? undefined : libraryScopeForServer(readyScope.anchorServerKey),
+        libraryScopes: readyScope.pairs.length > 0 ? readyScope.pairs : libraryScopePairsForServer(readyScope.anchorServerKey),
         artistLimit: ARTIST_LIMIT,
         albumLimit: ALBUM_LIMIT,
         songLimit: SONG_LIMIT,
@@ -143,17 +149,20 @@ export const EMPTY_SEARCH_RESULTS: SearchResults = {
 export async function runNetworkLiveSearch(
   query: string,
   signal?: AbortSignal,
+  serverId?: string | null,
 ): Promise<SearchResults | null> {
   const q = query.trim();
   if (liveSearchQueryRejected(q)) return null;
   try {
-    return await search(q, {
-      signal,
+    const options = {
       timeout: LIVE_SEARCH_NETWORK_TIMEOUT_MS,
       artistCount: LIVE_SEARCH_LIMITS.artists,
       albumCount: LIVE_SEARCH_LIMITS.albums,
       songCount: LIVE_SEARCH_LIMITS.songs,
-    });
+    };
+    return serverId
+      ? await searchForServer(serverId, q, options)
+      : await search(q, { ...options, signal });
   } catch (err) {
     const name = err instanceof Error ? err.name : '';
     if (name === 'CanceledError' || name === 'AbortError') return null;
@@ -167,17 +176,20 @@ export function mergeLiveSearchResults(
   supplement: SearchResults,
   limits: { artists: number; albums: number; songs: number } = LIVE_SEARCH_LIMITS,
 ): SearchResults {
-  const mergeSlice = <T extends { id: string }>(
+  const mergeSlice = <T extends { id: string; serverId?: string }>(
     primaryItems: T[],
     extraItems: T[],
     limit: number,
   ): T[] => {
-    const seen = new Set(primaryItems.map(i => i.id));
+    const seen = new Set(primaryItems.map(ownedEntityKey));
+    const seenRawIds = new Set(primaryItems.map(i => i.id));
     const out = [...primaryItems];
     for (const item of extraItems) {
       if (out.length >= limit) break;
-      if (seen.has(item.id)) continue;
-      seen.add(item.id);
+      const key = ownedEntityKey(item);
+      if (seen.has(key) || (!item.serverId && seenRawIds.has(item.id))) continue;
+      seen.add(key);
+      seenRawIds.add(item.id);
       out.push(item);
     }
     return out;

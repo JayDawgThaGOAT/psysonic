@@ -7,6 +7,7 @@ import { useLibraryIndexStore } from '@/store/libraryIndexStore';
 import {
   libraryStatusIsReady,
   readyLibraryServerKeys,
+  resolveReadyLibraryBrowseScope,
   syncIngestDisplayCount,
 } from './libraryReady';
 
@@ -114,6 +115,35 @@ describe('readyLibraryServerKeys', () => {
     });
 
     await expect(readyLibraryServerKeys(['a', 'b'])).resolves.toBeNull();
+  });
+
+  it('uses the selected browse anchor instead of an unrelated active server', async () => {
+    onInvoke('library_get_status', args => status({
+      serverId: (args as { serverId: string }).serverId,
+      syncPhase: 'ready',
+    }));
+
+    await expect(resolveReadyLibraryBrowseScope('a', {
+      anchorServerId: 'b',
+      serverIds: ['b'],
+      pairs: [{ serverId: 'b', libraryId: 'lib-b' }],
+      fingerprint: 'b',
+      multiServer: false,
+    })).resolves.toEqual({
+      anchorServerKey: 'b.test',
+      serverKeys: ['b.test'],
+      pairs: [{ serverId: 'b.test', libraryId: 'lib-b' }],
+    });
+  });
+
+  it('does not substitute the active server for an empty effective scope', async () => {
+    await expect(resolveReadyLibraryBrowseScope('a', {
+      anchorServerId: null,
+      serverIds: [],
+      pairs: [],
+      fingerprint: '',
+      multiServer: false,
+    })).resolves.toBeNull();
   });
 });
 

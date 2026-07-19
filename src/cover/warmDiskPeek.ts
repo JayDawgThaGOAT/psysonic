@@ -3,7 +3,10 @@ import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { coverEnsureQueued, ensureArtistBackdropQueued } from './ensureQueue';
 import { getDiskSrcForGrid, rememberGridDiskSrc } from './diskSrcLookup';
 import { albumCoverRef, artistCoverRef } from './ref';
-import { coverServerScopeForServerId } from './serverScope';
+import {
+  coverServerScopeForOwnerServerId,
+  coverServerScopeForServerId,
+} from './serverScope';
 import { coverDiskUrl } from './diskSrcCache';
 import { resolveAlbumCoverRefFromLibrary } from './resolveEntryLibrary';
 import { coverStorageKeyFromRef } from './storageKeys';
@@ -50,7 +53,7 @@ export async function coverWarmItemFromLibrary(
   const ref = await resolveAlbumCoverRefFromLibrary(
     albumId,
     fetchCoverArtId,
-    coverServerScopeForServerId(serverId),
+    serverId ? coverServerScopeForOwnerServerId(serverId) : coverServerScopeForServerId(serverId),
   );
   const tier = resolveCoverDisplayTier(displayCssPx, { surface });
   return {
@@ -116,18 +119,60 @@ export function uniqueAlbumIdsFromSongs(
   return out;
 }
 
+export type SongAlbumCoverSource = {
+  albumId?: string | null;
+  coverArt?: string | null;
+  serverId?: string;
+};
+
+export type UniqueAlbumCoverSource = {
+  albumId: string;
+  coverArt: string;
+  serverId?: string;
+};
+
+/** Dedupe track-list covers by owner + album identity. */
+export function uniqueAlbumCoverSourcesFromSongs(
+  songs: ReadonlyArray<SongAlbumCoverSource>,
+  limit = 48,
+): UniqueAlbumCoverSource[] {
+  const seen = new Set<string>();
+  const out: UniqueAlbumCoverSource[] = [];
+  for (const song of songs) {
+    const albumId = song.albumId?.trim();
+    if (!albumId) continue;
+    const serverId = song.serverId?.trim() || undefined;
+    const key = `${serverId ?? ''}\u0001${albumId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      albumId,
+      coverArt: song.coverArt?.trim() || albumId,
+      ...(serverId ? { serverId } : {}),
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 /**
  * Library-resolved peek + high-priority ensure for deduped album covers referenced
  * by a track list window (browse rows, playlist suggestions, virtual slice).
  */
 export async function warmUniqueAlbumCoversFromLibrary(
-  albumIds: readonly string[],
+  albums: readonly UniqueAlbumCoverSource[],
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
 ): Promise<void> {
-  if (albumIds.length === 0 || displayCssPx <= 0) return;
+  if (albums.length === 0 || displayCssPx <= 0) return;
   const items = await Promise.all(
-    albumIds.map(albumId => coverWarmItemFromLibrary(albumId, albumId, displayCssPx, surface)),
+    albums.map(album => coverWarmItemFromLibrary(
+      album.albumId,
+      album.coverArt,
+      displayCssPx,
+      surface,
+      album.serverId,
+    )),
   );
   const batch = dedupeWarmItems(items);
   if (batch.length === 0) return;

@@ -1,8 +1,14 @@
-import { search } from '@/lib/api/subsonicSearch';
 import type { SearchResults, SubsonicArtist } from '@/lib/api/subsonicTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { useLiveSearchScopeStore } from '@/store/liveSearchScopeStore';
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { navigatePathWithAlbumReturnTo } from '@/lib/navigation/albumDetailNavigation';
@@ -33,7 +39,11 @@ import {
   resetLiveSearchScopeBackspaceState,
   resolveLiveSearchScopeGhost,
 } from '@/features/search/components/liveSearchScope';
-import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { useLiveSearchQuery } from '@/features/search/hooks/useLiveSearchQuery';
+import type { LiveSearchSource } from '@/features/search/components/LiveSearchDropdown';
+import { coverServerScopeForOwnerServerId } from '@/cover/serverScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 const STORAGE_KEY = 'psysonic_recent_searches';
 const MAX_RECENT = 6;
@@ -48,28 +58,29 @@ function saveRecent(q: string, prev: string[]): string[] {
   return updated;
 }
 
-function debounce<A extends unknown[]>(
-  fn: (...args: A) => void,
-  ms: number,
-): (...args: A) => void {
-  let timer: ReturnType<typeof setTimeout>;
-  return (...args: A) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
-}
-
 /** Mobile search row thumb — larger than desktop live search (32px). */
 const MOBILE_SEARCH_THUMB_CSS_PX = 80;
+const ignoreBooleanState: Dispatch<SetStateAction<boolean>> = () => {};
+const ignoreNumberState: Dispatch<SetStateAction<number>> = () => {};
+const ignoreSourceState: Dispatch<SetStateAction<LiveSearchSource | null>> = () => {};
 
 function MobileSearchSongThumb({
   song,
 }: {
-  song: Pick<SearchResults['songs'][number], 'id' | 'albumId' | 'coverArt' | 'discNumber'>;
+  song: Pick<SearchResults['songs'][number], 'id' | 'albumId' | 'coverArt' | 'discNumber' | 'serverId'>;
 }) {
   const coverRef = useMemo(
-    () => (song.albumId?.trim() ? albumCoverRefForSong(song) : undefined),
+    () => (song.albumId?.trim()
+      ? albumCoverRefForSong(
+          song,
+          undefined,
+          song.serverId ? coverServerScopeForOwnerServerId(song.serverId) : undefined,
+        )
+      : undefined),
     // Keyed on song's identity fields; depending on the `song` object would
     // recompute the ref on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [song.id, song.albumId, song.coverArt, song.discNumber],
+    [song.id, song.albumId, song.coverArt, song.discNumber, song.serverId],
   );
   if (!coverRef) return null;
   return (
@@ -84,11 +95,11 @@ function MobileSearchSongThumb({
   );
 }
 
-function MobileSearchArtistThumb({ artist }: { artist: Pick<SubsonicArtist, 'id' | 'coverArt'> }) {
+function MobileSearchArtistThumb({ artist }: { artist: Pick<SubsonicArtist, 'id' | 'coverArt' | 'serverId'> }) {
   const [failed, setFailed] = useState(false);
   // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { setFailed(false); }, [artist.id, artist.coverArt]);
+  useEffect(() => { setFailed(false); }, [artist.id, artist.coverArt, artist.serverId]);
   if (failed) {
     return (
       <div className="mobile-search-avatar mobile-search-avatar--circle">
@@ -100,6 +111,7 @@ function MobileSearchArtistThumb({ artist }: { artist: Pick<SubsonicArtist, 'id'
     <ArtistCoverArtImage
       artistId={artist.id}
       coverArt={artist.coverArt}
+      serverScope={artist.serverId ? coverServerScopeForOwnerServerId(artist.serverId) : undefined}
       libraryResolve={false}
       displayCssPx={MOBILE_SEARCH_THUMB_CSS_PX}
       surface="dense"
@@ -131,8 +143,20 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
   const [loading, setLoading] = useState(false);
   const [recentSearches, setRecentSearches] = useState<string[]>(loadRecent);
   const inputRef = useRef<HTMLInputElement>(null);
-  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const liveSearchGenRef = useRef(0);
   const share = useShareSearch(query, onClose);
+
+  useLiveSearchQuery({
+    query,
+    scope,
+    shareMatch: share.shareMatch,
+    liveSearchGenRef,
+    setResults,
+    setOpen: ignoreBooleanState,
+    setLoading,
+    setSearchSource: ignoreSourceState,
+    setActiveIndex: ignoreNumberState,
+  });
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -149,39 +173,6 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = prev; };
   }, []);
-
-  // doSearch wraps a debounce() result, so the useCallback argument is not an
-  // inline function and its deps can't be statically analysed. It is recreated
-  // only on musicLibraryFilterVersion (search() reads the active filter state).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const doSearch = useCallback(
-    // React Compiler rule: memoization shape is intentional here.
-    // eslint-disable-next-line react-hooks/use-memo
-    debounce(async (q: string) => {
-      if (!q.trim()) { setResults(null); setLoading(false); return; }
-      setLoading(true);
-      try {
-        setResults(await search(q));
-      } finally { setLoading(false); }
-    }, 300),
-    [musicLibraryFilterVersion],
-  );
-
-  useEffect(() => {
-    if (isLiveSearchDropdownBlocked(scope)) {
-      // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setResults(null);
-      setLoading(false);
-      return;
-    }
-    if (share.shareMatch) {
-      setResults(null);
-      setLoading(false);
-      return;
-    }
-    doSearch(query);
-  }, [query, scope, doSearch, share.shareMatch]);
 
   const commit = (q: string) => {
     if (q.trim()) setRecentSearches(prev => saveRecent(q, prev));
@@ -285,21 +276,28 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
               <div className="mobile-search-section">
                 <div className="mobile-search-section-label">{t('search.recentSearches')}</div>
                 {recentSearches.map(term => (
-                  <button key={term} className="mobile-search-item" onClick={() => applyRecentSearch(term)}>
-                    <div className="mobile-search-avatar">
-                      <Clock size={18} />
-                    </div>
-                    <div className="mobile-search-item-info" style={{ flex: 1 }}>
-                      <span className="mobile-search-item-title">{term}</span>
-                    </div>
+                  <div key={term} className="mobile-search-item">
                     <button
+                      type="button"
+                      className="mobile-search-recent-apply"
+                      onClick={() => applyRecentSearch(term)}
+                    >
+                      <div className="mobile-search-avatar">
+                        <Clock size={18} />
+                      </div>
+                      <div className="mobile-search-item-info" style={{ flex: 1 }}>
+                        <span className="mobile-search-item-title">{term}</span>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
                       className="mobile-search-recent-remove"
                       onClick={e => removeRecent(term, e)}
                       aria-label={t('search.clearLabel')}
                     >
                       <X size={14} />
                     </button>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -371,7 +369,7 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
                 <div className="mobile-search-section-label">{t('search.artists')}</div>
                 {results!.artists.map(a => (
                   <button
-                    key={a.id}
+                    key={ownedEntityKey(a)}
                     className="mobile-search-item"
                     onClick={() => goTo(buildArtistDetailPath(a.id, {
                       serverId: a.serverId ?? activeServerId,
@@ -392,11 +390,18 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
               <div className="mobile-search-section">
                 <div className="mobile-search-section-label">{t('search.albums')}</div>
                 {results!.albums.map(a => (
-                  <button key={a.id} className="mobile-search-item" onClick={() => goTo(`/album/${a.id}`)}>
+                  <button
+                    key={ownedEntityKey(a)}
+                    className="mobile-search-item"
+                    onClick={() => goTo(buildAlbumDetailPath(a.id, {
+                      serverId: a.serverId ?? activeServerId,
+                    }))}
+                  >
                     {a.coverArt ? (
                       <AlbumCoverArtImage
                         albumId={a.id}
                         coverArt={a.coverArt}
+                        serverScope={a.serverId ? coverServerScopeForOwnerServerId(a.serverId) : undefined}
                         libraryResolve={false}
                         displayCssPx={MOBILE_SEARCH_THUMB_CSS_PX}
                         surface="dense"
@@ -423,7 +428,7 @@ export default function MobileSearchOverlay({ onClose }: { onClose: () => void }
               <div className="mobile-search-section">
                 <div className="mobile-search-section-label">{t('search.songs')}</div>
                 {results!.songs.map(s => (
-                  <button key={s.id} className="mobile-search-item" onClick={() => enqueueSong(s)}>
+                  <button key={ownedEntityKey(s)} className="mobile-search-item" onClick={() => enqueueSong(s)}>
                     {s.albumId && (s.coverArt ?? s.albumId) ? (
                       <MobileSearchSongThumb song={s} />
                     ) : (
