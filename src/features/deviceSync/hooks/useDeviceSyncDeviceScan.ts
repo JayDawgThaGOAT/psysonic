@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listDeviceDirFiles } from '@/lib/api/syncfs';
 import type { TFunction } from 'i18next';
-import { useDeviceSyncStore, type DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
+import {
+  deviceSyncSourcesFromManifest,
+  useDeviceSyncStore,
+  type DeviceSyncManifest,
+} from '@/features/deviceSync/store/deviceSyncStore';
 import { showToast } from '@/lib/dom/toast';
 
 export interface DeviceSyncDeviceScanResult {
@@ -17,20 +21,33 @@ export function useDeviceSyncDeviceScan(
 ): DeviceSyncDeviceScanResult {
   const setDeviceFilePaths = useDeviceSyncStore.getState().setDeviceFilePaths;
   const setScanning        = useDeviceSyncStore.getState().setScanning;
+  const scanRequestRef = useRef(0);
 
   const scanDevice = useCallback(async () => {
+    const requestId = ++scanRequestRef.current;
     if (!targetDir || sourcesLength === 0) {
       setDeviceFilePaths([]);
+      setScanning(false);
       return;
     }
+    const requestTarget = targetDir;
     setScanning(true);
     try {
-      const files = await listDeviceDirFiles({ dir: targetDir });
-      setDeviceFilePaths(files);
+      const files = await listDeviceDirFiles({ dir: requestTarget });
+      if (
+        scanRequestRef.current === requestId &&
+        useDeviceSyncStore.getState().targetDir === requestTarget
+      ) setDeviceFilePaths(files);
     } catch {
-      setDeviceFilePaths([]);
+      if (
+        scanRequestRef.current === requestId &&
+        useDeviceSyncStore.getState().targetDir === requestTarget
+      ) setDeviceFilePaths([]);
     } finally {
-      setScanning(false);
+      if (
+        scanRequestRef.current === requestId &&
+        useDeviceSyncStore.getState().targetDir === requestTarget
+      ) setScanning(false);
     }
   }, [targetDir, sourcesLength, setDeviceFilePaths, setScanning]);
 
@@ -38,17 +55,20 @@ export function useDeviceSyncDeviceScan(
   useEffect(() => { scanDevice(); }, [scanDevice]);
 
   // Auto-import manifest when page loads and drive is already connected
-  const manifestImportedRef = useRef(false);
+  const manifestImportedTargetRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!targetDir || !driveDetected || manifestImportedRef.current) return;
-    manifestImportedRef.current = true;
-    invoke<{ version: number; sources: DeviceSyncSource[] } | null>(
+    if (!targetDir || !driveDetected || manifestImportedTargetRef.current === targetDir) return;
+    const requestTarget = targetDir;
+    manifestImportedTargetRef.current = requestTarget;
+    invoke<DeviceSyncManifest | null>(
       'read_device_manifest', { destDir: targetDir }
     ).then(manifest => {
-      if (manifest?.sources?.length) {
+      if (useDeviceSyncStore.getState().targetDir !== requestTarget) return;
+      const manifestSources = deviceSyncSourcesFromManifest(manifest);
+      if (manifestSources.length > 0) {
         useDeviceSyncStore.getState().clearSources();
-        manifest.sources.forEach(s => useDeviceSyncStore.getState().addSource(s));
-        showToast(t('deviceSync.manifestImported', { count: manifest.sources.length }), 4000, 'info');
+        manifestSources.forEach(s => useDeviceSyncStore.getState().addSource(s));
+        showToast(t('deviceSync.manifestImported', { count: manifestSources.length }), 4000, 'info');
       }
     }).catch(() => {});
   }, [targetDir, driveDetected, t]);
@@ -57,7 +77,7 @@ export function useDeviceSyncDeviceScan(
   useEffect(() => {
     if (!driveDetected) {
       setDeviceFilePaths([]);
-      manifestImportedRef.current = false;
+      manifestImportedTargetRef.current = null;
     }
   }, [driveDetected, setDeviceFilePaths]);
 

@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
-import { getPlaylists } from '@/lib/api/subsonicPlaylists';
-import { getArtists, getArtist } from '@/lib/api/subsonicArtists';
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
-import { search as searchSubsonic } from '@/lib/api/subsonicSearch';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getPlaylistsForServer } from '@/lib/api/subsonicPlaylists';
+import { getArtistsForServer, getArtistForServer } from '@/lib/api/subsonicArtists';
+import { getAlbumListForServer } from '@/lib/api/subsonicLibrary';
+import { searchForServer } from '@/lib/api/subsonicSearch';
 import type {
   SubsonicAlbum, SubsonicArtist, SubsonicPlaylist,
 } from '@/lib/api/subsonicTypes';
 import type { SourceTab } from '@/features/deviceSync/utils/deviceSyncHelpers';
+import { deviceSyncOwnerKey, useDeviceSyncStore } from '@/features/deviceSync/store/deviceSyncStore';
+import { resolveStorageServerIndexKey } from '@/lib/server/serverIndexKey';
+import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
+import { useAuthStore } from '@/store/authStore';
 
 export interface DeviceSyncBrowserResult {
+  serverIndexKey: string | null;
   playlists: SubsonicPlaylist[];
   randomAlbums: SubsonicAlbum[];
   albumSearchResults: SubsonicAlbum[];
@@ -26,41 +31,76 @@ export function useDeviceSyncBrowser(
   search: string,
   resetSearch: () => void,
 ): DeviceSyncBrowserResult {
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const sources = useDeviceSyncStore(s => s.sources);
+  const configuredOwner = deviceSyncOwnerKey(sources);
+  const serverIndexKey = configuredOwner ?? (
+    activeServerId ? resolveStorageServerIndexKey(activeServerId) : null
+  );
+  const serverId = serverIndexKey ? resolveServerIdForIndexKey(serverIndexKey) : null;
+  const serverIdRef = useRef(serverId);
+  useEffect(() => {
+    serverIdRef.current = serverId;
+  }, [serverId]);
+
   const [playlists, setPlaylists]           = useState<SubsonicPlaylist[]>([]);
+  const [playlistsServerId, setPlaylistsServerId] = useState<string | null>(null);
   const [randomAlbums, setRandomAlbums]     = useState<SubsonicAlbum[]>([]);
+  const [randomAlbumsServerId, setRandomAlbumsServerId] = useState<string | null>(null);
   const [albumSearchResults, setAlbumSearchResults] = useState<SubsonicAlbum[]>([]);
+  const [albumSearchServerId, setAlbumSearchServerId] = useState<string | null>(null);
   const [albumSearchLoading, setAlbumSearchLoading] = useState(false);
   const [artists, setArtists]               = useState<SubsonicArtist[]>([]);
+  const [artistsServerId, setArtistsServerId] = useState<string | null>(null);
   const [loadingBrowser, setLoadingBrowser] = useState(false);
   const [expandedArtistIds, setExpandedArtistIds] = useState<Set<string>>(new Set());
   const [artistAlbumsMap, setArtistAlbumsMap]     = useState<Map<string, SubsonicAlbum[]>>(new Map());
+  const [artistAlbumsServerId, setArtistAlbumsServerId] = useState<string | null>(null);
   const [loadingArtistIds, setLoadingArtistIds]   = useState<Set<string>>(new Set());
+  const [loadingArtistsServerId, setLoadingArtistsServerId] = useState<string | null>(null);
 
   const loadPlaylists = useCallback(async () => {
     setLoadingBrowser(true);
-    try { setPlaylists(await getPlaylists()); } catch { /* ignore */ }
-    finally { setLoadingBrowser(false); }
-  }, []);
+    try {
+      const result = serverId ? await getPlaylistsForServer(serverId) : [];
+      if (serverIdRef.current === serverId) {
+        setPlaylists(result);
+        setPlaylistsServerId(serverId);
+      }
+    } catch { /* ignore */ }
+    finally { if (serverIdRef.current === serverId) setLoadingBrowser(false); }
+  }, [serverId]);
   const loadRandomAlbums = useCallback(async () => {
     setLoadingBrowser(true);
-    try { setRandomAlbums(await getAlbumList('random', 10)); } catch { /* ignore */ }
-    finally { setLoadingBrowser(false); }
-  }, []);
+    try {
+      const result = serverId ? await getAlbumListForServer(serverId, 'random', 10) : [];
+      if (serverIdRef.current === serverId) {
+        setRandomAlbums(result);
+        setRandomAlbumsServerId(serverId);
+      }
+    } catch { /* ignore */ }
+    finally { if (serverIdRef.current === serverId) setLoadingBrowser(false); }
+  }, [serverId]);
   const loadArtists = useCallback(async () => {
     setLoadingBrowser(true);
-    try { setArtists(await getArtists()); } catch { /* ignore */ }
-    finally { setLoadingBrowser(false); }
-  }, []);
+    try {
+      const result = serverId ? await getArtistsForServer(serverId) : [];
+      if (serverIdRef.current === serverId) {
+        setArtists(result);
+        setArtistsServerId(serverId);
+      }
+    } catch { /* ignore */ }
+    finally { if (serverIdRef.current === serverId) setLoadingBrowser(false); }
+  }, [serverId]);
 
   useEffect(() => {
     resetSearch();
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (activeTab === 'playlists' && playlists.length === 0) loadPlaylists();
-    if (activeTab === 'albums'    && randomAlbums.length === 0) loadRandomAlbums();
-    if (activeTab === 'artists'   && artists.length === 0)   loadArtists();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+    if (activeTab === 'playlists') void loadPlaylists();
+    if (activeTab === 'albums') void loadRandomAlbums();
+    if (activeTab === 'artists') void loadArtists();
+  }, [activeTab, loadArtists, loadPlaylists, loadRandomAlbums, resetSearch]);
 
   // Live album search with 300ms debounce
   useEffect(() => {
@@ -70,41 +110,68 @@ export function useDeviceSyncBrowser(
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!q) { setAlbumSearchResults([]); return; }
     setAlbumSearchLoading(true);
+    const requestServerId = serverId;
     const timer = setTimeout(async () => {
       try {
-        const { albums } = await searchSubsonic(q, { albumCount: 20, artistCount: 0, songCount: 0 });
-        setAlbumSearchResults(albums);
+        const { albums } = requestServerId
+          ? await searchForServer(requestServerId, q, { albumCount: 20, artistCount: 0, songCount: 0 })
+          : { albums: [] };
+        if (serverIdRef.current === requestServerId) {
+          setAlbumSearchResults(albums);
+          setAlbumSearchServerId(requestServerId);
+        }
       } catch {
-        setAlbumSearchResults([]);
+        if (serverIdRef.current === requestServerId) {
+          setAlbumSearchResults([]);
+          setAlbumSearchServerId(requestServerId);
+        }
       } finally {
-        setAlbumSearchLoading(false);
+        if (serverIdRef.current === requestServerId) setAlbumSearchLoading(false);
       }
     }, 300);
     return () => { clearTimeout(timer); setAlbumSearchLoading(false); };
-  }, [search, activeTab]);
+  }, [search, activeTab, serverId]);
 
   const toggleArtistExpand = useCallback(async (artistId: string) => {
     setExpandedArtistIds(prev => {
-      const next = new Set(prev);
+      const next = artistAlbumsServerId === serverId ? new Set(prev) : new Set<string>();
       if (next.has(artistId)) { next.delete(artistId); return next; }
       next.add(artistId);
       return next;
     });
-    if (!artistAlbumsMap.has(artistId)) {
+    if (artistAlbumsServerId !== serverId || !artistAlbumsMap.has(artistId)) {
       setLoadingArtistIds(prev => new Set(prev).add(artistId));
+      setLoadingArtistsServerId(serverId);
+      const requestServerId = serverId;
       try {
-        const { albums } = await getArtist(artistId);
-        setArtistAlbumsMap(prev => new Map(prev).set(artistId, albums));
+        const { albums } = requestServerId
+          ? await getArtistForServer(requestServerId, artistId)
+          : { albums: [] };
+        if (serverIdRef.current === requestServerId) {
+          setArtistAlbumsMap(prev => new Map(
+            artistAlbumsServerId === requestServerId ? prev : [],
+          ).set(artistId, albums));
+          setArtistAlbumsServerId(requestServerId);
+        }
       } finally {
-        setLoadingArtistIds(prev => { const n = new Set(prev); n.delete(artistId); return n; });
+        if (serverIdRef.current === requestServerId) {
+          setLoadingArtistIds(prev => { const n = new Set(prev); n.delete(artistId); return n; });
+        }
       }
     }
-  }, [artistAlbumsMap]);
+  }, [artistAlbumsMap, artistAlbumsServerId, serverId]);
 
   return {
-    playlists, randomAlbums, albumSearchResults, albumSearchLoading,
-    artists, loadingBrowser,
-    expandedArtistIds, artistAlbumsMap, loadingArtistIds,
+    serverIndexKey,
+    playlists: playlistsServerId === serverId ? playlists : [],
+    randomAlbums: randomAlbumsServerId === serverId ? randomAlbums : [],
+    albumSearchResults: albumSearchServerId === serverId ? albumSearchResults : [],
+    albumSearchLoading,
+    artists: artistsServerId === serverId ? artists : [],
+    loadingBrowser,
+    expandedArtistIds: artistAlbumsServerId === serverId ? expandedArtistIds : new Set<string>(),
+    artistAlbumsMap: artistAlbumsServerId === serverId ? artistAlbumsMap : new Map<string, SubsonicAlbum[]>(),
+    loadingArtistIds: loadingArtistsServerId === serverId ? loadingArtistIds : new Set<string>(),
     toggleArtistExpand,
   };
 }

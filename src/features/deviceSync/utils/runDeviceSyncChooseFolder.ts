@@ -1,7 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { TFunction } from 'i18next';
-import { useDeviceSyncStore, type DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
+import {
+  deviceSyncSourcesFromManifest,
+  useDeviceSyncStore,
+  type DeviceSyncManifest,
+} from '@/features/deviceSync/store/deviceSyncStore';
 import { showToast } from '@/lib/dom/toast';
 
 export interface RunDeviceSyncChooseFolderDeps {
@@ -20,13 +24,15 @@ export async function runDeviceSyncChooseFolder(deps: RunDeviceSyncChooseFolderD
   // If the device has a psysonic-sync.json, always import it — replacing any
   // sources from a previous device so switching sticks works correctly.
   try {
-    const manifest = await invoke<{ version: number; sources: DeviceSyncSource[] } | null>(
+    const manifest = await invoke<DeviceSyncManifest | null>(
       'read_device_manifest', { destDir: dir }
     );
-    if (manifest?.sources?.length) {
+    if (useDeviceSyncStore.getState().targetDir !== dir) return;
+    const manifestSources = deviceSyncSourcesFromManifest(manifest);
+    if (manifestSources.length > 0) {
       useDeviceSyncStore.getState().clearSources();
-      manifest.sources.forEach(s => useDeviceSyncStore.getState().addSource(s));
-      showToast(t('deviceSync.manifestImported', { count: manifest.sources.length }), 4000, 'info');
+      manifestSources.forEach(s => useDeviceSyncStore.getState().addSource(s));
+      showToast(t('deviceSync.manifestImported', { count: manifestSources.length }), 4000, 'info');
     }
   } catch { /* no manifest, that's fine */ }
   // Trigger a device scan after folder change

@@ -306,7 +306,7 @@ export const commands = {
 	 *  Emits throttled `device:sync:progress` events (max once per 500ms) and a
 	 *  final `device:sync:complete` event with the summary.
 	 */
-	syncBatchToDevice: (tracks: TrackSyncInfo[], destDir: string, jobId: string, expectedBytes: number) => typedError<SyncBatchResult, string>(__TAURI_INVOKE("sync_batch_to_device", { tracks, destDir, jobId, expectedBytes })),
+	syncBatchToDevice: (tracks: TrackSyncInfo[], destDir: string, jobId: string, expectedBytes: number, serverId: string | null) => typedError<SyncBatchResult, string>(__TAURI_INVOKE("sync_batch_to_device", { tracks, destDir, jobId, expectedBytes, serverId })),
 	/**  Signals a running `sync_batch_to_device` job to stop after its current tracks finish. */
 	cancelDeviceSync: (jobId: string) => __TAURI_INVOKE<void>("cancel_device_sync", { jobId }),
 	/**

@@ -5,6 +5,7 @@ import { useLocalPlaybackStore } from '../../store/localPlaybackStore';
 import { useLibraryIndexStore } from '../../store/libraryIndexStore';
 import { useOfflineStore } from '@/features/offline';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { useDeviceSyncStore } from '@/features/deviceSync';
 import { serverIndexKeyFromUrl } from '@/lib/server/serverIndexKey';
 
 /**
@@ -92,12 +93,35 @@ function rewriteAnalysisStrategyStoreKeys(mappings: Mapping[]): void {
   });
 }
 
+function rewriteDeviceSyncStoreKeys(mappings: Mapping[]): void {
+  const map = new Map(mappings.map(mapping => [mapping.legacyId, mapping.indexKey]));
+  const remapSourceKey = (key: string): string => {
+    try {
+      const parsed = JSON.parse(key) as unknown;
+      if (!Array.isArray(parsed) || parsed.length !== 3 || typeof parsed[0] !== 'string') return key;
+      const serverIndexKey = map.get(parsed[0]);
+      return serverIndexKey ? JSON.stringify([serverIndexKey, parsed[1], parsed[2]]) : key;
+    } catch {
+      return key;
+    }
+  };
+  useDeviceSyncStore.setState(state => ({
+    sources: state.sources.map(source => {
+      const serverIndexKey = map.get(source.serverIndexKey);
+      return serverIndexKey ? { ...source, serverIndexKey } : source;
+    }),
+    checkedIds: state.checkedIds.map(remapSourceKey),
+    pendingDeletion: state.pendingDeletion.map(remapSourceKey),
+  }));
+}
+
 export async function rewriteFrontendStoreKeys(servers: ServerProfile[]): Promise<void> {
   const mappings = buildMappings(servers);
   if (mappings.length === 0) return;
   rewriteOfflineStoreKeys(mappings);
   rewriteLocalPlaybackStoreKeys(mappings);
   rewriteAnalysisStrategyStoreKeys(mappings);
+  rewriteDeviceSyncStoreKeys(mappings);
   // Keep migration explicit: Zustand persist writes the current state snapshot.
   useAnalysisStrategyStore.getState().migrateServerOverrides(servers);
   useCoverStrategyStore.getState().migrateServerOverrides(servers);
@@ -125,6 +149,7 @@ export async function rewriteFrontendStoreKeysForRemap(
   rewriteOfflineStoreKeys(mappings);
   rewriteLocalPlaybackStoreKeys(mappings);
   rewriteAnalysisStrategyStoreKeys(mappings);
+  rewriteDeviceSyncStoreKeys(mappings);
 
   // Player queue: queueServerId + per-item refs may carry remapped index keys.
   const queueRemap = new Map(mappings.map(m => [m.legacyId, m.indexKey]));

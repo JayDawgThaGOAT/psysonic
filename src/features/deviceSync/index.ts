@@ -7,4 +7,5 @@
  * audio-core EQ-per-output-device profile sync, kept in the audio core.
  */
 export { useDeviceSyncJobStore } from './store/deviceSyncJobStore';
+export { deviceSyncSourceKey, useDeviceSyncStore } from './store/deviceSyncStore';
 export type { DeviceSyncSource } from './store/deviceSyncStore';

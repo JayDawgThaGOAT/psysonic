@@ -42,13 +42,31 @@ pub fn get_removable_drives() -> Vec<RemovableDrive> {
 /// The file records which sources (albums/playlists/artists) are synced to this
 /// device so that another machine can pick them up without relying on localStorage.
 #[tauri::command]
-pub fn write_device_manifest(dest_dir: String, sources: serde_json::Value) -> Result<(), String> {
+pub fn write_device_manifest(
+    dest_dir: String,
+    owner_server_index_key: String,
+    sources: serde_json::Value,
+) -> Result<(), String> {
+    if owner_server_index_key.trim().is_empty() {
+        return Err("DEVICE_SYNC_SERVER_OWNER_MISSING".to_string());
+    }
+    let source_list = sources
+        .as_array()
+        .ok_or_else(|| "DEVICE_SYNC_SOURCES_INVALID".to_string())?;
+    if source_list.iter().any(|source| {
+        source
+            .get("serverIndexKey")
+            .and_then(|value| value.as_str())
+            != Some(owner_server_index_key.as_str())
+    }) {
+        return Err("DEVICE_SYNC_SERVER_OWNER_MISMATCH".to_string());
+    }
     let path = std::path::Path::new(&dest_dir).join("psysonic-sync.json");
-    // Manifest v2: fixed "{AlbumArtist}/{Album}/{TrackNum} - {Title}.{ext}" schema,
-    // no user-configurable filename template. Readers still accept v1 manifests.
+    // Manifest v3 pins raw Subsonic IDs to one durable URL-derived server owner.
     let payload = serde_json::json!({
-        "version": 2,
+        "version": 3,
         "schema": "fixed-v1",
+        "ownerServerIndexKey": owner_server_index_key,
         "sources": sources
     });
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
@@ -427,6 +445,47 @@ pub fn compute_sync_paths(tracks: Vec<TrackSyncInfo>, dest_dir: String) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_v3_persists_the_server_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = "server.test";
+        let sources = serde_json::json!([{
+            "type": "album",
+            "id": "album-1",
+            "name": "Album",
+            "serverIndexKey": owner,
+        }]);
+
+        write_device_manifest(
+            dir.path().to_string_lossy().to_string(),
+            owner.to_string(),
+            sources.clone(),
+        )
+        .unwrap();
+
+        let manifest = read_device_manifest(dir.path().to_string_lossy().to_string()).unwrap();
+        assert_eq!(manifest["version"], 3);
+        assert_eq!(manifest["ownerServerIndexKey"], owner);
+        assert_eq!(manifest["sources"], sources);
+    }
+
+    #[test]
+    fn manifest_rejects_sources_from_another_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = write_device_manifest(
+            dir.path().to_string_lossy().to_string(),
+            "server-a.test".to_string(),
+            serde_json::json!([{
+                "type": "album",
+                "id": "album-1",
+                "name": "Album",
+                "serverIndexKey": "server-b.test",
+            }]),
+        );
+
+        assert_eq!(result, Err("DEVICE_SYNC_SERVER_OWNER_MISMATCH".to_string()));
+    }
 
     fn track(builder: impl FnOnce(&mut TrackSyncInfo)) -> TrackSyncInfo {
         let mut t = TrackSyncInfo {

@@ -45,8 +45,15 @@ export async function syncBatchToDevice(args: {
   destDir: string;
   jobId: string;
   expectedBytes: number;
+  serverId: string;
 }): Promise<SyncBatchResult> {
-  const res = await commands.syncBatchToDevice(args.tracks, args.destDir, args.jobId, args.expectedBytes);
+  const res = await commands.syncBatchToDevice(
+    args.tracks,
+    args.destDir,
+    args.jobId,
+    args.expectedBytes,
+    args.serverId,
+  );
   if (res.status === 'error') throw new Error(res.error);
   return res.data;
 }

@@ -43,9 +43,14 @@ export function useDeviceSyncJobEvents(
             5000, 'info'
           );
           // Write manifest so another machine can read the synced sources from the stick
-          const { targetDir: dir, sources: srcs } = useDeviceSyncStore.getState();
-          if (dir) {
-            invoke('write_device_manifest', { destDir: dir, sources: srcs }).catch(() => {});
+          const context = current.context;
+          if (context) {
+            const { targetDir: dir, sources: srcs, serverIndexKey } = context;
+            invoke('write_device_manifest', {
+              destDir: dir,
+              ownerServerIndexKey: serverIndexKey,
+              sources: srcs,
+            }).catch(() => {});
             // For every playlist source, write an Extended-M3U next to the
             // playlist-folder tracks. Context carries the playlist name +
             // per-track index so the filenames match the files we just synced.
@@ -63,7 +68,9 @@ export function useDeviceSyncJobEvents(
           }
         }
         // Re-scan the device after sync completes (cancelled or not)
-        scanDevice();
+        if (useDeviceSyncStore.getState().targetDir === current.context?.targetDir) {
+          scanDevice();
+        }
       }
     });
 

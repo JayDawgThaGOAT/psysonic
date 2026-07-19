@@ -4,6 +4,7 @@ import { useCoverStrategyStore } from '../../store/coverStrategyStore';
 import { useLocalPlaybackStore } from '../../store/localPlaybackStore';
 import { useOfflineStore } from '@/features/offline';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { deviceSyncSourceKey, useDeviceSyncStore } from '@/features/deviceSync';
 import { rewriteFrontendStoreKeysForRemap } from './rewriteFrontendStoreKeys';
 
 describe('rewriteFrontendStoreKeysForRemap', () => {
@@ -16,6 +17,7 @@ describe('rewriteFrontendStoreKeysForRemap', () => {
     });
     useCoverStrategyStore.setState({ strategyByServer: {} });
     usePlayerStore.setState({ queueServerId: null });
+    useDeviceSyncStore.setState({ sources: [], checkedIds: [], pendingDeletion: [] });
   });
 
   it('no-ops on empty remap list', async () => {
@@ -130,6 +132,24 @@ describe('rewriteFrontendStoreKeysForRemap', () => {
     expect(s.queueServerId).toBe('new');
     expect(s.queueItems[0]).toEqual({ serverId: 'new', trackId: 't1' });
     expect(s.queueItems[1]).toEqual({ serverId: 'other', trackId: 't2' });
+  });
+
+  it('repoints device-sync sources and staged composite identities', async () => {
+    const source = { type: 'album' as const, id: 'album-1', name: 'Album', serverIndexKey: 'old' };
+    const oldSourceKey = deviceSyncSourceKey(source);
+    useDeviceSyncStore.setState({
+      sources: [source],
+      checkedIds: [oldSourceKey],
+      pendingDeletion: [oldSourceKey],
+    });
+
+    await rewriteFrontendStoreKeysForRemap([{ oldKey: 'old', newKey: 'new' }]);
+
+    const state = useDeviceSyncStore.getState();
+    const newSourceKey = deviceSyncSourceKey({ ...source, serverIndexKey: 'new' });
+    expect(state.sources[0]?.serverIndexKey).toBe('new');
+    expect(state.checkedIds).toEqual([newSourceKey]);
+    expect(state.pendingDeletion).toEqual([newSourceKey]);
   });
 
   it('leaves queueServerId untouched when it is bound to a different server', async () => {
