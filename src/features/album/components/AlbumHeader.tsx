@@ -1,7 +1,7 @@
 import type { EntityRatingSupportLevel, SubsonicItemGenre, SubsonicOpenArtistRef, SubsonicSong } from '@/lib/api/subsonicTypes';
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Play, Heart, X, ChevronLeft, Download, ListPlus, HardDriveDownload, Share2, Highlighter, Loader2, Shuffle } from 'lucide-react';
 import { CoverArtImage } from '@/cover/CoverArtImage';
 import { useCoverLightboxSrc } from '@/cover/lightbox';
@@ -23,6 +23,9 @@ import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offlin
 import { deriveAlbumGenreTags } from '@/lib/library/genreTags';
 import { genreColor } from '@/lib/library/genreColor';
 import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import EntitySourcePicker from '@/ui/EntitySourcePicker';
+import type { LibraryScopePair } from '@/lib/api/library';
+import type { MusicFolder, ServerProfile } from '@/store/authStoreTypes';
 
 /** True when the album artist label means "no single artist" — `getArtistInfo`
  *  has nothing meaningful to return for these, so the Artist Bio entry is hidden.
@@ -177,6 +180,9 @@ interface AlbumHeaderProps {
   entityRatingSupport: EntityRatingSupportLevel | 'unknown';
   /** Offline browse action gates (favorites, download, cache, bio, ratings). */
   actionPolicy?: OfflineActionPolicy;
+  sourceScopes?: LibraryScopePair[];
+  sourceServers?: ServerProfile[];
+  sourceMusicFoldersByServer?: Record<string, MusicFolder[]>;
 }
 
 export default function AlbumHeader({
@@ -205,10 +211,14 @@ export default function AlbumHeader({
   onEntityRatingChange,
   entityRatingSupport,
   actionPolicy,
+  sourceScopes = [],
+  sourceServers = [],
+  sourceMusicFoldersByServer = {},
 }: AlbumHeaderProps) {
   const policy = actionPolicy ?? offlineActionPolicy('albumDetail', false);
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const goBack = useAlbumDetailBack();
   const isMobile = useIsMobile();
   const enableCoverArtBackground = useThemeStore(s => s.enableCoverArtBackground);
@@ -361,6 +371,20 @@ export default function AlbumHeader({
                   </>
                 )}
               </div>
+              {serverId && (
+                <EntitySourcePicker
+                  entityType="album"
+                  anchorServerId={serverId}
+                  anchorId={info.id}
+                  scopes={sourceScopes}
+                  servers={sourceServers}
+                  musicFoldersByServer={sourceMusicFoldersByServer}
+                  onSelect={source => navigate(buildAlbumDetailPath(source.id, {
+                    serverId: source.serverId,
+                    search: location.search,
+                  }))}
+                />
+              )}
               <div className="album-detail-entity-rating">
                 <span className="album-detail-entity-rating-label">{t('entityRating.albumShort')}</span>
                 <StarRating

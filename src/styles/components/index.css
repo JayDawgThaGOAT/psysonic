@@ -22,6 +22,7 @@
 @import './ui-modal.css';
 @import './playback-delay-sleep-delayed-start-modal.css';
 @import './playback-alternative-modal.css';
+@import './entity-source-picker.css';
 @import './lucky-mix-pips-shared-by-the-inline-queue-lucky-cube-indicator.css';
 @import './playback-buffering-overlay.css';
 @import './playlist-edit-modal.css';

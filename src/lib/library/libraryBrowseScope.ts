@@ -127,6 +127,16 @@ export function deriveLibraryBrowseScope(
   };
 }
 
+/** Configured scope for entity-source resolution, with the concrete anchor as a defensive fallback. */
+export function deriveEntitySourceScopes(
+  state: LibraryBrowseScopeSource,
+  anchorServerId: string,
+): LibraryBrowseScopePair[] {
+  const configured = deriveLibraryBrowseScope(state, new Set()).pairs;
+  if (configured.length > 0) return configured;
+  return anchorServerId ? [{ serverId: anchorServerId, libraryId: null }] : [];
+}
+
 export function getLibraryBrowseScope(): LibraryBrowseScope {
   return deriveLibraryBrowseScope(readLibraryBrowseScopeSource());
 }

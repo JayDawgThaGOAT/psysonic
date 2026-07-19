@@ -3,7 +3,7 @@ import type { LibraryEntitySourceDto } from '@/lib/api/library';
 import { libraryResolveEntitySources } from '@/lib/api/library';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 import { useAuthStore } from '@/store/authStore';
-import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { deriveEntitySourceScopes } from '@/lib/library/libraryBrowseScope';
 import { sameQueueItemRef } from '@/features/playback/utils/playback/queueIdentity';
 
 export interface PlaybackSourceFailure {
@@ -70,10 +70,7 @@ export function reportPlaybackSourceFailure(args: {
   });
 
   const auth = useAuthStore.getState();
-  const configuredScope = deriveLibraryBrowseScope(auth, new Set()).pairs;
-  const scopes = configuredScope.length > 0
-    ? configuredScope
-    : [{ serverId: expectedRef.serverId, libraryId: null }];
+  const scopes = deriveEntitySourceScopes(auth, expectedRef.serverId);
 
   void libraryResolveEntitySources(expectedRef.serverId, {
     entityType: 'track',

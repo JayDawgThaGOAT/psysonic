@@ -40,6 +40,7 @@ import { LOSSLESS_MODE_QUERY } from '@/lib/library/losslessMode';
 import { sortArtistAlbumsByYear } from '@/features/artist/utils/sortArtistAlbums';
 import { readDetailServerId } from '@/lib/navigation/detailServerScope';
 import { coverServerScopeForServerId } from '@/cover/serverScope';
+import { deriveEntitySourceScopes } from '@/lib/library/libraryBrowseScope';
 
 
 export default function ArtistDetail() {
@@ -50,11 +51,30 @@ export default function ArtistDetail() {
   const losslessOnly = searchParams.get('lossless') === '1';
   const authActiveServerId = useAuthStore(s => s.activeServerId);
   const activeServerId = readDetailServerId(searchParams, authActiveServerId) ?? '';
+  const sourceServers = useAuthStore(s => s.servers);
+  const sourceBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const sourceSelections = useAuthStore(s => s.libraryBrowseSelectionByServer);
+  const sourceMusicFoldersByServer = useAuthStore(s => s.musicFoldersByServer);
   const {
     artist, setArtist, albums, topSongs, info, featuredAlbums,
     loading, topSongsLoading, artistInfoLoading, featuredLoading,
     isStarred, setIsStarred,
   } = useArtistDetailData(id, { losslessOnly });
+  const artistOwnerServerId = artist?.serverId ?? activeServerId;
+  const entitySourceScopes = useMemo(() => deriveEntitySourceScopes({
+    servers: sourceServers,
+    activeServerId: authActiveServerId,
+    libraryBrowseServerIds: sourceBrowseServerIds,
+    musicFoldersByServer: sourceMusicFoldersByServer,
+    libraryBrowseSelectionByServer: sourceSelections,
+  }, artistOwnerServerId), [
+    artistOwnerServerId,
+    authActiveServerId,
+    sourceBrowseServerIds,
+    sourceMusicFoldersByServer,
+    sourceSelections,
+    sourceServers,
+  ]);
   const [radioLoading, setRadioLoading] = useState(false);
   const [playAllLoading, setPlayAllLoading] = useState(false);
   const [openedLink, setOpenedLink] = useState<string | null>(null);
@@ -296,6 +316,9 @@ export default function ArtistDetail() {
         setHeaderCoverFailed={setHeaderCoverFailed}
         actionPolicy={artistActionPolicy}
         serverId={activeServerId}
+        sourceScopes={entitySourceScopes}
+        sourceServers={sourceServers}
+        sourceMusicFoldersByServer={sourceMusicFoldersByServer}
       />
 
       {losslessOnly && <LosslessModeBanner />}

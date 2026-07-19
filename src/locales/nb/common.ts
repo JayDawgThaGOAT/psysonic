@@ -57,5 +57,10 @@ export const common = {
   more: 'mer',
   yearRange: 'Årsspenn',
   clearAll: 'Tøm alt',
+  availableSources_one: 'Tilgjengelig fra {{count}} kilde',
+  availableSources_other: 'Tilgjengelig fra {{count}} kilder',
+  chooseSource: 'Velg en kilde',
+  currentSource: 'Gjeldende kilde',
+  openFromServer: 'Åpne fra serveren',
   libraryEmpty: 'Biblioteket ditt er tomt.',
 };

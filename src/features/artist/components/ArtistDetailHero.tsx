@@ -23,6 +23,11 @@ import WikipediaIcon from '@/ui/WikipediaIcon';
 import StarRating from '@/ui/StarRating';
 import { tooltipAttrs } from '@/ui/tooltipAttrs';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
+import EntitySourcePicker from '@/ui/EntitySourcePicker';
+import type { LibraryScopePair } from '@/lib/api/library';
+import type { MusicFolder, ServerProfile } from '@/store/authStoreTypes';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   artist: SubsonicArtist;
@@ -50,6 +55,9 @@ interface Props {
   setHeaderCoverFailed: React.Dispatch<React.SetStateAction<boolean>>;
   actionPolicy?: OfflineActionPolicy;
   serverId: string;
+  sourceScopes?: LibraryScopePair[];
+  sourceServers?: ServerProfile[];
+  sourceMusicFoldersByServer?: Record<string, MusicFolder[]>;
 }
 
 /**
@@ -105,12 +113,14 @@ export default function ArtistDetailHero({
   handleImageUpload, playAllLoading, radioLoading, uploading,
   openedLink, openLink,
   coverId, coverRef, coverRevision, headerCoverFailed, setHeaderCoverFailed,
-  actionPolicy, serverId,
+  actionPolicy, serverId, sourceScopes = [], sourceServers = [], sourceMusicFoldersByServer = {},
 }: Props) {
   const policy = actionPolicy ?? offlineActionPolicy('artistDetail', false);
   const { t } = useTranslation();
   const goBack = useAlbumDetailBack();
   const isMobile = useIsMobile();
+  const navigate = useNavigate();
+  const location = useLocation();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const downloadArtist = useOfflineStore(s => s.downloadArtist);
   const artistAlbumIds = useMemo(() => albums.map(a => a.id), [albums]);
@@ -232,6 +242,19 @@ export default function ArtistDetailHero({
           <div style={{ color: 'var(--text-secondary)', fontSize: '1rem', marginBottom: '1rem' }}>
             {t('artistDetail.albumCount_other', { count: artist.albumCount ?? 0 })}
           </div>
+
+          <EntitySourcePicker
+            entityType="artist"
+            anchorServerId={artist.serverId ?? serverId}
+            anchorId={artist.id}
+            scopes={sourceScopes}
+            servers={sourceServers}
+            musicFoldersByServer={sourceMusicFoldersByServer}
+            onSelect={source => navigate(buildArtistDetailPath(source.id, {
+              serverId: source.serverId,
+              search: location.search,
+            }))}
+          />
 
           <div className="artist-detail-entity-rating">
             <span className="artist-detail-entity-rating-label">{t('entityRating.artistShort')}</span>

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { useAuthStore } from '@/store/authStore';
 import { resetAuthStore } from '@/test/helpers/storeReset';
 import {
+  deriveEntitySourceScopes,
   deriveEffectiveLibraryBrowseServerIds,
   deriveLibraryBrowseIndexScopes,
   deriveLibraryBrowseScope,
@@ -131,5 +132,30 @@ describe('getLibraryBrowseScope', () => {
       ...state,
       libraryBrowseSelectionByServer: { active: ['one'] },
     }).fingerprint).toBe(JSON.stringify([['active', ['one']]]));
+  });
+
+  it('uses configured source membership even when servers are unavailable', () => {
+    const state = {
+      servers: [{ id: 'primary' }, { id: 'offline' }],
+      activeServerId: 'primary',
+      libraryBrowseServerIds: ['primary', 'offline'],
+      musicFoldersByServer: {},
+      libraryBrowseSelectionByServer: { primary: ['music'], offline: [] },
+    };
+
+    expect(deriveEntitySourceScopes(state, 'anchor')).toEqual([
+      { serverId: 'primary', libraryId: 'music' },
+      { serverId: 'offline', libraryId: null },
+    ]);
+  });
+
+  it('falls back to the concrete anchor when no configured pair exists', () => {
+    expect(deriveEntitySourceScopes({
+      servers: [{ id: 'active' }],
+      activeServerId: 'active',
+      libraryBrowseServerIds: [],
+      musicFoldersByServer: {},
+      libraryBrowseSelectionByServer: {},
+    }, 'owner')).toEqual([{ serverId: 'owner', libraryId: null }]);
   });
 });

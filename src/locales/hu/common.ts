@@ -67,5 +67,10 @@ export const common = {
   more: 'több',
   yearRange: 'Évtartomány',
   clearAll: 'Összes törlése',
+  availableSources_one: '{{count}} forrásból érhető el',
+  availableSources_other: '{{count}} forrásból érhető el',
+  chooseSource: 'Forrás kiválasztása',
+  currentSource: 'Jelenlegi forrás',
+  openFromServer: 'Megnyitás erről a szerverről',
   libraryEmpty: 'A könyvtárad üres.',
 };

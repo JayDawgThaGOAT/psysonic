@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import AlbumHeader from '@/features/album/components/AlbumHeader';
+import { libraryResolveEntitySources } from '@/lib/api/library';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 
 const navigate = vi.fn();
@@ -24,6 +25,13 @@ vi.mock('@/cover/CoverArtImage', () => ({ CoverArtImage: () => null }));
 vi.mock('@/lib/share/copyEntityShareLink', () => ({
   copyEntityShareLink: (...args: unknown[]) => copyEntityShareLink(...args),
 }));
+vi.mock('@/lib/api/library', () => ({
+  libraryResolveEntitySources: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(libraryResolveEntitySources).mockReset();
+});
 
 function baseProps() {
   return {
@@ -170,5 +178,47 @@ describe('AlbumHeader genres', () => {
 
     await user.click(screen.getByRole('button', { name: 'Share album' }));
     expect(copyEntityShareLink).toHaveBeenCalledWith('album', 'al1', { serverId: 'srv-b' });
+  });
+
+  it('opens a selected concrete source while preserving detail filters', async () => {
+    navigate.mockClear();
+    vi.mocked(libraryResolveEntitySources).mockResolvedValue([
+      {
+        serverId: 'srv-a', id: 'al1', libraryId: 'main', priority: 0,
+        durationSec: null, suffix: null, bitRate: null, sizeBytes: null,
+        starredAt: null, userRating: null,
+      },
+      {
+        serverId: 'srv-b', id: 'al2', libraryId: 'archive', priority: 1,
+        durationSec: null, suffix: null, bitRate: null, sizeBytes: null,
+        starredAt: null, userRating: null,
+      },
+    ]);
+    const user = userEvent.setup();
+    renderWithProviders(
+      <AlbumHeader
+        {...baseProps()}
+        info={albumInfo()}
+        serverId="srv-a"
+        sourceScopes={[
+          { serverId: 'srv-a', libraryId: 'main' },
+          { serverId: 'srv-b', libraryId: 'archive' },
+        ]}
+        sourceServers={[
+          { id: 'srv-a', name: 'Primary', url: 'https://a.test', username: 'a', password: 'p' },
+          { id: 'srv-b', name: 'Archive', url: 'https://b.test', username: 'b', password: 'p' },
+        ]}
+        sourceMusicFoldersByServer={{
+          'srv-a': [{ id: 'main', name: 'Main' }],
+          'srv-b': [{ id: 'archive', name: 'Archive' }],
+        }}
+      />,
+      { route: '/album/al1?server=srv-a&lossless=1' },
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Available from 2 sources' }));
+    await user.click(screen.getByRole('menuitem', { name: /Archive · Archive.*Open from server/ }));
+
+    expect(navigate).toHaveBeenCalledWith('/album/al2?server=srv-b&lossless=1');
   });
 });

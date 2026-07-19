@@ -53,6 +53,7 @@ import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineActionPolicy } from '@/features/offline';
 import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 import { sameQueueTrack } from '@/features/playback';
+import { deriveEntitySourceScopes } from '@/lib/library/libraryBrowseScope';
 
 export default function AlbumDetail() {
   const { t } = useTranslation();
@@ -85,6 +86,7 @@ export default function AlbumDetail() {
   const routeServerId = readDetailServerId(searchParams, auth.activeServerId) ?? '';
   const albumOwnerServerId = album?.album.serverId ?? routeServerId;
   const albumOwnerId = album?.album.id ?? '';
+  const entitySourceScopes = deriveEntitySourceScopes(auth, albumOwnerServerId);
   const entityRatingSupportByServer = useAuthStore(s => s.entityRatingSupportByServer);
   const setEntityRatingSupport = useAuthStore(s => s.setEntityRatingSupport);
   const albumEntityRatingSupport = entityRatingSupportByServer[albumOwnerServerId] ?? 'unknown';
@@ -464,6 +466,9 @@ const handleShuffleAll = () => {
       <AlbumHeader
         info={info}
         serverId={albumOwnerServerId}
+        sourceScopes={entitySourceScopes}
+        sourceServers={auth.servers}
+        sourceMusicFoldersByServer={auth.musicFoldersByServer}
         headerArtistRefs={headerArtistRefs}
         songs={songs}
         coverRef={albumCoverRefResolved}

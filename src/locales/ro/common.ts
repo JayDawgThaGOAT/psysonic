@@ -67,5 +67,10 @@ export const common = {
   more: 'mai mult',
   yearRange: 'Interval de an',
   clearAll: 'Golește tot',
+  availableSources_one: 'Disponibil din {{count}} sursă',
+  availableSources_other: 'Disponibil din {{count}} surse',
+  chooseSource: 'Alege o sursă',
+  currentSource: 'Sursa curentă',
+  openFromServer: 'Deschide de pe server',
   libraryEmpty: 'Biblioteca ta este goală.',
 };

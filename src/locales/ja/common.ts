@@ -67,5 +67,10 @@ export const common = {
   more: 'さらに',
   yearRange: '年の範囲',
   clearAll: 'すべてクリア',
+  availableSources_one: '{{count}} 件のソースで利用可能',
+  availableSources_other: '{{count}} 件のソースで利用可能',
+  chooseSource: 'ソースを選択',
+  currentSource: '現在のソース',
+  openFromServer: 'このサーバーから開く',
   libraryEmpty: 'ライブラリは空です。',
 };

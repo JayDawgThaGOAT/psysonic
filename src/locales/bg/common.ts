@@ -67,5 +67,10 @@ export const common = {
   more: 'още',
   yearRange: 'Диапазон на години',
   clearAll: 'Изчисти всички',
+  availableSources_one: 'Налично от {{count}} източник',
+  availableSources_other: 'Налично от {{count}} източника',
+  chooseSource: 'Изберете източник',
+  currentSource: 'Текущ източник',
+  openFromServer: 'Отвори от сървъра',
   libraryEmpty: 'Вашата библиотека е празна.',
 };
