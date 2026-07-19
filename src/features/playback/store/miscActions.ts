@@ -11,6 +11,7 @@ import {
 } from '@/features/playback/store/engineState';
 import { clearPreloadingIds } from '@/features/playback/store/gaplessPreloadState';
 import { reseedLoudnessForTrackId } from '@/features/playback/store/loudnessReseed';
+import { analysisTrackRefForTrack } from '@/features/playback/store/analysisTrackRef';
 import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackProgress';
 import { shouldRebindPlaybackToHotCache } from '@/features/playback/store/playbackUrlRouting';
 import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
@@ -167,7 +168,12 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
       } catch {
         // no-op
       }
-      await reseedLoudnessForTrackId(trackId);
+      const state = get();
+      const track = state.currentTrack?.id === trackId ? state.currentTrack : null;
+      if (!track) return;
+      await reseedLoudnessForTrackId(
+        analysisTrackRefForTrack(track, state.queueItems[state.queueIndex]),
+      );
     },
 
     reseedQueueForInstantMix: (track) => {

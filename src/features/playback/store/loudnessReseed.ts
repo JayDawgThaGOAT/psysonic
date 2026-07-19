@@ -1,11 +1,15 @@
-import { buildStreamUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildStreamUrl, buildStreamUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { commands } from '@/generated/bindings';
-import { getPlaybackIndexKey } from '@/features/playback/utils/playback/playbackServer';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { bumpWaveformRefreshGen } from '@/features/playback/store/waveformRefreshGen';
-import { clearLoudnessCacheStateForTrackId } from '@/features/playback/store/loudnessGainCache';
-import { resetLoudnessBackfillStateForTrackId } from '@/features/playback/store/loudnessBackfillState';
+import { clearLoudnessCacheState } from '@/features/playback/store/loudnessGainCache';
+import { resetLoudnessBackfillState } from '@/features/playback/store/loudnessBackfillState';
+import {
+  analysisTrackRefForTrack,
+  analysisTrackRefKey,
+  type AnalysisTrackRef,
+} from '@/features/playback/store/analysisTrackRef';
 
 /**
  * Tear down every cached piece of analysis for a track and re-enqueue a
@@ -28,22 +32,26 @@ import { resetLoudnessBackfillStateForTrackId } from '@/features/playback/store/
  *
  * Best-effort throughout — Rust errors are logged but never thrown.
  */
-export async function reseedLoudnessForTrackId(trackId: string): Promise<void> {
+export async function reseedLoudnessForTrackId(ref: AnalysisTrackRef): Promise<void> {
+  const { trackId, serverId } = ref;
   if (!trackId) return;
   const auth = useAuthStore.getState();
   if (auth.normalizationEngine !== 'loudness') return;
-  bumpWaveformRefreshGen(trackId);
-  if (usePlayerStore.getState().currentTrack?.id === trackId) {
+  bumpWaveformRefreshGen(ref);
+  const player = usePlayerStore.getState();
+  const currentRef = player.currentTrack
+    ? analysisTrackRefForTrack(player.currentTrack, player.queueItems[player.queueIndex])
+    : null;
+  if (currentRef && analysisTrackRefKey(currentRef) === analysisTrackRefKey(ref)) {
     usePlayerStore.setState({ waveformBins: null });
   }
-  clearLoudnessCacheStateForTrackId(trackId);
-  resetLoudnessBackfillStateForTrackId(trackId);
+  clearLoudnessCacheState(ref);
+  resetLoudnessBackfillState(ref);
   usePlayerStore.setState({
     normalizationNowDb: null,
     normalizationTargetLufs: auth.loudnessTargetLufs,
     normalizationEngineLive: 'loudness',
   });
-  const serverId = getPlaybackIndexKey() || null;
   try {
     const res = await commands.analysisDeleteWaveformForTrack(trackId, serverId);
     if (res.status === 'error') throw new Error(res.error);
@@ -57,7 +65,7 @@ export async function reseedLoudnessForTrackId(trackId: string): Promise<void> {
     console.error('[psysonic] analysis_delete_loudness_for_track failed:', e);
   }
   usePlayerStore.getState().updateReplayGainForCurrentTrack();
-  const url = buildStreamUrl(trackId);
+  const url = serverId ? buildStreamUrlForServer(serverId, trackId) : buildStreamUrl(trackId);
   try {
     const res = await commands.analysisEnqueueSeedFromUrl(trackId, url, true, serverId, null);
     if (res.status === 'error') throw new Error(res.error);

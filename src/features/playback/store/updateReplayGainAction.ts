@@ -11,6 +11,7 @@ import { deriveNormalizationSnapshot } from '@/features/playback/store/normaliza
 import { invokeAudioUpdateReplayGainDeduped } from '@/features/playback/store/normalizationIpcDedupe';
 import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
+import { analysisTrackRefForTrack } from '@/features/playback/store/analysisTrackRef';
 
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
@@ -53,9 +54,10 @@ export function runUpdateReplayGainForCurrentTrack(set: SetState, get: GetState)
   // Neighbour window for the normalization snapshot: prev, current, next.
   const normWindow = [prev ?? currentTrack, currentTrack, ...(next ? [next] : [])];
   const normalization = deriveNormalizationSnapshot(currentTrack, normWindow, prev ? 1 : 0);
-  const cachedLoud = getCachedLoudnessGain(currentTrack.id);
+  const analysisRef = analysisTrackRefForTrack(currentTrack, queueItems[queueIndex]);
+  const cachedLoud = getCachedLoudnessGain(analysisRef);
   const cachedLoudDb = Number.isFinite(cachedLoud) ? cachedLoud! : null;
-  const haveStableLoud = hasStableLoudness(currentTrack.id);
+  const haveStableLoud = hasStableLoudness(analysisRef);
   const preEffForNorm = effectiveLoudnessPreAnalysisAttenuationDb(
     authState.loudnessPreAnalysisAttenuationDb,
     authState.loudnessTargetLufs,
@@ -82,7 +84,7 @@ export function runUpdateReplayGainForCurrentTrack(set: SetState, get: GetState)
     volume,
     replayGainDb,
     replayGainPeak,
-    loudnessGainDb: getCachedLoudnessGain(currentTrack.id) ?? null,
+    loudnessGainDb: getCachedLoudnessGain(analysisRef) ?? null,
     preGainDb: authState.replayGainPreGainDb,
     fallbackDb: authState.replayGainFallbackDb,
   });

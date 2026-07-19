@@ -60,6 +60,7 @@ import {
 } from '@/features/playback/store/loudnessGainCache';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
 import { fetchWaveformBins, refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { deriveNormalizationSnapshot } from '@/features/playback/store/normalizationSnapshot';
 import {
   playbackSourceHintForResolvedUrl,
@@ -360,6 +361,7 @@ export function runPlayTrack(
     const authStateNow = useAuthStore.getState();
     const playbackSid = playbackProfileIdForTrack(trackForPlay, playingRef);
     const playbackCacheSid = playbackCacheKeyForTrack(trackForPlay, playingRef);
+    const analysisRef = analysisTrackRef(trackForPlay.id, playbackCacheSid);
     const url = libraryLocalUrl
       ?? findLocalPlaybackUrl(trackForPlay.id, playbackSid, 'library')
       ?? findLocalPlaybackUrl(trackForPlay.id, playbackSid, 'favorite-auto')
@@ -435,8 +437,8 @@ export function runPlayTrack(
         currentPlaybackSource: playbackSourceHint,
         enginePreloadedTrackId: keepPreloadHint ? trackForPlay.id : null,
       });
-      void refreshWaveformForTrack(trackForPlay.id);
-      void refreshLoudnessForTrack(trackForPlay.id, { syncPlayingEngine: false });
+      void refreshWaveformForTrack(analysisRef);
+      void refreshLoudnessForTrack(analysisRef, { syncPlayingEngine: false });
     };
 
     if (deferInterruptUi) {
@@ -472,9 +474,9 @@ export function runPlayTrack(
         currentPlaybackSource: playbackSourceHint,
         enginePreloadedTrackId: keepPreloadHint ? trackForPlay.id : null,
       });
-      void refreshWaveformForTrack(trackForPlay.id);
+      void refreshWaveformForTrack(analysisRef);
       void refreshLoudnessForTrack(
-        trackForPlay.id,
+        analysisRef,
         wantInterruptBlend ? { syncPlayingEngine: false } : undefined,
       );
     }
@@ -540,7 +542,7 @@ export function runPlayTrack(
         durationHint: trackForPlay.duration,
         replayGainDb,
         replayGainPeak,
-        loudnessGainDb: loudnessGainDbForEngineBind(trackForPlay.id),
+        loudnessGainDb: loudnessGainDbForEngineBind(analysisRef),
         preGainDb: authStateNow.replayGainPreGainDb,
         fallbackDb: authStateNow.replayGainFallbackDb,
         manual,
@@ -645,7 +647,7 @@ export function runPlayTrack(
                 playbackCacheSid,
                 () => getPlayGeneration() !== gen,
               ),
-            fetchWaveformBins(trackForPlay.id, playbackCacheSid || null),
+            fetchWaveformBins(analysisRef),
           ]);
           if (getPlayGeneration() !== gen) {
             clearInterruptHandoff();

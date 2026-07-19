@@ -28,6 +28,7 @@ import {
 } from '@/features/playback/store/queueUndo';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { stopRadio } from '@/features/playback/store/radioPlayer';
 import { clearAllPlaybackScheduleTimers } from '@/features/playback/store/scheduleTimers';
 import { syncUserQueueMutationToServer } from '@/features/playback/store/queueSync';
@@ -227,8 +228,9 @@ export function applyQueueHistorySnapshot(
     return true;
   }
 
-  void refreshWaveformForTrack(nextTrack.id);
-  void refreshLoudnessForTrack(nextTrack.id);
+  const analysisRef = analysisTrackRef(nextTrack.id, playbackSid);
+  void refreshWaveformForTrack(analysisRef);
+  void refreshLoudnessForTrack(analysisRef);
   get().updateReplayGainForCurrentTrack();
 
   if (!keepPlaybackFromPrior) {

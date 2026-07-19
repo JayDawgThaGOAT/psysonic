@@ -42,6 +42,7 @@ import {
   setBytePreloadingRequest,
 } from '@/features/playback/store/gaplessPreloadState';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import {
   emitPlaybackProgress,
   getPlaybackProgressSnapshot,
@@ -408,7 +409,10 @@ export function handleAudioProgress(
         setBytePreloadingRequest(nextIdentity, nextUrl);
         // Loudness cache only — do not call refreshWaveformForTrack(next): it writes global
         // waveformBins and would replace the current track's seekbar while still playing it.
-        void refreshLoudnessForTrack(nextTrack.id, { syncPlayingEngine: false });
+        void refreshLoudnessForTrack(
+          analysisTrackRef(nextTrack.id, analysisServerId),
+          { syncPlayingEngine: false },
+        );
         if (import.meta.env.DEV) {
           console.info('[psysonic][preload-request]', {
             nextTrackId: nextTrack.id,

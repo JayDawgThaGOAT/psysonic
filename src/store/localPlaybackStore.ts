@@ -158,7 +158,7 @@ export const useLocalPlaybackStore = create<LocalPlaybackState>()(
           return { entries: next };
         });
         localPlaybackFrontendDebug({ event: 'index-remove', trackId, serverIndexKey, reason });
-        emitAnalysisStorageChanged({ trackId, reason: 'local-playback-delete' });
+        emitAnalysisStorageChanged({ trackId, serverId: serverIndexKey, reason: 'local-playback-delete' });
       },
 
       removeEntriesByPinSource: async (serverIndexKey, pinSource, mediaDir) => {
@@ -282,7 +282,11 @@ export const useLocalPlaybackStore = create<LocalPlaybackState>()(
           });
           sum -= meta.sizeBytes || 0;
           delete entries[cand.key];
-          emitAnalysisStorageChanged({ trackId: parsed.trackId, reason: 'hotcache-delete' });
+          emitAnalysisStorageChanged({
+            trackId: parsed.trackId,
+            serverId: parsed.serverIndexKey,
+            reason: 'hotcache-delete',
+          });
         }
 
         set({ entries });

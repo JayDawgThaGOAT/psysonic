@@ -4,6 +4,9 @@ import {
   bumpWaveformRefreshGen,
   getWaveformRefreshGen,
 } from '@/features/playback/store/waveformRefreshGen';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
+
+const ref = (trackId: string, serverId = 'server-a') => analysisTrackRef(trackId, serverId);
 
 afterEach(() => {
   _resetWaveformRefreshGenForTest();
@@ -11,34 +14,34 @@ afterEach(() => {
 
 describe('waveformRefreshGen', () => {
   it('returns 0 for an unknown track', () => {
-    expect(getWaveformRefreshGen('missing')).toBe(0);
+    expect(getWaveformRefreshGen(ref('missing'))).toBe(0);
   });
 
   it('increments the per-track generation on each bump', () => {
-    bumpWaveformRefreshGen('t1');
-    expect(getWaveformRefreshGen('t1')).toBe(1);
-    bumpWaveformRefreshGen('t1');
-    expect(getWaveformRefreshGen('t1')).toBe(2);
+    bumpWaveformRefreshGen(ref('t1'));
+    expect(getWaveformRefreshGen(ref('t1'))).toBe(1);
+    bumpWaveformRefreshGen(ref('t1'));
+    expect(getWaveformRefreshGen(ref('t1'))).toBe(2);
   });
 
   it('keeps tracks independent', () => {
-    bumpWaveformRefreshGen('a');
-    bumpWaveformRefreshGen('a');
-    bumpWaveformRefreshGen('b');
-    expect(getWaveformRefreshGen('a')).toBe(2);
-    expect(getWaveformRefreshGen('b')).toBe(1);
+    bumpWaveformRefreshGen(ref('same', 'server-a'));
+    bumpWaveformRefreshGen(ref('same', 'server-a'));
+    bumpWaveformRefreshGen(ref('same', 'server-b'));
+    expect(getWaveformRefreshGen(ref('same', 'server-a'))).toBe(2);
+    expect(getWaveformRefreshGen(ref('same', 'server-b'))).toBe(1);
   });
 
   it('is a no-op for an empty trackId', () => {
-    bumpWaveformRefreshGen('');
-    expect(getWaveformRefreshGen('')).toBe(0);
+    bumpWaveformRefreshGen(ref(''));
+    expect(getWaveformRefreshGen(ref(''))).toBe(0);
   });
 
   it('captures the stale-result guard pattern: a snapshot is invalidated by a later bump', () => {
-    bumpWaveformRefreshGen('t1');
-    const snapshot = getWaveformRefreshGen('t1');
+    bumpWaveformRefreshGen(ref('t1'));
+    const snapshot = getWaveformRefreshGen(ref('stream:t1'));
     expect(snapshot).toBe(1);
-    bumpWaveformRefreshGen('t1');
-    expect(getWaveformRefreshGen('t1')).not.toBe(snapshot);
+    bumpWaveformRefreshGen(ref('stream:t1'));
+    expect(getWaveformRefreshGen(ref('t1'))).not.toBe(snapshot);
   });
 });

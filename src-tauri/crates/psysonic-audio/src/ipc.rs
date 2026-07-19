@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PartialLoudnessPayload {
     pub(crate) track_id: Option<String>,
+    pub(crate) server_id: Option<String>,
     pub(crate) gain_db: f32,
     pub(crate) target_lufs: f32,
     pub(crate) is_partial: bool,

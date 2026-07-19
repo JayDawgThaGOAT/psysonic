@@ -5,6 +5,7 @@
  * refresh call.
  */
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
+import type { AnalysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const hoisted = vi.hoisted(() => {
   const auth = { normalizationEngine: 'loudness' as 'off' | 'replaygain' | 'loudness' };
@@ -13,7 +14,7 @@ const hoisted = vi.hoisted(() => {
     auth,
     player,
     refreshMock: vi.fn(async () => undefined),
-    collectMock: vi.fn((_q: QueueItemRef[], _i: number, _c: Track | null): string[] => []),
+    collectMock: vi.fn((_q: QueueItemRef[], _i: number, _c: Track | null): AnalysisTrackRef[] => []),
   };
 });
 
@@ -25,7 +26,7 @@ vi.mock('@/features/playback/store/loudnessRefresh', () => ({
   refreshLoudnessForTrack: hoisted.refreshMock,
 }));
 vi.mock('@/features/playback/store/loudnessBackfillWindow', () => ({
-  collectLoudnessBackfillWindowTrackIds: hoisted.collectMock,
+  collectLoudnessBackfillWindowTrackRefs: hoisted.collectMock,
 }));
 
 import { prefetchLoudnessForEnqueuedTracks } from '@/features/playback/store/loudnessPrefetch';
@@ -50,19 +51,20 @@ beforeEach(() => {
 describe('prefetchLoudnessForEnqueuedTracks', () => {
   it("is a no-op when engine isn't loudness", () => {
     hoisted.auth.normalizationEngine = 'off';
-    hoisted.collectMock.mockReturnValueOnce(['t1']);
+    hoisted.collectMock.mockReturnValueOnce([{ trackId: 't1', serverId: 's' }]);
     prefetchLoudnessForEnqueuedTracks([ref('t1')], 0);
     expect(hoisted.refreshMock).not.toHaveBeenCalled();
     expect(hoisted.collectMock).not.toHaveBeenCalled();
   });
 
-  it('forwards each window id to refreshLoudnessForTrack with syncPlayingEngine=false', () => {
-    hoisted.collectMock.mockReturnValueOnce(['t1', 't2', 't3']);
+  it('forwards each window ref to refreshLoudnessForTrack with syncPlayingEngine=false', () => {
+    const refs = ['t1', 't2', 't3'].map(trackId => ({ trackId, serverId: 's' }));
+    hoisted.collectMock.mockReturnValueOnce(refs);
     prefetchLoudnessForEnqueuedTracks([ref('t1'), ref('t2'), ref('t3')], 0);
     expect(hoisted.refreshMock).toHaveBeenCalledTimes(3);
-    expect(hoisted.refreshMock).toHaveBeenCalledWith('t1', { syncPlayingEngine: false });
-    expect(hoisted.refreshMock).toHaveBeenCalledWith('t2', { syncPlayingEngine: false });
-    expect(hoisted.refreshMock).toHaveBeenCalledWith('t3', { syncPlayingEngine: false });
+    for (const analysisRef of refs) {
+      expect(hoisted.refreshMock).toHaveBeenCalledWith(analysisRef, { syncPlayingEngine: false });
+    }
   });
 
   it('passes the queue + currentTrack through to the window collector', () => {

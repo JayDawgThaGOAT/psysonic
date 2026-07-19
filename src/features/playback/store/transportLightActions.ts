@@ -13,6 +13,7 @@ import { clearSeekTarget } from '@/features/playback/store/seekTargetState';
 import { tryAcquireTogglePlayLock } from '@/features/playback/store/togglePlayLock';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
 import { clearAutodjTransitionUi } from '@/features/playback/store/autodjTransitionUi';
+import { analysisTrackRefForTrack } from '@/features/playback/store/analysisTrackRef';
 
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
@@ -50,14 +51,18 @@ export function createTransportLightActions(set: SetState, get: GetState): Pick<
       clearSeekDebounce(); clearSeekTarget();
       // Stop keeps `currentTrack` (the bar still shows the stopped song), so its
       // waveform stays valid. Radio has no analysis waveform — drop the bins.
-      const keptTrackId = wasRadio ? null : get().currentTrack?.id ?? null;
+      const beforeStop = get();
+      const keptTrack = wasRadio ? null : beforeStop.currentTrack;
+      const keptRef = keptTrack
+        ? analysisTrackRefForTrack(keptTrack, beforeStop.queueItems[beforeStop.queueIndex])
+        : null;
       set({
         isPlaying: false,
         progress: 0,
         buffered: 0,
         currentTime: 0,
         currentRadio: null,
-        ...(keptTrackId ? {} : { waveformBins: null }),
+        ...(keptRef ? {} : { waveformBins: null }),
         normalizationNowDb: null,
         normalizationTargetLufs: null,
         normalizationEngineLive: 'off',
@@ -70,7 +75,7 @@ export function createTransportLightActions(set: SetState, get: GetState): Pick<
       });
       // Re-hydrate from the analysis DB in case the bins were never loaded or
       // only partially filled while the (now stopped) track was playing.
-      if (keptTrackId) void refreshWaveformForTrack(keptTrackId);
+      if (keptRef) void refreshWaveformForTrack(keptRef);
       markPlaybackIdle();
     },
 

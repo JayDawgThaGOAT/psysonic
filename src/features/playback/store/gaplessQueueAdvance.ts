@@ -34,6 +34,7 @@ import {
 } from '@/features/playback/utils/playback/playbackServer';
 import { resolvePlaybackUrlForTrack } from '@/features/playback/utils/playback/resolvePlaybackUrl';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { syncQueueToServer } from '@/features/playback/store/queueSync';
 import { useAuthStore } from '@/store/authStore';
 import { setIsAudioPaused } from '@/features/playback/store/engineState';
@@ -137,8 +138,9 @@ function applyGaplessSuccessorUi(
     queueIndex: newIndex,
     engineRequested: useAuthStore.getState().normalizationEngine,
   });
-  void refreshWaveformForTrack(nextTrack.id);
-  void refreshLoudnessForTrack(nextTrack.id);
+  const analysisRef = analysisTrackRef(nextTrack.id, switchServerId);
+  void refreshWaveformForTrack(analysisRef);
+  void refreshLoudnessForTrack(analysisRef);
   usePlayerStore.getState().updateReplayGainForCurrentTrack();
 
   playbackReportStart(nextTrack.id, playbackProfileIdForTrack(nextTrack, switchRef));

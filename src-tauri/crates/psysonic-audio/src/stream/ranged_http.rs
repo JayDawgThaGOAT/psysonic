@@ -666,6 +666,7 @@ pub(crate) async fn ranged_download_task(
     let mut last_partial_loudness_emit = Instant::now() - Duration::from_secs(5);
     let url_for_emit = url.clone();
     let app_for_emit = app.clone();
+    let server_id_for_emit = resolve_server_id_for_app(&app, server_id.as_deref());
 
     crate::app_deprintln!(
         "[stream] ranged dl start: total={} KiB (~{:.2} MiB)",
@@ -705,6 +706,7 @@ pub(crate) async fn ranged_download_task(
             "analysis:loudness-partial",
             crate::ipc::PartialLoudnessPayload {
                 track_id: crate::helpers::playback_identity(&url_for_emit),
+                server_id: (!server_id_for_emit.is_empty()).then_some(server_id_for_emit.clone()),
                 gain_db: provisional_db,
                 target_lufs,
                 is_partial: true,

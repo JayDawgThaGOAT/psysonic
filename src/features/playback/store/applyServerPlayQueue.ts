@@ -12,6 +12,7 @@ import { preparePausedRestoreOnStartup } from '@/features/playback/store/pausedR
 import { isActivePublicShareQueue } from '@/lib/share/navidromePublicSharePlayback';
 import { pushQueueUndoFromGetter } from '@/features/playback/store/queueUndo';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import {
   getIdlePullGeneration,
   isIdleQueuePullSuspended,
@@ -120,7 +121,7 @@ export function applyMappedQueue(
     currentTrack,
     currentTime: atSeconds,
   });
-  void refreshWaveformForTrack(currentTrack.id);
+  void refreshWaveformForTrack(analysisTrackRef(currentTrack.id, serverProfileId));
 
   if (wasPlaying) {
     if (!sameCurrent) {
@@ -212,7 +213,7 @@ export function applyMappedQueueProjection(
     currentTrack,
     currentTime: atSeconds,
   });
-  void refreshWaveformForTrack(currentTrack.id);
+  void refreshWaveformForTrack(analysisTrackRef(currentTrack.id, serverProfileId));
   if (!player.isPlaying) {
     preparePausedRestoreOnStartup(currentTrack, queueItems, queueIndex >= 0 ? queueIndex : 0, atSeconds);
   }

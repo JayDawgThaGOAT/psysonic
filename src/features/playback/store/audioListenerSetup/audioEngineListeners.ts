@@ -28,6 +28,11 @@ import {
 } from '@/features/playback/store/playbackThrottles';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import {
+  analysisTrackRef,
+  analysisTrackRefForTrack,
+  analysisTrackRefKey,
+} from '@/features/playback/store/analysisTrackRef';
 import { bumpWaveformRefreshGen } from '@/features/playback/store/waveformRefreshGen';
 import {
   getBytePreloadingId,
@@ -70,20 +75,24 @@ export function setupAudioEngineListeners(): () => void {
     listen<void>('audio:ended', () => handleAudioEnded()),
     listen<string>('audio:error', ({ payload }) => handleAudioError(payload)),
     listen<number>('audio:track_switched', ({ payload }) => handleAudioTrackSwitched(payload)),
-    listen<{ trackId?: string | null; gainDb: number; targetLufs: number; isPartial: boolean }>('analysis:loudness-partial', ({ payload }) => {
-      const current = usePlayerStore.getState().currentTrack;
-      if (!current || !payload) return;
+    listen<{ trackId?: string | null; serverId?: string | null; gainDb: number; targetLufs: number; isPartial: boolean }>('analysis:loudness-partial', ({ payload }) => {
+      const state = usePlayerStore.getState();
+      const current = state.currentTrack;
+      if (!current || !payload?.serverId) return;
       const payloadTrackId = normalizeAnalysisTrackId(payload.trackId);
-      if (payloadTrackId && payloadTrackId !== current.id) return;
+      if (!payloadTrackId) return;
+      const payloadRef = analysisTrackRef(payloadTrackId, payload.serverId);
+      const currentRef = analysisTrackRefForTrack(current, state.queueItems[state.queueIndex]);
+      if (analysisTrackRefKey(payloadRef) !== analysisTrackRefKey(currentRef)) return;
       if (!Number.isFinite(payload.gainDb)) return;
-      if (hasStableLoudness(current.id)) return;
+      if (hasStableLoudness(currentRef)) return;
       // Skip when the cached gain is already within ~0.05 dB of the new payload —
       // float jitter from the partial-loudness heuristic would otherwise re-trigger
       // updateReplayGainForCurrentTrack → audio_update_replay_gain → backend echo
       // every PARTIAL_LOUDNESS_EMIT_INTERVAL_MS even when nothing audibly changed.
-      const existing = getCachedLoudnessGain(current.id);
+      const existing = getCachedLoudnessGain(currentRef);
       if (Number.isFinite(existing) && Math.abs(existing! - payload.gainDb) < 0.05) return;
-      setCachedLoudnessGain(current.id, payload.gainDb);
+      setCachedLoudnessGain(currentRef, payload.gainDb);
       emitNormalizationDebug('partial-loudness:apply', {
         trackId: current.id,
         gainDb: payload.gainDb,
@@ -91,25 +100,27 @@ export function setupAudioEngineListeners(): () => void {
       });
       usePlayerStore.getState().updateReplayGainForCurrentTrack();
     }),
-    listen<{ trackId: string; isPartial: boolean }>('analysis:waveform-updated', ({ payload }) => {
-      if (!payload?.trackId) return;
+    listen<{ trackId: string; serverId: string; isPartial: boolean }>('analysis:waveform-updated', ({ payload }) => {
+      if (!payload?.trackId || !payload.serverId) return;
       const payloadTrackId = normalizeAnalysisTrackId(payload.trackId);
       if (!payloadTrackId) return;
-      const currentRaw = usePlayerStore.getState().currentTrack?.id;
-      const currentId = currentRaw ? normalizeAnalysisTrackId(currentRaw) : null;
-      if (currentId && payloadTrackId === currentId) {
-        bumpWaveformRefreshGen(currentRaw!);
-        void refreshWaveformForTrack(currentRaw!);
-        void refreshLoudnessForTrack(currentId);
-        emitNormalizationDebug('backfill:applied', { trackId: currentId });
+      const payloadRef = analysisTrackRef(payloadTrackId, payload.serverId);
+      const live = usePlayerStore.getState();
+      const currentRef = live.currentTrack
+        ? analysisTrackRefForTrack(live.currentTrack, live.queueItems[live.queueIndex])
+        : null;
+      if (currentRef && analysisTrackRefKey(payloadRef) === analysisTrackRefKey(currentRef)) {
+        bumpWaveformRefreshGen(currentRef);
+        void refreshWaveformForTrack(currentRef);
+        void refreshLoudnessForTrack(currentRef);
+        emitNormalizationDebug('backfill:applied', { trackId: payloadTrackId, serverId: payload.serverId });
         return;
       }
       // Library aggressive backfill completes thousands of tracks — only warm loudness
       // for the playback window (current + next N). Skip IPC for the rest.
-      const live = usePlayerStore.getState();
       if (
         !isTrackInsideLoudnessBackfillWindow(
-          payloadTrackId,
+          payloadRef,
           live.queueItems,
           live.queueIndex,
           live.currentTrack,
@@ -117,8 +128,8 @@ export function setupAudioEngineListeners(): () => void {
       ) {
         return;
       }
-      void refreshLoudnessForTrack(payloadTrackId, { syncPlayingEngine: false });
-      emitNormalizationDebug('backfill:applied', { trackId: payloadTrackId });
+      void refreshLoudnessForTrack(payloadRef, { syncPlayingEngine: false });
+      emitNormalizationDebug('backfill:applied', { trackId: payloadTrackId, serverId: payload.serverId });
     }),
     listen<{ trackId: string; serverId: string }>('analysis:enrichment-updated', ({ payload }) => {
       if (!payload?.trackId) return;

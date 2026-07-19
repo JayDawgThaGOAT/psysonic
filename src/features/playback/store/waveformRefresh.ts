@@ -4,10 +4,11 @@ import { getPlaybackIndexKey } from '@/features/playback/utils/playback/playback
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { getWaveformRefreshGen } from '@/features/playback/store/waveformRefreshGen';
 import {
-  queueItemIdentityKey,
-  queueTrackIdentityKey,
-  sameQueueTrackId,
-} from '@/features/playback/utils/playback/queueIdentity';
+  analysisTrackRef,
+  analysisTrackRefForTrack,
+  analysisTrackRefKey,
+  type AnalysisTrackRef,
+} from '@/features/playback/store/analysisTrackRef';
 
 /** Subsonic-server waveform-cache row as Rust hands it back. */
 export type WaveformCachePayload = {
@@ -35,12 +36,13 @@ export type WaveformCachePayload = {
  * any failure so callers degrade to no-trim.
  */
 export async function fetchWaveformBins(
-  trackId: string,
-  serverId?: string | null,
+  inputRef: AnalysisTrackRef,
 ): Promise<number[] | null> {
+  const trackId = inputRef.trackId;
   if (!trackId) return null;
   try {
-    const res = await commands.analysisGetWaveformForTrack(trackId, serverId ?? getPlaybackIndexKey() ?? null);
+    const ref = analysisTrackRef(trackId, inputRef.serverId ?? getPlaybackIndexKey());
+    const res = await commands.analysisGetWaveformForTrack(trackId, ref.serverId);
     if (res.status === 'error') throw new Error(res.error);
     const row = res.data;
     const bins = row ? coerceWaveformBins(row.bins) : null;
@@ -50,30 +52,24 @@ export async function fetchWaveformBins(
   }
 }
 
-export async function refreshWaveformForTrack(trackId: string): Promise<void> {
+export async function refreshWaveformForTrack(inputRef: AnalysisTrackRef): Promise<void> {
+  const trackId = inputRef.trackId;
   if (!trackId) return;
-  const gen = getWaveformRefreshGen(trackId);
-  const requestedServerId = getPlaybackIndexKey() || null;
-  const requestedIdentity = requestedServerId
-    ? queueTrackIdentityKey(trackId, requestedServerId)
-    : null;
+  const ref = analysisTrackRef(trackId, inputRef.serverId ?? getPlaybackIndexKey());
+  const gen = getWaveformRefreshGen(ref);
   try {
-    const res = await commands.analysisGetWaveformForTrack(trackId, requestedServerId);
+    const res = await commands.analysisGetWaveformForTrack(trackId, ref.serverId);
     if (res.status === 'error') throw new Error(res.error);
     const row = res.data;
-    if (getWaveformRefreshGen(trackId) !== gen) return;
+    if (getWaveformRefreshGen(ref) !== gen) return;
     // Never apply bins for a non-current track (e.g. gapless byte-preload fetches the neighbour).
     const state = usePlayerStore.getState();
-    if (!sameQueueTrackId(state.currentTrack?.id, trackId)) return;
-    if (requestedIdentity) {
-      const currentRef = state.queueItems?.[state.queueIndex];
-      const currentIdentity = currentRef
-        ? queueItemIdentityKey(currentRef)
-        : state.currentTrack
-          ? queueTrackIdentityKey(state.currentTrack.id, state.currentTrack.serverId)
-          : null;
-      if (currentIdentity !== requestedIdentity) return;
-    }
+    if (!state.currentTrack) return;
+    const currentRef = analysisTrackRefForTrack(
+      state.currentTrack,
+      state.queueItems?.[state.queueIndex],
+    );
+    if (analysisTrackRefKey(currentRef) !== analysisTrackRefKey(ref)) return;
     const bins = row ? coerceWaveformBins(row.bins) : null;
     if (!bins || bins.length === 0) {
       usePlayerStore.setState({

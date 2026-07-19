@@ -1,4 +1,7 @@
-import { loudnessCacheStateKeysForTrackId } from '@/features/playback/store/loudnessGainCache';
+import {
+  analysisTrackRefKey,
+  type AnalysisTrackRef,
+} from '@/features/playback/store/analysisTrackRef';
 
 /**
  * Bounded retry state for the per-track loudness backfill: each `refresh:miss`
@@ -7,9 +10,8 @@ import { loudnessCacheStateKeysForTrackId } from '@/features/playback/store/loud
  * (b) the per-track attempt counter is below `MAX_BACKFILL_ATTEMPTS_PER_TRACK`.
  * A `refresh:hit` resets the counter so the next miss starts fresh.
  *
- * Both maps stay keyed by the raw track id passed by the caller — the
- * `loudnessCacheStateKeysForTrackId` expansion only matters when clearing
- * during a reseed (`resetLoudnessBackfillStateForTrackId`).
+ * Both maps use the owner-qualified analysis identity, including normalized
+ * bare / `stream:` forms.
  */
 
 export const MAX_BACKFILL_ATTEMPTS_PER_TRACK = 2;
@@ -17,36 +19,35 @@ export const MAX_BACKFILL_ATTEMPTS_PER_TRACK = 2;
 const analysisBackfillInFlightByTrackId: Record<string, true> = {};
 const analysisBackfillAttemptsByTrackId: Record<string, number> = {};
 
-export function isBackfillInFlight(trackId: string): boolean {
-  return Boolean(analysisBackfillInFlightByTrackId[trackId]);
+export function isBackfillInFlight(ref: AnalysisTrackRef): boolean {
+  return Boolean(analysisBackfillInFlightByTrackId[analysisTrackRefKey(ref)]);
 }
 
-export function getBackfillAttempts(trackId: string): number {
-  return analysisBackfillAttemptsByTrackId[trackId] ?? 0;
+export function getBackfillAttempts(ref: AnalysisTrackRef): number {
+  return analysisBackfillAttemptsByTrackId[analysisTrackRefKey(ref)] ?? 0;
 }
 
 /** Atomic: flag the track inflight AND bump the attempt counter to `nextAttempt`. */
-export function markBackfillInFlight(trackId: string, nextAttempt: number): void {
-  analysisBackfillInFlightByTrackId[trackId] = true;
-  analysisBackfillAttemptsByTrackId[trackId] = nextAttempt;
+export function markBackfillInFlight(ref: AnalysisTrackRef, nextAttempt: number): void {
+  const key = analysisTrackRefKey(ref);
+  analysisBackfillInFlightByTrackId[key] = true;
+  analysisBackfillAttemptsByTrackId[key] = nextAttempt;
 }
 
 /** Clear the inflight flag (called from the `.finally` of the enqueue promise). */
-export function clearBackfillInFlight(trackId: string): void {
-  delete analysisBackfillInFlightByTrackId[trackId];
+export function clearBackfillInFlight(ref: AnalysisTrackRef): void {
+  delete analysisBackfillInFlightByTrackId[analysisTrackRefKey(ref)];
 }
 
 /** Reset the attempt counter to 0 — called after a `refresh:hit`. */
-export function resetBackfillAttempts(trackId: string): void {
-  analysisBackfillAttemptsByTrackId[trackId] = 0;
+export function resetBackfillAttempts(ref: AnalysisTrackRef): void {
+  analysisBackfillAttemptsByTrackId[analysisTrackRefKey(ref)] = 0;
 }
 
-/** Full reset for both maps across the bare + `stream:` id forms — used during a reseed. */
-export function resetLoudnessBackfillStateForTrackId(trackId: string): void {
-  for (const k of loudnessCacheStateKeysForTrackId(trackId)) {
-    delete analysisBackfillInFlightByTrackId[k];
-    analysisBackfillAttemptsByTrackId[k] = 0;
-  }
+export function resetLoudnessBackfillState(ref: AnalysisTrackRef): void {
+  const key = analysisTrackRefKey(ref);
+  delete analysisBackfillInFlightByTrackId[key];
+  analysisBackfillAttemptsByTrackId[key] = 0;
 }
 
 /** Test-only: wipe both maps so each spec starts clean. */

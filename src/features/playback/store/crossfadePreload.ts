@@ -17,6 +17,7 @@ import {
   setBytePreloadingRequest,
 } from '@/features/playback/store/gaplessPreloadState';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { fetchWaveformBins } from '@/features/playback/store/waveformRefresh';
 import {
@@ -87,7 +88,10 @@ export function kickEagerCrossfadePreload(
   if (getBytePreloadingId() === preloadIdentity) return;
   const url = resolvePlaybackUrlForTrack(track, serverId ?? undefined);
   setBytePreloadingRequest(preloadIdentity, url);
-  void refreshLoudnessForTrack(track.id, { syncPlayingEngine: false });
+  void refreshLoudnessForTrack(
+    analysisTrackRef(track.id, serverId),
+    { syncPlayingEngine: false },
+  );
   audioPreload({
     url,
     durationHint: track.duration,
@@ -172,7 +176,10 @@ export function maybeCrossfadeBytePreload(currentTime: number, dur: number): voi
     setBytePreloadingRequest(nextIdentity, nextUrl);
     // Loudness cache only — never refreshWaveformForTrack(next): it writes the
     // global waveformBins and would replace the current track's seekbar.
-    void refreshLoudnessForTrack(nextTrack.id, { syncPlayingEngine: false });
+    void refreshLoudnessForTrack(
+      analysisTrackRef(nextTrack.id, serverId),
+      { syncPlayingEngine: false },
+    );
     audioPreload({
       url: nextUrl,
       durationHint: nextTrack.duration,
@@ -198,7 +205,7 @@ export function maybeCrossfadeBytePreload(currentTime: number, dur: number): voi
     const planTrackId = nextTrack.id;
     const planDuration = nextTrack.duration;
     const curBins = store.waveformBins;
-    void fetchWaveformBins(planTrackId, serverId || null)
+    void fetchWaveformBins(analysisTrackRef(planTrackId, serverId))
       .then(nextBins => {
         // Overlap is derived purely from the audio (fade-out / buildup); the
         // user's crossfadeSecs is intentionally not a factor in this mode.

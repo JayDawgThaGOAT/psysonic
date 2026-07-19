@@ -19,6 +19,7 @@ import {
   loudnessGainDbForEngineBind,
 } from '@/features/playback/store/loudnessGainCache';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
 import {
@@ -69,13 +70,14 @@ function invokeGaplessChainPreload(
   const replayGainPeak = isReplayGainActive()
     ? (prepared.replayGainPeak ?? null)
     : null;
+  const analysisRef = analysisTrackRef(prepared.id, analysisServerId);
   invoke('audio_chain_preload', {
     url: nextUrl,
     volume: ctx.volume,
     durationHint: prepared.duration,
     replayGainDb,
     replayGainPeak,
-    loudnessGainDb: loudnessGainDbForEngineBind(prepared.id),
+    loudnessGainDb: loudnessGainDbForEngineBind(analysisRef),
     preGainDb: authState.replayGainPreGainDb,
     fallbackDb: authState.replayGainFallbackDb,
     ...audioPlayHiResBlendArgs(authState),
@@ -118,7 +120,10 @@ export function requestGaplessChainPreload(ctx: GaplessChainPreloadContext): voi
         ? await prepareTrackForEngineBind(nextTrack, serverId)
         : nextTrack;
       if (serverId) {
-        await refreshLoudnessForTrack(prepared.id, { syncPlayingEngine: false });
+        await refreshLoudnessForTrack(
+          analysisTrackRef(prepared.id, serverId),
+          { syncPlayingEngine: false },
+        );
       }
 
       const store = usePlayerStore.getState();

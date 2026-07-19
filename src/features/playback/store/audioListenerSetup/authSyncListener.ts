@@ -5,7 +5,12 @@ import { onAnalysisStorageChanged } from '@/store/analysisSync';
 import { emitNormalizationDebug } from '@/features/playback/store/normalizationDebug';
 import { invokeAudioSetNormalizationDeduped } from '@/features/playback/store/normalizationIpcDedupe';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
-import { clearLoudnessCacheStateForTrackId } from '@/features/playback/store/loudnessGainCache';
+import { clearLoudnessCacheState } from '@/features/playback/store/loudnessGainCache';
+import {
+  analysisTrackRef,
+  analysisTrackRefForTrack,
+  analysisTrackRefKey,
+} from '@/features/playback/store/analysisTrackRef';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
 import { bumpWaveformRefreshGen } from '@/features/playback/store/waveformRefreshGen';
@@ -64,14 +69,17 @@ export function setupAuthSync(): () => void {
       ),
     });
     if (state.normalizationEngine === 'loudness') {
-      const currentId = usePlayerStore.getState().currentTrack?.id;
+      const player = usePlayerStore.getState();
+      const currentRef = player.currentTrack
+        ? analysisTrackRefForTrack(player.currentTrack, player.queueItems[player.queueIndex])
+        : null;
       if (onlyPreAnalysisChanged) {
         usePlayerStore.getState().updateReplayGainForCurrentTrack();
-      } else if (currentId) {
+      } else if (currentRef) {
         if (targetLufsChanged) {
-          clearLoudnessCacheStateForTrackId(currentId);
+          clearLoudnessCacheState(currentRef);
         }
-        void refreshLoudnessForTrack(currentId).finally(() => {
+        void refreshLoudnessForTrack(currentRef).finally(() => {
           usePlayerStore.getState().updateReplayGainForCurrentTrack();
         });
       }
@@ -80,12 +88,21 @@ export function setupAuthSync(): () => void {
     }
   });
   const unsubAnalysisSync = onAnalysisStorageChanged(detail => {
-    const currentId = usePlayerStore.getState().currentTrack?.id;
-    if (!currentId) return;
-    if (detail.trackId && detail.trackId !== currentId) return;
-    bumpWaveformRefreshGen(currentId);
-    void refreshWaveformForTrack(currentId);
-    void refreshLoudnessForTrack(currentId);
+    const player = usePlayerStore.getState();
+    const currentRef = player.currentTrack
+      ? analysisTrackRefForTrack(player.currentTrack, player.queueItems[player.queueIndex])
+      : null;
+    if (!currentRef) return;
+    if (detail.trackId || detail.serverId) {
+      const changedRef = analysisTrackRef(
+        detail.trackId ?? currentRef.trackId,
+        detail.serverId ?? currentRef.serverId,
+      );
+      if (analysisTrackRefKey(changedRef) !== analysisTrackRefKey(currentRef)) return;
+    }
+    bumpWaveformRefreshGen(currentRef);
+    void refreshWaveformForTrack(currentRef);
+    void refreshLoudnessForTrack(currentRef);
   });
 
   return () => {

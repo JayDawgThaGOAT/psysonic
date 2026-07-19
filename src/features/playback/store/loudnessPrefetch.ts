@@ -1,6 +1,6 @@
 import type { QueueItemRef } from '@/lib/media/trackTypes';
 import { useAuthStore } from '@/store/authStore';
-import { collectLoudnessBackfillWindowTrackIds } from '@/features/playback/store/loudnessBackfillWindow';
+import { collectLoudnessBackfillWindowTrackRefs } from '@/features/playback/store/loudnessBackfillWindow';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 /**
@@ -20,8 +20,8 @@ export function prefetchLoudnessForEnqueuedTracks(
 ): void {
   if (useAuthStore.getState().normalizationEngine !== 'loudness') return;
   const currentTrack = usePlayerStore.getState().currentTrack;
-  const ids = collectLoudnessBackfillWindowTrackIds(mergedQueue, queueIndex, currentTrack);
-  for (const id of ids) {
-    void refreshLoudnessForTrack(id, { syncPlayingEngine: false });
+  const refs = collectLoudnessBackfillWindowTrackRefs(mergedQueue, queueIndex, currentTrack);
+  for (const ref of refs) {
+    void refreshLoudnessForTrack(ref, { syncPlayingEngine: false });
   }
 }
