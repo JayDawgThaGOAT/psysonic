@@ -58,6 +58,7 @@ import { onInvoke, invokeMock } from '@/test/mocks/tauri';
 import { resetPlayerStore, resetAuthStore } from '@/test/helpers/storeReset';
 import { makeServer, makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
 import { useAuthStore } from '@/store/authStore';
+import { usePlaybackAlternativeStore } from '@/features/playback/store/playbackAlternativeStore';
 
 function stubPlaybackInvokes(): void {
   onInvoke('audio_play', () => undefined);
@@ -70,6 +71,7 @@ function stubPlaybackInvokes(): void {
   onInvoke('audio_set_normalization', () => undefined);
   onInvoke('discord_update_presence', () => undefined);
   onInvoke('frontend_debug_log', () => undefined);
+  onInvoke('library_resolve_entity_sources', () => []);
 }
 
 beforeEach(() => {
@@ -256,6 +258,39 @@ describe('mixed-server play selection', () => {
     expect(state.currentTrack).toEqual(expect.objectContaining({
       id: 'shared',
       serverId: serverB.id,
+    }));
+  });
+});
+
+describe('audio_play failure', () => {
+  it('does not auto-skip and reports the frozen queue source', async () => {
+    const server = makeServer({ id: 'srv-a', url: 'https://a.test' });
+    useAuthStore.setState({
+      servers: [server],
+      activeServerId: server.id,
+      libraryBrowseServerIds: [server.id],
+    });
+    const queue = makeTracks(2, index => ({
+      id: `track-${index}`,
+      serverId: server.id,
+    }));
+    seedQueue(queue, { index: 0, currentTrack: queue[0], serverId: server.id });
+    const next = vi.fn();
+    usePlayerStore.setState({ next });
+    onInvoke('audio_play', () => { throw new Error('engine rejected source'); });
+
+    usePlayerStore.getState().playTrack(queue[0], undefined, true, false, 0);
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    const player = usePlayerStore.getState();
+    expect(next).not.toHaveBeenCalled();
+    expect(player.queueIndex).toBe(0);
+    expect(player.currentTrack?.id).toBe('track-0');
+    expect(usePlaybackAlternativeStore.getState().failure).toEqual(expect.objectContaining({
+      queueIndex: 0,
+      expectedRef: { serverId: 'a.test', trackId: 'track-0' },
+      detail: 'Error: engine rejected source',
     }));
   });
 });

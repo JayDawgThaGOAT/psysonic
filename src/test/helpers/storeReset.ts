@@ -27,6 +27,7 @@ import { useAuthStore } from '@/store/authStore';
 import { usePreviewStore } from '@/features/playback/store/previewStore';
 import { useOrbitStore } from '@/features/orbit';
 import { resetServerReachabilitySnapshot } from '@/lib/network/serverReachability';
+import { _resetPlaybackAlternativeStoreForTest } from '@/features/playback/store/playbackAlternativeStore';
 
 const INITIAL_PLAYER_STATE = usePlayerStore.getState();
 const INITIAL_AUTH_STATE = useAuthStore.getState();
@@ -38,6 +39,7 @@ export function resetPlayerStore(): void {
   // Module-scoped queue undo/redo stacks live outside the Zustand state.
   _resetQueueUndoStacksForTest();
   _resetTimelineSessionHistoryForTest();
+  _resetPlaybackAlternativeStoreForTest();
 }
 
 export function resetAuthStore(): void {

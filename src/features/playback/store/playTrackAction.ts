@@ -91,6 +91,10 @@ import {
   clearSeekTarget,
   setSeekTarget,
 } from '@/features/playback/store/seekTargetState';
+import {
+  dismissPlaybackSourceFailure,
+  reportPlaybackSourceFailure,
+} from '@/features/playback/store/playbackAlternativeStore';
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
 ) => void;
@@ -114,8 +118,8 @@ type GetState = () => PlayerState;
  * The play body itself: clears all scheduled timers + seek state,
  * resolves the URL, updates store + normalization snapshot
  * optimistically, invokes the Rust engine, and on success seeks to
- * the visual target if there was a pending one. Falls back to
- * `next(false)` 500 ms after an `audio_play` failure. Same-track
+ * the visual target if there was a pending one. An `audio_play` failure leaves
+ * the queue source untouched and opens the explicit alternative-source flow. Same-track
  * replays first flush the previous play's `stream_completed_cache`
  * to hot disk so `fetch_data` doesn't re-run an HTTP range request.
  */
@@ -241,6 +245,7 @@ export function runPlayTrack(
   set({ scheduledPauseAtMs: null, scheduledPauseStartMs: null, scheduledResumeAtMs: null, scheduledResumeStartMs: null });
 
   const gen = bumpPlayGeneration();
+  dismissPlaybackSourceFailure();
   clearInterruptHandoff();
   setIsAudioPaused(false);
   clearPreloadingIds(); // new track — allow fresh preload for next
@@ -593,11 +598,15 @@ export function runPlayTrack(
           if (getPlayGeneration() !== gen) return;
           setDeferHotCachePrefetch(false);
           console.error('[psysonic] audio_play failed:', err);
-          set({ isPlaying: false });
-          setTimeout(() => {
-            if (getPlayGeneration() !== gen) return;
-            get().next(false);
-          }, 500);
+          set({ isPlaying: false, isPlaybackBuffering: false });
+          const failed = get();
+          reportPlaybackSourceFailure({
+            generation: gen,
+            queueIndex: failed.queueIndex,
+            queueItems: failed.queueItems,
+            track: failed.currentTrack,
+            detail: String(err),
+          });
         });
     };
 

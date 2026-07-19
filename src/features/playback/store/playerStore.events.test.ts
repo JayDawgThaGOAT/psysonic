@@ -64,6 +64,7 @@ import {
   setBytePreloadingRequest,
 } from '@/features/playback/store/gaplessPreloadState';
 import { queueTrackIdentityKey } from '@/features/playback/utils/playback/queueIdentity';
+import { usePlaybackAlternativeStore } from '@/features/playback/store/playbackAlternativeStore';
 
 function stubPlaybackInvokes(): void {
   onInvoke('audio_play', () => undefined);
@@ -76,6 +77,7 @@ function stubPlaybackInvokes(): void {
   onInvoke('audio_set_normalization', () => undefined);
   onInvoke('discord_update_presence', () => undefined);
   onInvoke('frontend_debug_log', () => undefined);
+  onInvoke('library_resolve_entity_sources', () => []);
 }
 
 let cleanupListeners: (() => void) | null = null;
@@ -239,6 +241,29 @@ describe('audio:ended', () => {
     // Queue not advanced.
     expect(s.queueIndex).toBe(0);
     expect(s.currentTrack?.id).toBe(queue[0].id);
+  });
+});
+
+describe('audio:error', () => {
+  it('keeps the failed queue slot selected and opens the alternative-source flow', async () => {
+    const queue = makeTracks(2);
+    seedQueue(queue, { index: 0, currentTrack: queue[0] });
+    const next = vi.fn();
+    usePlayerStore.setState({ isPlaying: true, next });
+
+    emitTauriEvent('audio:error', 'decoder failed');
+    vi.advanceTimersByTime(2_000);
+    await Promise.resolve();
+
+    const player = usePlayerStore.getState();
+    expect(next).not.toHaveBeenCalled();
+    expect(player.queueIndex).toBe(0);
+    expect(player.currentTrack?.id).toBe(queue[0].id);
+    expect(player.isPlaying).toBe(false);
+    expect(usePlaybackAlternativeStore.getState().failure).toEqual(expect.objectContaining({
+      queueIndex: 0,
+      detail: 'decoder failed',
+    }));
   });
 });
 

@@ -94,6 +94,7 @@ import {
   queueItemIdentityKey,
   sameQueueTrack,
 } from '@/features/playback/utils/playback/queueIdentity';
+import { reportPlaybackSourceFailure } from '@/features/playback/store/playbackAlternativeStore';
 
 // Silence-aware crossfade (A-tail): guards the early advance to once per play
 // generation so a single playback instance triggers at most one trim-advance
@@ -541,12 +542,16 @@ export function handleAudioError(message: string): void {
   void playbackReportStopped();
 
   const detail = message.length > 80 ? message.slice(0, 80) + '…' : message;
-  showToast(`Couldn't play track — skipping. ${detail}`, 8000, 'error');
+  showToast(`Couldn't play track. ${detail}`, 8000, 'error');
 
   const gen = getPlayGeneration();
+  const store = usePlayerStore.getState();
   usePlayerStore.setState({ isPlaying: false, isPlaybackBuffering: false });
-  setTimeout(() => {
-    if (getPlayGeneration() !== gen) return;
-    usePlayerStore.getState().next(false);
-  }, 1500);
+  reportPlaybackSourceFailure({
+    generation: gen,
+    queueIndex: store.queueIndex,
+    queueItems: store.queueItems,
+    track: store.currentTrack,
+    detail,
+  });
 }

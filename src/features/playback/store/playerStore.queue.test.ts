@@ -294,6 +294,46 @@ describe('mixed-server queue identity', () => {
   });
 });
 
+describe('replaceQueueItemSource', () => {
+  it('replaces only the matching frozen slot and preserves queue flags', () => {
+    const queue = makeTracks(3, index => ({
+      id: `track-${index}`,
+      serverId: 'srv-a',
+      ...(index === 1 ? { playNextAdded: true } : {}),
+    }));
+    seedQueue(queue, { index: 1, currentTrack: queue[1] });
+    const before = usePlayerStore.getState().queueItems;
+    const expected = before[1]!;
+
+    const replaced = usePlayerStore.getState().replaceQueueItemSource(
+      1,
+      expected,
+      { serverId: 'srv-b', trackId: 'alternative', playNextAdded: true },
+    );
+
+    const after = usePlayerStore.getState().queueItems;
+    expect(replaced).toBe(true);
+    expect(after[0]).toEqual(before[0]);
+    expect(after[1]).toEqual({ serverId: 'srv-b', trackId: 'alternative', playNextAdded: true });
+    expect(after[2]).toEqual(before[2]);
+  });
+
+  it('refuses to replace a slot that no longer matches the captured ref', () => {
+    const queue = makeTracks(2);
+    seedQueue(queue, { index: 0, currentTrack: queue[0] });
+    const before = usePlayerStore.getState().queueItems;
+
+    const replaced = usePlayerStore.getState().replaceQueueItemSource(
+      0,
+      { serverId: before[0]!.serverId, trackId: 'stale-id' },
+      { serverId: 'srv-b', trackId: 'alternative' },
+    );
+
+    expect(replaced).toBe(false);
+    expect(usePlayerStore.getState().queueItems).toEqual(before);
+  });
+});
+
 describe('removeTrack', () => {
   it('removes the track at the given index', () => {
     const tracks = makeTracks(3);

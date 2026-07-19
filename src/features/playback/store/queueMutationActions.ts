@@ -38,6 +38,7 @@ import { persistShuffleModeSnapshot } from '@/features/playback/store/shuffleMod
 import {
   queueItemIdentityKey,
   queueItemRefMatchesTrack,
+  sameQueueItemRef,
 } from '@/features/playback/utils/playback/queueIdentity';
 import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 
@@ -85,8 +86,27 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
   | 'shuffleUpcomingQueue'
   | 'toggleShuffleMode'
   | 'removeTrack'
+  | 'replaceQueueItemSource'
 > {
   return {
+    replaceQueueItemSource: (index, expected, replacement) => {
+      const state = get();
+      const current = state.queueItems[index];
+      if (!current || !sameQueueItemRef(current, expected)) return false;
+
+      pushQueueUndoFromGetter(get);
+      const nextItems = [...state.queueItems];
+      nextItems[index] = { ...replacement };
+      set({ queueItems: nextItems });
+      syncUserQueueMutationToServer(
+        state.queueItems,
+        nextItems,
+        state.currentTrack,
+        state.currentTime,
+      );
+      return true;
+    },
+
     /**
      * Persistent shuffle: reorders the queue itself and remembers the order it
      * came from, so switching it off restores that order. Rationale for

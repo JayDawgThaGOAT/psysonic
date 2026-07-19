@@ -131,6 +131,8 @@ export interface PlayerState {
 
   reorderQueue: (startIndex: number, endIndex: number) => void;
   removeTrack: (index: number) => void;
+  /** Replace one frozen queue slot only when its concrete owner/id still match. */
+  replaceQueueItemSource: (index: number, expected: QueueItemRef, replacement: QueueItemRef) => boolean;
   shuffleQueue: () => void;
   /** Shuffle only the tracks after the current one — leaves played history intact. */
   shuffleUpcomingQueue: () => void;
