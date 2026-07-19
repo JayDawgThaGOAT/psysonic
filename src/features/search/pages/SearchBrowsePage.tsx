@@ -55,6 +55,7 @@ import {
 } from '@/lib/library/trackBrowseDebug';
 import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 import { filterStarredSearchResults } from '@/features/search/utils/filterStarredSearchResults';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 
 const MOOD_UI_ENABLED = OXIMEDIA_MOOD_SEARCH_ENABLED;
 
@@ -119,6 +120,12 @@ export default function SearchBrowsePage() {
   const serverId = useAuthStore(s => s.activeServerId);
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
   const offlineBrowseActive = useOfflineBrowseContext().active;
+  const librarySyncRevision = useLibraryScopeSyncRevision(
+    getLibraryBrowseScope().serverIds.length > 0
+      ? getLibraryBrowseScope().serverIds
+      : (serverId ? [serverId] : []),
+  );
+  const searchedSyncRevisionRef = useRef(librarySyncRevision);
   const [activeSearch, setActiveSearch] = useState<SearchOpts | null>(() => restoreStash?.activeSearch ?? null);
   const [songsServerOffset, setSongsServerOffset] = useState(() => restoreStash?.songsServerOffset ?? 0);
   const [songsHasMore, setSongsHasMore] = useState(() => restoreStash?.songsHasMore ?? false);
@@ -369,6 +376,19 @@ export default function SearchBrowsePage() {
     setResults,
     setLoadingMoreSongs,
   });
+
+  useEffect(() => {
+    if (searchedSyncRevisionRef.current === librarySyncRevision) return;
+    searchedSyncRevisionRef.current = librarySyncRevision;
+    if (showTracksChrome || !activeSearch || isLeaveRestorePending) return;
+    if (basicSearchMode) {
+      void runBasicSearch(activeSearch.query);
+    } else {
+      void runSearch(activeSearch);
+    }
+    // Search runners intentionally use the latest render state when the sync revision changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [librarySyncRevision]);
 
   useEffect(() => {
     return () => {

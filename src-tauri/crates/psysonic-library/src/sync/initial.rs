@@ -32,7 +32,6 @@ use super::mapping::{
 use super::progress::{IngestBatchMetrics, NoopProgress, Progress, ProgressEvent};
 use super::strategy::IngestStrategy;
 use crate::bulk_ingest::{restore_track_secondary_indexes, suspend_track_secondary_indexes};
-use crate::dto::track_index_nonempty;
 use crate::repos::{RemapStats, SyncStateRepository, TrackRepository, TrackRow};
 use crate::store::LibraryStore;
 use crate::store::WriteOpTiming;
@@ -52,31 +51,138 @@ const CURSOR_PERSIST_EVERY_BATCHES: u32 = 4;
 /// whole run if needed.
 const MAX_ATTEMPTS_PER_BATCH: u32 = 5;
 
-/// Suspends FTS + secondary indexes for IS-3; restores on drop.
+#[derive(Debug, Clone, Copy)]
+struct BulkIngestPragmas {
+    synchronous: i64,
+    wal_autocheckpoint: i64,
+    cache_size: i64,
+}
+
+impl BulkIngestPragmas {
+    fn capture(conn: &rusqlite::Connection) -> rusqlite::Result<Self> {
+        Ok(Self {
+            synchronous: conn.pragma_query_value(None, "synchronous", |row| row.get(0))?,
+            wal_autocheckpoint: conn
+                .pragma_query_value(None, "wal_autocheckpoint", |row| row.get(0))?,
+            cache_size: conn.pragma_query_value(None, "cache_size", |row| row.get(0))?,
+        })
+    }
+}
+
+fn remember_first_error(first_error: &mut Option<rusqlite::Error>, result: rusqlite::Result<()>) {
+    if first_error.is_none() {
+        if let Err(error) = result {
+            *first_error = Some(error);
+        }
+    }
+}
+
+/// Suspends FTS + write-heavy secondary indexes for IS-3. Successful runs must
+/// call `finish`; `Drop` only retries cleanup after cancellation or failure.
 struct BulkIngestGuard<'a> {
     store: &'a LibraryStore,
+    pragmas: BulkIngestPragmas,
+    finalized: bool,
+}
+
+impl<'a> BulkIngestGuard<'a> {
+    fn begin(store: &'a LibraryStore) -> Result<Self, SyncError> {
+        let pragmas = store
+            .with_conn("bulk.capture_pragmas", BulkIngestPragmas::capture)
+            .map_err(SyncError::Storage)?;
+        store.set_bulk_ingest_active(true);
+        let guard = Self {
+            store,
+            pragmas,
+            finalized: false,
+        };
+
+        store
+            .with_conn_mut("bulk.begin", |conn| {
+                let tx = conn.unchecked_transaction()?;
+                suspend_track_fts_triggers(&tx)?;
+                suspend_track_secondary_indexes(&tx)?;
+                tx.commit()?;
+
+                conn.pragma_update(None, "synchronous", "OFF")?;
+                conn.pragma_update(None, "wal_autocheckpoint", 0)?;
+                conn.pragma_update(None, "cache_size", -128_000)?;
+                Ok(())
+            })
+            .map_err(SyncError::Storage)?;
+
+        Ok(guard)
+    }
+
+    fn finalize_inner(&self) -> Result<(), String> {
+        self.store.with_conn_mut("bulk.finalize", |conn| {
+            let mut first_error = None;
+            remember_first_error(
+                &mut first_error,
+                conn.pragma_update(None, "synchronous", self.pragmas.synchronous),
+            );
+            remember_first_error(
+                &mut first_error,
+                conn.pragma_update(None, "wal_autocheckpoint", self.pragmas.wal_autocheckpoint),
+            );
+            remember_first_error(
+                &mut first_error,
+                (|| {
+                    let tx = conn.unchecked_transaction()?;
+                    restore_track_secondary_indexes(&tx)?;
+                    rebuild_track_fts_from_content(&tx)?;
+                    restore_track_fts_triggers(&tx)?;
+                    tx.commit()
+                })(),
+            );
+            remember_first_error(
+                &mut first_error,
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    let _: (i32, i32, i32) = (row.get(0)?, row.get(1)?, row.get(2)?);
+                    Ok(())
+                }),
+            );
+            remember_first_error(
+                &mut first_error,
+                conn.pragma_update(None, "cache_size", self.pragmas.cache_size),
+            );
+
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        })
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        self.finalize_inner()?;
+        self.finalized = true;
+        self.store.set_bulk_ingest_active(false);
+        crate::app_eprintln!(
+            "[library-sync] bulk ingest finalized in {}ms (indexes + WAL + FTS)",
+            start.elapsed().as_millis()
+        );
+        Ok(())
+    }
 }
 
 impl Drop for BulkIngestGuard<'_> {
     fn drop(&mut self) {
-        self.store.set_bulk_ingest_active(false);
+        if self.finalized {
+            return;
+        }
         let start = std::time::Instant::now();
-        match self.store.with_conn_mut("bulk.finalize", |conn| {
-            conn.pragma_update(None, "synchronous", "NORMAL")?;
-            conn.pragma_update(None, "wal_autocheckpoint", 1000)?;
-            restore_track_secondary_indexes(conn)?;
-            let _: (i32, i32, i32) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
-            rebuild_track_fts_from_content(conn)?;
-            restore_track_fts_triggers(conn)
-        }) {
-            Ok(()) => crate::app_eprintln!(
-                "[library-sync] bulk ingest finalized in {}ms (indexes + WAL + FTS)",
-                start.elapsed().as_millis()
-            ),
+        match self.finalize_inner() {
+            Ok(()) => {
+                self.store.set_bulk_ingest_active(false);
+                crate::app_eprintln!(
+                    "[library-sync] emergency bulk ingest cleanup finished in {}ms",
+                    start.elapsed().as_millis()
+                );
+            }
             Err(e) => {
-                crate::app_eprintln!("[library-sync] bulk ingest finalize failed: {e}")
+                crate::app_eprintln!("[library-sync] emergency bulk ingest cleanup failed: {e}")
             }
         }
     }
@@ -233,31 +339,40 @@ impl<'a> InitialSyncRunner<'a> {
 
         // IS-3 — bulk ingest per strategy.
         if cursor.phase == CursorPhase::Ingest {
-            self.store.set_bulk_ingest_active(true);
-            self.store
-                .with_conn_mut("bulk.begin", |conn| {
-                    suspend_track_fts_triggers(conn)?;
-                    suspend_track_secondary_indexes(conn)?;
-                    conn.pragma_update(None, "synchronous", "OFF")?;
-                    conn.pragma_update(None, "wal_autocheckpoint", 0)?;
-                    conn.pragma_update(None, "cache_size", -128_000)?;
-                    Ok(())
-                })
-                .map_err(SyncError::Storage)?;
+            let bulk = BulkIngestGuard::begin(self.store)?;
             crate::app_eprintln!(
                 "[library-sync] IS-3 bulk ingest: FTS/indexes suspended, sync=OFF"
             );
-            let _bulk = BulkIngestGuard { store: self.store };
 
-            match strategy {
-                IngestStrategy::N1 => self.run_n1(&mut cursor, &mut report, &sync_state).await?,
-                IngestStrategy::S1 => self.run_s1(&mut cursor, &mut report, &sync_state).await?,
-                IngestStrategy::S2 => self.run_s2(&mut cursor, &mut report, &sync_state).await?,
-                IngestStrategy::S3 => {
-                    return Err(SyncError::StrategyUnsupported { strategy: "s3" })
+            let ingest_result = async {
+                match strategy {
+                    IngestStrategy::N1 => {
+                        self.run_n1(&mut cursor, &mut report, &sync_state).await?
+                    }
+                    IngestStrategy::S1 => {
+                        self.run_s1(&mut cursor, &mut report, &sync_state).await?
+                    }
+                    IngestStrategy::S2 => {
+                        self.run_s2(&mut cursor, &mut report, &sync_state).await?
+                    }
+                    IngestStrategy::S3 => {
+                        return Err(SyncError::StrategyUnsupported { strategy: "s3" });
+                    }
+                }
+                self.link_canonical_after_bulk_ingest()
+            }
+            .await;
+            let finish_result = bulk.finish();
+            match (ingest_result, finish_result) {
+                (Ok(()), Ok(())) => {}
+                (Err(error), Ok(())) => return Err(error),
+                (Ok(()), Err(cleanup)) => return Err(SyncError::Storage(cleanup)),
+                (Err(error), Err(cleanup)) => {
+                    return Err(SyncError::Storage(format!(
+                        "{error}; bulk ingest finalization also failed: {cleanup}"
+                    )));
                 }
             }
-            self.link_canonical_after_bulk_ingest()?;
             cursor.phase = CursorPhase::ArtistPass;
             self.persist_cursor(&sync_state, &cursor)?;
         }
@@ -285,7 +400,7 @@ impl<'a> InitialSyncRunner<'a> {
         let finished_at = now_unix_ms();
         if let Some(gen) = cursor.resync_gen {
             let swept = TrackRepository::new(self.store)
-                .sweep_resync_orphans(&self.server_id, gen)
+                .sweep_resync_orphans(&self.server_id, &self.library_scope, gen)
                 .map_err(SyncError::Storage)?;
             if swept > 0 {
                 self.progress.emit(ProgressEvent::Tombstoned {
@@ -307,22 +422,15 @@ impl<'a> InitialSyncRunner<'a> {
                 );
             }
         }
-        let local_count = crate::dto::count_local_tracks(self.store, &self.server_id)
+        let local_count = TrackRepository::new(self.store)
+            .count_live_tracks_in_scope(&self.server_id, &self.library_scope)
             .map_err(SyncError::Storage)?;
         sync_state
-            .set_local_track_count(&self.server_id, &self.library_scope, local_count)
-            .map_err(SyncError::Storage)?;
-        sync_state
-            .set_last_full_sync_at(&self.server_id, &self.library_scope, finished_at)
-            .map_err(SyncError::Storage)?;
-        sync_state
-            .set_sync_phase(&self.server_id, &self.library_scope, "ready")
-            .map_err(SyncError::Storage)?;
-        sync_state
-            .set_initial_sync_cursor(
+            .complete_initial_sync(
                 &self.server_id,
                 &self.library_scope,
-                &Value::Object(serde_json::Map::new()),
+                local_count,
+                finished_at,
             )
             .map_err(SyncError::Storage)?;
         self.progress.emit(ProgressEvent::Completed {
@@ -356,13 +464,14 @@ impl<'a> InitialSyncRunner<'a> {
             self.capability_flags,
             server_track_count,
             n1_bulk_unreliable,
+            !self.library_scope.is_empty(),
         );
         if let Some(raw) = raw {
             if !is_empty_cursor(&raw) {
                 match serde_json::from_value::<InitialSyncCursor>(raw) {
                     Ok(parsed) => {
-                        let has_progress = parsed.ingested_count > 0
-                            || parsed.phase != CursorPhase::Ingest;
+                        let has_progress =
+                            parsed.ingested_count > 0 || parsed.phase != CursorPhase::Ingest;
                         // R7-15 Q3: freeze the in-flight strategy on resume.
                         // Once a run has made progress, a re-probe that now
                         // picks a different strategy (the Navidrome bearer
@@ -376,8 +485,9 @@ impl<'a> InitialSyncRunner<'a> {
                         // known-broken — fall through and re-select (the
                         // mid-run N1→S1 fallback normally rewrites such a
                         // cursor in place, preserving progress).
-                        let frozen_strategy_known_broken = n1_bulk_unreliable
-                            && parsed.strategy == IngestStrategy::N1.as_tag();
+                        let frozen_strategy_known_broken = parsed.strategy
+                            == IngestStrategy::N1.as_tag()
+                            && (n1_bulk_unreliable || !self.library_scope.is_empty());
                         if has_progress && !frozen_strategy_known_broken {
                             return Ok(parsed);
                         }
@@ -470,12 +580,14 @@ impl<'a> InitialSyncRunner<'a> {
         let is_resync = sync_state
             .has_last_full_sync_at(&self.server_id, &self.library_scope)
             .map_err(SyncError::Storage)?
-            || track_index_nonempty(self.store, &self.server_id).map_err(SyncError::Storage)?;
+            || TrackRepository::new(self.store)
+                .has_live_tracks_in_scope(&self.server_id, &self.library_scope)
+                .map_err(SyncError::Storage)?;
         if !is_resync {
             return Ok(());
         }
         let gen = TrackRepository::new(self.store)
-            .next_resync_gen(&self.server_id)
+            .next_resync_gen(&self.server_id, &self.library_scope)
             .map_err(SyncError::Storage)?;
         cursor.resync_gen = Some(gen);
         self.persist_cursor(sync_state, cursor)?;
@@ -543,9 +655,11 @@ impl<'a> InitialSyncRunner<'a> {
         report: &mut InitialSyncReport,
         sync_state: &SyncStateRepository<'_>,
     ) -> Result<(), SyncError> {
-        let creds = self.navidrome.as_ref().ok_or_else(|| SyncError::Transport(
-            "n1 strategy selected but no Navidrome credentials supplied".into(),
-        ))?;
+        let creds = self.navidrome.as_ref().ok_or_else(|| {
+            SyncError::Transport(
+                "n1 strategy selected but no Navidrome credentials supplied".into(),
+            )
+        })?;
         let mut offset = match cursor.strategy_state {
             StrategyState::LinearOffset { offset } => offset,
             ref other => {
@@ -614,41 +728,41 @@ impl<'a> InitialSyncRunner<'a> {
                 .await?;
             self.check_cancellation()?;
 
-            queue.pump(|| self.check_cancellation(), |off| {
-                let creds = creds.clone();
-                let cancel = cancel.clone();
-                let http_registry = http_registry.clone();
-                let server_id = server_id.clone();
-                tokio::spawn(async move {
-                    retry_fetch(
-                        sleep_enabled,
-                        || check_cancel_flag(&cancel),
-                        || async {
-                            let end = off.saturating_add(batch_size);
-                            let response = nd_list_songs_internal(
-                                http_registry.as_deref(),
-                                Some(&server_id),
-                                &creds.server_url,
-                                &creds.bearer_token,
-                                "id",
-                                "ASC",
-                                off,
-                                end,
-                            )
-                            .await
-                            .map_err(SyncError::Navidrome)?;
-                            Ok(response.as_array().cloned().unwrap_or_default())
-                        },
-                        |e| e,
-                    )
-                    .await
-                })
-            })?;
+            queue.pump(
+                || self.check_cancellation(),
+                |off| {
+                    let creds = creds.clone();
+                    let cancel = cancel.clone();
+                    let http_registry = http_registry.clone();
+                    let server_id = server_id.clone();
+                    tokio::spawn(async move {
+                        retry_fetch(
+                            sleep_enabled,
+                            || check_cancel_flag(&cancel),
+                            || async {
+                                let end = off.saturating_add(batch_size);
+                                let response = nd_list_songs_internal(
+                                    http_registry.as_deref(),
+                                    Some(&server_id),
+                                    &creds.server_url,
+                                    &creds.bearer_token,
+                                    "id",
+                                    "ASC",
+                                    off,
+                                    end,
+                                )
+                                .await
+                                .map_err(SyncError::Navidrome)?;
+                                Ok(response.as_array().cloned().unwrap_or_default())
+                            },
+                            |e| e,
+                        )
+                        .await
+                    })
+                },
+            )?;
 
-            let array = match queue
-                .take_at(offset, || self.check_cancellation())
-                .await
-            {
+            let array = match queue.take_at(offset, || self.check_cancellation()).await {
                 Err(e) if self.n1_hit_deep_offset_wall(&e, offset) => {
                     return self.fall_back_n1_to_s1(cursor, report, sync_state).await;
                 }
@@ -735,12 +849,7 @@ impl<'a> InitialSyncRunner<'a> {
         let rows: Vec<TrackRow> = array
             .iter()
             .filter_map(|v| {
-                navidrome_song_to_track_row(
-                    &self.server_id,
-                    v,
-                    synced_at,
-                    self.library_scope_opt(),
-                )
+                navidrome_song_to_track_row(&self.server_id, v, synced_at, self.library_scope_opt())
             })
             .collect();
         let (_stats, _timing) =
@@ -882,35 +991,36 @@ impl<'a> InitialSyncRunner<'a> {
                 .await?;
             self.check_cancellation()?;
 
-            queue.pump(|| self.check_cancellation(), |off| {
-                let subsonic = subsonic.clone();
-                let library_scope = library_scope.clone();
-                let cancel = cancel.clone();
-                tokio::spawn(async move {
-                    retry_fetch(
-                        sleep_enabled,
-                        || check_cancel_flag(&cancel),
-                        || async {
-                            let scope = if library_scope.is_empty() {
-                                None
-                            } else {
-                                Some(library_scope.as_str())
-                            };
-                            subsonic
-                                .search3_with_raw("", batch_size, off, scope)
-                                .await
-                                .map_err(SyncError::from)
-                        },
-                        |e| e,
-                    )
-                    .await
-                })
-            })?;
+            queue.pump(
+                || self.check_cancellation(),
+                |off| {
+                    let subsonic = subsonic.clone();
+                    let library_scope = library_scope.clone();
+                    let cancel = cancel.clone();
+                    tokio::spawn(async move {
+                        retry_fetch(
+                            sleep_enabled,
+                            || check_cancel_flag(&cancel),
+                            || async {
+                                let scope = if library_scope.is_empty() {
+                                    None
+                                } else {
+                                    Some(library_scope.as_str())
+                                };
+                                subsonic
+                                    .search3_with_raw("", batch_size, off, scope)
+                                    .await
+                                    .map_err(SyncError::from)
+                            },
+                            |e| e,
+                        )
+                        .await
+                    })
+                },
+            )?;
 
             let fetch_start = std::time::Instant::now();
-            let (result, raw_body) = match queue
-                .take_at(offset, || self.check_cancellation())
-                .await
+            let (result, raw_body) = match queue.take_at(offset, || self.check_cancellation()).await
             {
                 Err(e) if is_fetch_failure(&e) => {
                     return self.fall_back_s1_to_s2(cursor, report, sync_state).await;
@@ -965,7 +1075,10 @@ impl<'a> InitialSyncRunner<'a> {
         let scope = self.library_scope_opt();
         retry_with_backoff(
             self,
-            || self.subsonic.search3_with_raw("", self.batch_size, offset, scope),
+            || {
+                self.subsonic
+                    .search3_with_raw("", self.batch_size, offset, scope)
+            },
             SyncError::from,
         )
         .await
@@ -1076,9 +1189,10 @@ impl<'a> InitialSyncRunner<'a> {
         sync_state: &SyncStateRepository<'_>,
     ) -> Result<(), SyncError> {
         let (mut album_offset, resume_album_id) = match &cursor.strategy_state {
-            StrategyState::AlbumCrawl { album_offset, current_album_id } => {
-                (*album_offset, current_album_id.clone())
-            }
+            StrategyState::AlbumCrawl {
+                album_offset,
+                current_album_id,
+            } => (*album_offset, current_album_id.clone()),
             ref other => {
                 return Err(SyncError::Storage(format!(
                     "s2 expected album-crawl cursor, got {other:?}"
@@ -1182,9 +1296,7 @@ impl<'a> InitialSyncRunner<'a> {
                 if !rows.is_empty() {
                     let (_stats, _timing) =
                         self.write_batch_logged(&rows, "S2", album_offset, cursor.resync_gen)?;
-                    report.ingested_count = report
-                        .ingested_count
-                        .saturating_add(rows.len() as u32);
+                    report.ingested_count = report.ingested_count.saturating_add(rows.len() as u32);
                     batch_count += 1;
                     self.progress.emit(ProgressEvent::IngestPage {
                         ingested_total: report.ingested_count,
@@ -1224,13 +1336,10 @@ impl<'a> InitialSyncRunner<'a> {
         _sync_state: &SyncStateRepository<'_>,
     ) -> Result<bool, SyncError> {
         let scope = self.library_scope_opt();
-        let artists = retry_with_backoff(
-            self,
-            || self.subsonic.get_artists(scope),
-            SyncError::from,
-        )
-        .await
-        .ok();
+        let artists =
+            retry_with_backoff(self, || self.subsonic.get_artists(scope), SyncError::from)
+                .await
+                .ok();
         let confirmed = if let Some(index) = artists {
             super::artist_index::apply_artist_index(
                 self.store,
@@ -1308,10 +1417,7 @@ where
 }
 
 fn is_retryable(e: &SyncError) -> bool {
-    matches!(
-        e,
-        SyncError::Transport(_) | SyncError::Navidrome(_)
-    )
+    matches!(e, SyncError::Transport(_) | SyncError::Navidrome(_))
 }
 
 /// A persistent fetch failure (network / HTTP / decode / API) that warrants
@@ -1359,11 +1465,13 @@ mod tests {
             } else {
                 let remaining = (total - offset).min(batch);
                 let songs: Vec<_> = (0..remaining)
-                    .map(|i| json!({
-                        "id": format!("tr_{:04}", offset + i),
-                        "title": format!("Title {}", offset + i),
-                        "duration": 200_i64 + (offset + i) as i64,
-                    }))
+                    .map(|i| {
+                        json!({
+                            "id": format!("tr_{:04}", offset + i),
+                            "title": format!("Title {}", offset + i),
+                            "duration": 200_i64 + (offset + i) as i64,
+                        })
+                    })
                     .collect();
                 json!({
                     "subsonic-response": {
@@ -1412,6 +1520,168 @@ mod tests {
             .await;
     }
 
+    fn seed_two_library_resync(store: &LibraryStore, scope: &str) {
+        let sync_state = SyncStateRepository::new(store);
+        sync_state.ensure("s1", scope).unwrap();
+        sync_state.set_last_full_sync_at("s1", scope, 1).unwrap();
+        store
+            .with_conn_mut("test.seed_two_library_resync", |conn| {
+                conn.execute(
+                    "INSERT INTO track (server_id, id, title, album, album_id, library_id, \
+                       duration_sec, deleted, synced_at, raw_json, resync_gen) \
+                     VALUES ('s1', 'a-stale', 'A stale', 'A', 'album-a', 'lib-a', \
+                       1, 0, 1, '{}', 0)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO track (server_id, id, title, album, album_id, library_id, \
+                       duration_sec, deleted, synced_at, raw_json, resync_gen) \
+                     VALUES ('s1', 'b-keep', 'B keep', 'B', 'album-b', 'lib-b', \
+                       1, 0, 1, '{}', 0)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn assert_scoped_resync_preserved_other_library(store: &LibraryStore, new_id: &str) {
+        let (stale_deleted, other_deleted, new_library): (i64, i64, String) = store
+            .with_read_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT deleted FROM track WHERE id = 'a-stale'", [], |r| {
+                        r.get(0)
+                    })?,
+                    conn.query_row("SELECT deleted FROM track WHERE id = 'b-keep'", [], |r| {
+                        r.get(0)
+                    })?,
+                    conn.query_row(
+                        "SELECT library_id FROM track WHERE id = ?1",
+                        [new_id],
+                        |r| r.get(0),
+                    )?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(stale_deleted, 1);
+        assert_eq!(other_deleted, 0);
+        assert_eq!(new_library, "lib-a");
+    }
+
+    fn current_bulk_pragmas(store: &LibraryStore) -> BulkIngestPragmas {
+        store
+            .with_conn("test.bulk_pragmas", BulkIngestPragmas::capture)
+            .unwrap()
+    }
+
+    #[test]
+    fn explicit_bulk_finalization_restores_captured_pragmas() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn("test.set_bulk_pragmas", |conn| {
+                conn.pragma_update(None, "synchronous", "FULL")?;
+                conn.pragma_update(None, "wal_autocheckpoint", 37)?;
+                conn.pragma_update(None, "cache_size", -4096)
+            })
+            .unwrap();
+        let before = current_bulk_pragmas(&store);
+
+        let bulk = BulkIngestGuard::begin(&store).unwrap();
+        assert!(store.bulk_ingest_active());
+        assert_eq!(current_bulk_pragmas(&store).cache_size, -128_000);
+        bulk.finish().unwrap();
+
+        let after = current_bulk_pragmas(&store);
+        assert_eq!(after.synchronous, before.synchronous);
+        assert_eq!(after.wal_autocheckpoint, before.wal_autocheckpoint);
+        assert_eq!(after.cache_size, before.cache_size);
+        assert!(!store.bulk_ingest_active());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finalization_failure_keeps_cursor_in_ingest_and_sync_not_ready() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/search3.view"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": { "status": "ok", "searchResult3": {} }
+            })))
+            .mount(&server)
+            .await;
+
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.remove_fts", |conn| {
+                conn.execute_batch("DROP TABLE track_fts")
+            })
+            .unwrap();
+        let before = current_bulk_pragmas(&store);
+
+        let error = InitialSyncRunner::new(
+            &store,
+            &test_subsonic(&server.uri()),
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_sleep_disabled()
+        .run()
+        .await
+        .unwrap_err();
+        assert!(matches!(error, SyncError::Storage(message) if message.contains("track_fts")));
+
+        let sync_state = SyncStateRepository::new(&store);
+        assert_eq!(
+            sync_state.get_sync_phase("s1", "").unwrap().as_deref(),
+            Some("initial_sync")
+        );
+        let cursor: InitialSyncCursor = serde_json::from_value(
+            sync_state
+                .get_initial_sync_cursor("s1", "")
+                .unwrap()
+                .expect("cursor remains persisted"),
+        )
+        .unwrap();
+        assert_eq!(cursor.phase, CursorPhase::Ingest);
+        assert!(
+            store.bulk_ingest_active(),
+            "failed emergency cleanup must keep scheduler and guarded reads blocked"
+        );
+
+        let after = current_bulk_pragmas(&store);
+        assert_eq!(after.synchronous, before.synchronous);
+        assert_eq!(after.wal_autocheckpoint, before.wal_autocheckpoint);
+        assert_eq!(after.cache_size, before.cache_size);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancellation_still_runs_explicit_bulk_finalization() {
+        let server = MockServer::start().await;
+        let store = LibraryStore::open_in_memory();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let before = current_bulk_pragmas(&store);
+
+        let error = InitialSyncRunner::new(
+            &store,
+            &test_subsonic(&server.uri()),
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_cancellation(cancel)
+        .with_sleep_disabled()
+        .run()
+        .await
+        .unwrap_err();
+        assert!(matches!(error, SyncError::Cancelled));
+        assert!(!store.bulk_ingest_active());
+
+        let after = current_bulk_pragmas(&store);
+        assert_eq!(after.synchronous, before.synchronous);
+        assert_eq!(after.wal_autocheckpoint, before.wal_autocheckpoint);
+        assert_eq!(after.cache_size, before.cache_size);
+    }
+
     // ── S1 happy path ──────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1448,7 +1718,9 @@ mod tests {
 
         // Tracks landed in the store.
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 7);
     }
@@ -1462,9 +1734,7 @@ mod tests {
         let store = LibraryStore::open_in_memory();
         let sync_state = SyncStateRepository::new(&store);
         sync_state.ensure("s1", "").unwrap();
-        sync_state
-            .set_last_full_sync_at("s1", "", 1)
-            .unwrap();
+        sync_state.set_last_full_sync_at("s1", "", 1).unwrap();
 
         store
             .with_conn_mut("misc", |c| {
@@ -1513,6 +1783,91 @@ mod tests {
             })
             .unwrap();
         assert_eq!(stale_deleted, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scoped_s1_resync_preserves_other_library_on_same_server() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/search3.view"))
+            .and(query_param("musicFolderId", "lib-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": {
+                    "status": "ok",
+                    "searchResult3": {
+                        "song": [{ "id": "a-new", "title": "A new", "duration": 100 }]
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        mount_minimal_artists(&server).await;
+
+        let store = LibraryStore::open_in_memory();
+        seed_two_library_resync(&store, "lib-a");
+        let report = InitialSyncRunner::new(
+            &store,
+            &test_subsonic(&server.uri()),
+            "s1",
+            "lib-a",
+            flags(CapabilityFlags::NAVIDROME_NATIVE_BULK | CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_batch_size(10)
+        .with_sleep_disabled()
+        .run()
+        .await
+        .unwrap();
+        assert_eq!(report.strategy.as_deref(), Some("s1"));
+        assert_scoped_resync_preserved_other_library(&store, "a-new");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scoped_s2_resync_preserves_other_library_on_same_server() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/getAlbumList2.view"))
+            .and(query_param("musicFolderId", "lib-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": {
+                    "status": "ok",
+                    "albumList2": { "album": [{ "id": "album-new", "name": "New" }] }
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/getAlbum.view"))
+            .and(query_param("id", "album-new"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": {
+                    "status": "ok",
+                    "album": {
+                        "id": "album-new",
+                        "name": "New",
+                        "song": [{ "id": "a-new", "title": "A new", "duration": 100 }]
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        mount_minimal_artists(&server).await;
+
+        let store = LibraryStore::open_in_memory();
+        seed_two_library_resync(&store, "lib-a");
+        let report = InitialSyncRunner::new(
+            &store,
+            &test_subsonic(&server.uri()),
+            "s1",
+            "lib-a",
+            flags(CapabilityFlags::NAVIDROME_NATIVE_BULK),
+        )
+        .with_batch_size(10)
+        .with_sleep_disabled()
+        .run()
+        .await
+        .unwrap();
+        assert_eq!(report.strategy.as_deref(), Some("s2"));
+        assert_scoped_resync_preserved_other_library(&store, "a-new");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1613,7 +1968,9 @@ mod tests {
         // Stale track soft-deleted, ghost artist pruned, new artist kept.
         let old_track_deleted: i64 = store
             .with_conn("misc", |c| {
-                c.query_row("SELECT deleted FROM track WHERE id = 'tr_old'", [], |r| r.get(0))
+                c.query_row("SELECT deleted FROM track WHERE id = 'tr_old'", [], |r| {
+                    r.get(0)
+                })
             })
             .unwrap();
         assert_eq!(old_track_deleted, 1);
@@ -1723,7 +2080,10 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(has_va, 1, "empty getArtists must not prune album-artist rows");
+        assert_eq!(
+            has_va, 1,
+            "empty getArtists must not prune album-artist rows"
+        );
     }
 
     // ── Per-batch progress is emitted during ingest ───────────────────
@@ -1765,8 +2125,15 @@ mod tests {
                 totals.push(ingested_total);
             }
         }
-        assert!(!totals.is_empty(), "initial sync must emit per-batch IngestPage progress");
-        assert_eq!(*totals.last().unwrap(), 7, "final progress total must reach the full count");
+        assert!(
+            !totals.is_empty(),
+            "initial sync must emit per-batch IngestPage progress"
+        );
+        assert_eq!(
+            *totals.last().unwrap(),
+            7,
+            "final progress total must reach the full count"
+        );
         assert!(
             totals.windows(2).all(|w| w[0] <= w[1]),
             "ingest totals must be non-decreasing"
@@ -1815,7 +2182,9 @@ mod tests {
         assert_eq!(report.ingested_count, 4 + 6);
         // …but the store ends up with all 10.
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         // 6 — only the pages run by *this* invocation are persisted to
         // `track` here because the cursor said offset=4 but the prior
@@ -1856,12 +2225,13 @@ mod tests {
             &subsonic,
             "s1",
             "",
-            flags(
-                CapabilityFlags::NAVIDROME_NATIVE_BULK | CapabilityFlags::SUBSONIC_SEARCH3_BULK,
-            ),
+            flags(CapabilityFlags::NAVIDROME_NATIVE_BULK | CapabilityFlags::SUBSONIC_SEARCH3_BULK),
         );
         let cursor = runner.load_or_init_cursor(&sync_state).unwrap();
-        assert_eq!(cursor.strategy, "s1", "in-flight strategy must be frozen on resume");
+        assert_eq!(
+            cursor.strategy, "s1",
+            "in-flight strategy must be frozen on resume"
+        );
         assert_eq!(cursor.ingested_count, 42, "resume must preserve progress");
     }
 
@@ -1895,7 +2265,10 @@ mod tests {
             flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
         );
         let cursor = runner.load_or_init_cursor(&sync_state).unwrap();
-        assert_eq!(cursor.strategy, "s1", "no-progress cursor adopts the selected strategy");
+        assert_eq!(
+            cursor.strategy, "s1",
+            "no-progress cursor adopts the selected strategy"
+        );
         assert_eq!(cursor.ingested_count, 0);
     }
 
@@ -1929,13 +2302,47 @@ mod tests {
             &subsonic,
             "s1",
             "",
-            flags(
-                CapabilityFlags::NAVIDROME_NATIVE_BULK | CapabilityFlags::SUBSONIC_SEARCH3_BULK,
-            ),
+            flags(CapabilityFlags::NAVIDROME_NATIVE_BULK | CapabilityFlags::SUBSONIC_SEARCH3_BULK),
         );
         let cursor = runner.load_or_init_cursor(&sync_state).unwrap();
-        assert_eq!(cursor.strategy, "s1", "known-broken N1 cursor must re-select to S1");
+        assert_eq!(
+            cursor.strategy, "s1",
+            "known-broken N1 cursor must re-select to S1"
+        );
         assert_eq!(cursor.ingested_count, 0);
+    }
+
+    #[test]
+    fn legacy_scoped_n1_cursor_with_progress_restarts_scope_safe() {
+        let store = LibraryStore::open_in_memory();
+        let sync_state = SyncStateRepository::new(&store);
+        sync_state.ensure("s1", "lib-a").unwrap();
+        sync_state
+            .set_initial_sync_cursor(
+                "s1",
+                "lib-a",
+                &json!({
+                    "strategy": "n1",
+                    "phase": "ingest",
+                    "library_scope": "lib-a",
+                    "ingested_count": 42,
+                    "strategy_state": { "kind": "linear_offset", "offset": 500 }
+                }),
+            )
+            .unwrap();
+
+        let subsonic = test_subsonic("http://127.0.0.1:1");
+        let runner = InitialSyncRunner::new(
+            &store,
+            &subsonic,
+            "s1",
+            "lib-a",
+            flags(CapabilityFlags::NAVIDROME_NATIVE_BULK | CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        );
+        let cursor = runner.load_or_init_cursor(&sync_state).unwrap();
+        assert_eq!(cursor.strategy, "s1");
+        assert_eq!(cursor.ingested_count, 0);
+        assert_eq!(cursor.library_scope.as_deref(), Some("lib-a"));
     }
 
     #[test]
@@ -2046,7 +2453,9 @@ mod tests {
                 .and(wm_path("/api/song"))
                 .and(query_param("_start", start.to_string()))
                 .and(header("X-ND-Authorization", "Bearer nd-tok"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Array(songs)))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::Value::Array(songs)),
+                )
                 .mount(&server)
                 .await;
         }
@@ -2089,13 +2498,18 @@ mod tests {
         .unwrap();
         assert_eq!(report.ingested_count, 4);
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 4);
 
         let sync_state = SyncStateRepository::new(&store);
         assert_eq!(sync_state.get_local_track_count("s1", "").unwrap(), Some(4));
-        assert_eq!(sync_state.get_sync_phase("s1", "").unwrap().as_deref(), Some("ready"));
+        assert_eq!(
+            sync_state.get_sync_phase("s1", "").unwrap().as_deref(),
+            Some("ready")
+        );
         let full_sync: Option<i64> = store
             .with_conn("misc", |c| {
                 c.query_row(
@@ -2160,15 +2574,24 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(report.strategy.as_deref(), Some("s1"), "run must finish on S1");
+        assert_eq!(
+            report.strategy.as_deref(),
+            Some("s1"),
+            "run must finish on S1"
+        );
         // 5 distinct songs — N1's two rows were re-upserted, not duplicated.
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 5);
         // Server learned the flag so future syncs skip N1.
         let sync_state = SyncStateRepository::new(&store);
-        assert_eq!(sync_state.get_n1_bulk_unreliable("s1", "").unwrap(), Some(true));
+        assert_eq!(
+            sync_state.get_n1_bulk_unreliable("s1", "").unwrap(),
+            Some(true)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2203,7 +2626,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, SyncError::Navidrome(ref m) if m.contains("500")));
         let sync_state = SyncStateRepository::new(&store);
-        assert_eq!(sync_state.get_n1_bulk_unreliable("s1", "").unwrap(), Some(false));
+        assert_eq!(
+            sync_state.get_n1_bulk_unreliable("s1", "").unwrap(),
+            Some(false)
+        );
     }
 
     // ── S1 → S2 persistent-failure fallback (R7-15 Q8) ────────────────
@@ -2268,9 +2694,15 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(report.strategy.as_deref(), Some("s2"), "run must finish on S2");
+        assert_eq!(
+            report.strategy.as_deref(),
+            Some("s2"),
+            "run must finish on S2"
+        );
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 1, "the S2 album crawl ingested the track");
     }
@@ -2369,8 +2801,14 @@ mod tests {
             })
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert!(parsed.get("replayGain").is_some(), "raw json keeps replayGain");
-        assert!(parsed.get("contributors").is_some(), "raw json keeps contributors");
+        assert!(
+            parsed.get("replayGain").is_some(),
+            "raw json keeps replayGain"
+        );
+        assert!(
+            parsed.get("contributors").is_some(),
+            "raw json keeps contributors"
+        );
 
         // Typed projection also picked up replayGain via the mapping
         // helper — both paths agree on the hot column.
@@ -2463,7 +2901,9 @@ mod tests {
         assert_eq!(report.ingested_count, 2);
 
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 2);
     }

@@ -39,6 +39,7 @@ import {
   sortSubsonicAlbums,
   type AlbumBrowseSort,
 } from '@/lib/library/browseTextSearch';
+import { useOfflineLocalLibrarySyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 
 /** Local index page size — SQLite is cheap; larger pages than the network walk. */
 const LOCAL_PAGE_SIZE = 30;
@@ -60,6 +61,7 @@ export default function LosslessAlbums() {
   const activeServerId = useAuthStore(s => s.activeServerId);
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
+  const librarySyncRevision = useOfflineLocalLibrarySyncRevision(serverId);
   const sort = useAlbumBrowseSessionStore(s => albumBrowseSortForServer(s.sortByServer, serverId));
   const setBrowseSort = useAlbumBrowseSessionStore(s => s.setSort);
   const downloadAlbum = useOfflineStore(s => s.downloadAlbum);
@@ -224,7 +226,7 @@ export default function LosslessAlbums() {
     })();
 
     return () => { cancelled = true; };
-  }, [activeServerId, indexEnabled, loadMoreNetwork, serverId, sort]);
+  }, [activeServerId, indexEnabled, loadMoreNetwork, serverId, sort, librarySyncRevision]);
 
   const bindLoadMoreSentinel = useInpageScrollSentinel({
     active: hasMore && useLocalIndex !== null,

@@ -11,6 +11,7 @@ import { markQueueHandoffPending } from '@/features/playback/store/queueSyncUiSt
 import { endOrbitSession, leaveOrbitSession } from '@/features/orbit';
 import { ensureConnectUrlResolved } from '@/lib/server/serverEndpoint';
 import { syncServerHttpContextForProfile } from '@/lib/server/syncServerHttpContext';
+import { publishServerConnectionStatus } from '@/lib/network/serverReachability';
 
 export async function switchActiveServer(server: ServerProfile): Promise<boolean> {
   coverTrafficBeginServerSwitch();
@@ -54,6 +55,7 @@ export async function switchActiveServer(server: ServerProfile): Promise<boolean
     scheduleInstantMixProbeForServer(server.id, probe.baseUrl, server.username, server.password, identity);
     auth.setActiveServer(server.id);
     auth.setLoggedIn(true);
+    publishServerConnectionStatus(server.id, 'online', true);
     if (oldActiveId && oldActiveId !== server.id) {
       markQueueHandoffPending();
     }

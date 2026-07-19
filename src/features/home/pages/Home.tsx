@@ -59,6 +59,7 @@ import {
   type MainstageDiagnosticStatus,
 } from '@/features/home/store/mainstageDiagnosticStore';
 import type { HomeSectionId } from '@/features/home/store/homeStore';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 import {
   homeSnapshotForEnabledCoverWarm,
   preserveDisabledHomeSections,
@@ -148,6 +149,7 @@ export default function Home() {
   const devForceOffline = useDevOfflineBrowseStore(s => s.forceOffline);
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const offlineBrowseReloadTs = useOfflineBrowseReloadToken();
+  const librarySyncRevision = useLibraryScopeSyncRevision(serverIds);
   const isVisible = (id: string) => homeSections.find(s => s.id === id)?.visible ?? true;
   const sectionEnabled = (id: HomeSectionId) => (
     isVisible(id) && (!mainstageDiagnosticsEnabled || diagnosticEnabled[id])
@@ -172,6 +174,7 @@ export default function Home() {
   const [loading, setLoading] = useState(initialFeed == null);
   const displayedSnapshotRef = useRef<HomeFeedSnapshot | null>(initialFeed);
   const feedLoadVersionRef = useRef(0);
+  const appliedSyncRevisionRef = useRef(librarySyncRevision);
 
   const applyFeedSnapshot = (snap: HomeFeedSnapshot) => {
     displayedSnapshotRef.current = snap;
@@ -219,6 +222,8 @@ export default function Home() {
     let cancelled = false;
     const loadVersion = ++feedLoadVersionRef.current;
     const isCurrentLoad = () => !cancelled && feedLoadVersionRef.current === loadVersion;
+    const syncRefresh = appliedSyncRevisionRef.current !== librarySyncRevision;
+    appliedSyncRevisionRef.current = librarySyncRevision;
     const startFreshHomeFeed = () => {
       const mixCfg = getMixMinRatingsConfigFromAuth();
       const albumMix =
@@ -230,6 +235,7 @@ export default function Home() {
         anchorServerId,
         scopes,
         scopeVersion,
+        syncRevision: librarySyncRevision,
         randomSize,
         showArtists: sectionEnabled('discoverArtists'),
         showSongs: sectionEnabled('discoverSongs'),
@@ -258,10 +264,22 @@ export default function Home() {
       }
       const chronological = {
         recent: sectionEnabled('recent')
-          ? loadHomeChronologicalFeed({ anchorServerId, scopes, feed: 'newReleases' })
+          ? loadHomeChronologicalFeed({
+              anchorServerId,
+              serverIds,
+              scopes,
+              feed: 'newReleases',
+              freshness: librarySyncRevision,
+            })
           : null,
         recentlyPlayed: sectionEnabled('recentlyPlayed')
-          ? loadHomeChronologicalFeed({ anchorServerId, scopes, feed: 'recentlyPlayed' })
+          ? loadHomeChronologicalFeed({
+              anchorServerId,
+              serverIds,
+              scopes,
+              feed: 'recentlyPlayed',
+              freshness: librarySyncRevision,
+            })
           : null,
       };
       if (mainstageDiagnosticsEnabled && chronological.recent) startDiagnostic('recent');
@@ -331,7 +349,7 @@ export default function Home() {
       }
       // Keep cached content for first paint, then refresh this visit as soon as
       // the independent server bundle is ready.
-      if (!offlineBrowseActive) {
+      if (!offlineBrowseActive || syncRefresh) {
         void (async () => {
           try {
             const freshLoad = startFreshHomeFeed();
@@ -409,6 +427,7 @@ export default function Home() {
     mainstageDiagnosticsEnabled,
     offlineBrowseActive,
     offlineBrowseReloadTs,
+    librarySyncRevision,
   ]);
 
   /** When offline toggles without a library-filter bump, re-apply stale cache if the feed was cleared. */
@@ -431,6 +450,7 @@ export default function Home() {
         snapshot: current,
         section,
         anchorServerId,
+        serverIds,
         scopes,
         mixConfig: getMixMinRatingsConfigFromAuth(),
         deps: { filterAlbumsByMixRatingsAcrossServers },

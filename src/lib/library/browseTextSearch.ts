@@ -37,10 +37,15 @@ import {
   type LibrarySearchDebugEntry,
   type LibrarySearchSurface,
 } from './libraryDevLog';
-import { libraryIsReady, waitForLibraryBrowseReady } from './libraryReady';
+import {
+  libraryIsReady,
+  resolveReadyLibraryBrowseScope,
+  waitForLibraryBrowseReady,
+} from './libraryReady';
 import { artistBrowseTimed, emitArtistsBrowseDebug } from './artistBrowseDebug';
 import { raceSearchSources, type SearchRaceWinner } from './searchRace';
 import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
+import { getLibraryBrowseScope } from './libraryBrowseScope';
 
 export type { LibrarySearchSurface };
 
@@ -255,7 +260,6 @@ export async function runLocalBrowseArtists(
     serverId,
     emptyBrowseOpts(query, creditMode),
     limit,
-    false,
     true,
     true,
   );
@@ -292,7 +296,6 @@ export async function runLocalBrowseAlbums(
     serverId,
     albumBrowseOpts(query, losslessOnly),
     limit,
-    false,
     true,
     true,
   );
@@ -322,14 +325,16 @@ export async function runLocalBrowseSongPage(
   offset: number,
   pageSize: number,
 ): Promise<SubsonicSong[] | null> {
-  if (!serverId || !(await libraryIsReady(serverId))) return null;
+  if (!serverId) return null;
+  const readyScope = await resolveReadyLibraryBrowseScope(serverId, getLibraryBrowseScope());
+  if (!readyScope) return null;
   const q = query.trim();
   if (!q) return null;
   try {
     const resp = await libraryAdvancedSearch({
-      serverId,
-      libraryScope: libraryScopeForServer(serverId) ?? undefined,
-      libraryScopes: libraryScopePairsForServer(serverId),
+      serverId: readyScope.anchorServerKey,
+      libraryScope: readyScope.pairs.length > 0 ? undefined : libraryScopeForServer(serverId),
+      libraryScopes: readyScope.pairs.length > 0 ? readyScope.pairs : libraryScopePairsForServer(serverId),
       query: q,
       entityTypes: ['track'],
       limit: pageSize,
@@ -368,7 +373,6 @@ export async function runLocalBrowseFullSearch(
     serverId,
     fullSearchOpts(query),
     songsLimit,
-    false,
     true,
     true,
   );

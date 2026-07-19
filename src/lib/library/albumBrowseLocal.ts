@@ -5,7 +5,7 @@ import { dedupeById } from '@/lib/util/dedupeById';
 import { albumToAlbum } from './advancedSearchLocal';
 import { sharedServerFilters } from './albumBrowseFilters';
 import { albumSortClauses, sortSubsonicAlbums } from './albumBrowseSort';
-import { libraryIsReady } from './libraryReady';
+import { resolveReadyLibraryBrowseScope } from './libraryReady';
 import type { AlbumBrowsePageResult, AlbumBrowseQuery } from './albumBrowseTypes';
 import { GENRE_ALBUM_FETCH_LIMIT } from './albumBrowseTypes';
 import { albumBrowseTimed, emitAlbumBrowseDebug } from './albumBrowseDebug';
@@ -24,9 +24,10 @@ export async function runLocalAlbumBrowse(
   restrictAlbumIds?: string[],
 ): Promise<AlbumBrowsePageResult | null> {
   if (!serverId) return null;
+  const browseScope = getLibraryBrowseScope();
   const ready = await albumBrowseTimed(
     'library_is_ready',
-    () => libraryIsReady(serverId),
+    () => resolveReadyLibraryBrowseScope(serverId, browseScope),
     { serverId, offset, pageSize },
   );
   if (!ready) {
@@ -34,9 +35,9 @@ export async function runLocalAlbumBrowse(
     return null;
   }
 
-  const browseScope = getLibraryBrowseScope();
-  const scope = browseScope.pairs.length > 0 ? undefined : (libraryScopeForServer(serverId) ?? undefined);
-  const libraryScopes = browseScope.pairs.length > 0 ? browseScope.pairs : libraryScopePairsForServer(serverId);
+  const scope = ready.pairs.length > 0 ? undefined : (libraryScopeForServer(serverId) ?? undefined);
+  const libraryScopes = ready.pairs.length > 0 ? ready.pairs : libraryScopePairsForServer(serverId);
+  const anchorServerKey = ready.anchorServerKey;
   const useServerStarredIds = restrictAlbumIds != null;
   const shared = sharedServerFilters(query, useServerStarredIds);
   const starredOnly = useServerStarredIds ? undefined : (query.starredOnly || undefined);
@@ -49,7 +50,7 @@ export async function runLocalAlbumBrowse(
           const resp = await albumBrowseTimed(
             'list_albums_by_genre',
             () => libraryListAlbumsByGenre({
-              serverId,
+              serverId: anchorServerKey,
               genre: query.genres[0],
               libraryScope: scope,
               libraryScopes,
@@ -71,7 +72,7 @@ export async function runLocalAlbumBrowse(
         const resp = await albumBrowseTimed(
           'advanced_search',
           () => libraryAdvancedSearch({
-            serverId,
+            serverId: anchorServerKey,
             libraryScope: scope,
             libraryScopes,
             entityTypes: ['album'],
@@ -98,7 +99,7 @@ export async function runLocalAlbumBrowse(
       const pages = await Promise.all(
         query.genres.map(genre =>
           libraryAdvancedSearch({
-            serverId,
+            serverId: anchorServerKey,
             libraryScope: scope,
             libraryScopes,
             entityTypes: ['album'],
@@ -128,7 +129,7 @@ export async function runLocalAlbumBrowse(
     const resp = await albumBrowseTimed(
       'advanced_search',
       () => libraryAdvancedSearch({
-        serverId,
+        serverId: anchorServerKey,
         libraryScope: scope,
         libraryScopes,
         entityTypes: ['album'],
@@ -166,12 +167,14 @@ export async function runLocalAlbumScopeBrowse(
   if (!serverId) return null;
   const scope = getLibraryBrowseScope();
   if (scope.pairs.length === 0) return null;
+  const ready = await resolveReadyLibraryBrowseScope(serverId, scope);
+  if (!ready) return null;
   try {
     const response = await albumBrowseTimed(
       'scope_browse',
-      () => libraryScopeBrowse(serverId, {
+      () => libraryScopeBrowse(ready.anchorServerKey, {
         entity: 'album',
-        scopes: scope.pairs,
+        scopes: ready.pairs,
         sort: albumSortClauses(sort),
         limit,
         cursor,

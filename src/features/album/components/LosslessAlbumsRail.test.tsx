@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
+import { resetLibraryLocalReadSingleFlightsForTests } from '@/lib/library/localReadSingleFlight';
 
-const { localMock, networkMock, authState } = vi.hoisted(() => ({
+const { localMock, networkMock, authState, revisionState } = vi.hoisted(() => ({
   localMock: vi.fn(),
   networkMock: vi.fn(),
   authState: { activeServerId: 'active' as string | null },
+  revisionState: { value: 0 },
 }));
 
 vi.mock('@/lib/library/browseTextSearch', () => ({ runLocalLosslessAlbums: localMock }));
@@ -15,6 +17,9 @@ vi.mock('@/store/authStore', () => ({
 }));
 vi.mock('@/store/libraryIndexStore', () => ({
   useLibraryIndexStore: (selector: (state: { masterEnabled: boolean }) => unknown) => selector({ masterEnabled: true }),
+}));
+vi.mock('@/store/offlineLocalLibrarySyncRevision', () => ({
+  useLibraryScopeSyncRevision: () => revisionState.value,
 }));
 vi.mock('@/features/album/components/AlbumRow', () => ({
   default: ({ albums }: { albums: Array<{ id: string; serverId?: string }> }) => (
@@ -34,10 +39,18 @@ const album = (serverId: string, id: string) => ({
   duration: 1,
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(res => { resolve = res; });
+  return { promise, resolve };
+}
+
 describe('LosslessAlbumsRail multi-server scope', () => {
   beforeEach(() => {
     localMock.mockReset();
     networkMock.mockReset();
+    resetLibraryLocalReadSingleFlightsForTests();
+    revisionState.value = 0;
   });
 
   it('uses equal quotas, local-first fallback, failure isolation, and stable round-robin order', async () => {
@@ -122,6 +135,62 @@ describe('LosslessAlbumsRail multi-server scope', () => {
       detail: 'srv-a:network:4000ms/0',
       durationMs: expect.any(Number),
     }));
+    expect(networkMock).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
+  });
+
+  it('falls back to network before the total deadline when the local flight never settles', async () => {
+    vi.useFakeTimers();
+    localMock.mockReturnValue(new Promise(() => undefined));
+    networkMock.mockResolvedValue({
+      entries: [{ album: album('srv-a', 'network'), bitDepth: 24, sampleRate: 96000 }],
+      done: false,
+      nextSongOffset: 100,
+    });
+    const onDiagnosticResult = vi.fn();
+    renderWithProviders(
+      <LosslessAlbumsRail serverIds={['srv-a']} onDiagnosticResult={onDiagnosticResult} />,
+    );
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(networkMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByTestId('albums')).toHaveTextContent('srv-a:network');
+    expect(localMock).toHaveBeenCalledTimes(1);
+    expect(networkMock).toHaveBeenCalledTimes(1);
+    expect(onDiagnosticResult).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'ready',
+      itemCount: 1,
+    }));
+    vi.useRealTimers();
+  });
+
+  it('starts a fresh local flight after sync revision and ignores the stale result', async () => {
+    const oldLocal = deferred<{ albums: ReturnType<typeof album>[]; hasMore: boolean }>();
+    const freshLocal = deferred<{ albums: ReturnType<typeof album>[]; hasMore: boolean }>();
+    localMock
+      .mockReturnValueOnce(oldLocal.promise)
+      .mockReturnValueOnce(freshLocal.promise);
+    const view = renderWithProviders(<LosslessAlbumsRail serverIds={['srv-a']} />);
+    await waitFor(() => expect(localMock).toHaveBeenCalledTimes(1));
+
+    revisionState.value = 1;
+    view.rerender(
+      <LosslessAlbumsRail serverIds={['srv-a']} />,
+    );
+    await waitFor(() => expect(localMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      freshLocal.resolve({ albums: [album('srv-a', 'fresh')], hasMore: false });
+    });
+    expect(screen.getByTestId('albums')).toHaveTextContent('srv-a:fresh');
+
+    await act(async () => {
+      oldLocal.resolve({ albums: [album('srv-a', 'stale')], hasMore: false });
+    });
+    expect(screen.getByTestId('albums')).toHaveTextContent('srv-a:fresh');
+    expect(networkMock).not.toHaveBeenCalled();
   });
 });

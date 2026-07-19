@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { onInvoke } from '@/test/mocks/tauri';
 import { useAuthStore } from '@/store/authStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
+import { resetAuthStore } from '@/test/helpers/storeReset';
 import {
   albumToAlbum,
   resolveTrackCoverArtId,
@@ -39,6 +40,7 @@ const ready = () =>
 
 describe('runLocalAdvancedSearch', () => {
   beforeEach(() => {
+    resetAuthStore();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
@@ -103,6 +105,38 @@ describe('runLocalAdvancedSearch', () => {
         ],
       },
     });
+  });
+
+  it('declines multi-server local search when any selected index is not ready', async () => {
+    useAuthStore.setState({
+      servers: [
+        { id: 'a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
+      activeServerId: 'a',
+      libraryBrowseServerIds: ['a', 'b'],
+      musicFoldersByServer: {
+        a: [{ id: 'lib-a', name: 'A' }],
+        b: [{ id: 'lib-b', name: 'B' }],
+      },
+      libraryBrowseSelectionByServer: {},
+    });
+    onInvoke('library_get_status', args => {
+      const serverId = (args as { serverId: string }).serverId;
+      return {
+        serverId,
+        libraryScope: '',
+        syncPhase: serverId === 'b.test' ? 'initial_sync' : 'ready',
+      };
+    });
+    let searchCalls = 0;
+    onInvoke('library_advanced_search', () => {
+      searchCalls += 1;
+      return { artists: [], albums: [], tracks: [], totals: { artists: 0, albums: 0, tracks: 0 }, source: 'local' };
+    });
+
+    await expect(runLocalAdvancedSearch('a', opts({ query: 'x' }), 100)).resolves.toBeNull();
+    expect(searchCalls).toBe(0);
   });
 
   it('passes lossless is_true filter to library_advanced_search', async () => {
@@ -277,6 +311,7 @@ describe('runLocalAdvancedSearch', () => {
 
 describe('runLocalSongBrowse', () => {
   beforeEach(() => {
+    resetAuthStore();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
@@ -355,10 +390,11 @@ describe('runLocalSongBrowse', () => {
 
 describe('tryRunLocalAdvancedSearch', () => {
   beforeEach(() => {
+    resetAuthStore();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
-  it('retries without the ready gate when sync is still in progress', async () => {
+  it('does not bypass readiness while sync is still in progress', async () => {
     onInvoke('library_get_status', () => ({
       serverId: 's1',
       libraryScope: '',
@@ -382,8 +418,8 @@ describe('tryRunLocalAdvancedSearch', () => {
       };
     });
     const res = await tryRunLocalAdvancedSearch('s1', opts({ yearFrom: '2020' }), 100);
-    expect(res).not.toBeNull();
-    expect(searchCalls).toBe(1);
+    expect(res).toBeNull();
+    expect(searchCalls).toBe(0);
   });
 });
 

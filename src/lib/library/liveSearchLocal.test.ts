@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { onInvoke } from '@/test/mocks/tauri';
 import type { SearchResults } from '@/lib/api/subsonicTypes';
 import { useAuthStore } from '@/store/authStore';
+import { useLibraryIndexStore } from '@/store/libraryIndexStore';
+import { resetAuthStore } from '@/test/helpers/storeReset';
 import {
   liveSearchQueryRejected,
   liveSearchQueryTooShort,
@@ -13,6 +15,23 @@ const neverStale = { epoch: 1, isStale: () => false };
 const alwaysStale = { epoch: 1, isStale: () => true };
 
 describe('runLocalLiveSearch', () => {
+  beforeEach(() => {
+    resetAuthStore();
+    useLibraryIndexStore.setState({ masterEnabled: true });
+    useAuthStore.setState({
+      activeServerId: 's1',
+      servers: [{ id: 's1', name: 'S', url: 'https://s.test', username: 'u', password: 'p' }],
+      libraryBrowseServerIds: ['s1'],
+      musicFoldersByServer: {},
+      libraryBrowseSelectionByServer: {},
+    });
+    onInvoke('library_get_status', args => ({
+      serverId: (args as { serverId: string }).serverId,
+      libraryScope: '',
+      syncPhase: 'ready',
+    }));
+  });
+
   it('returns null without invoking for a single-character query', async () => {
     let invoked = false;
     onInvoke('library_live_search', () => {
@@ -91,9 +110,9 @@ describe('runLocalLiveSearch', () => {
     await runLocalLiveSearch('s1', 'foo', neverStale);
     expect(captured).toMatchObject({
       request: {
-        serverId: 's1',
+        serverId: 's.test',
         libraryScope: 'lib7',
-        libraryScopes: [{ serverId: 's1', libraryId: 'lib7' }],
+        libraryScopes: [{ serverId: 's.test', libraryId: 'lib7' }],
       },
     });
   });
@@ -112,11 +131,39 @@ describe('runLocalLiveSearch', () => {
     expect(captured).toMatchObject({
       request: {
         libraryScopes: [
-          { serverId: 's1', libraryId: 'lib-b' },
-          { serverId: 's1', libraryId: 'lib-a' },
+          { serverId: 's.test', libraryId: 'lib-b' },
+          { serverId: 's.test', libraryId: 'lib-a' },
         ],
       },
     });
+  });
+
+  it('does not invoke multi-server FTS when one selected server is not ready', async () => {
+    useAuthStore.setState({
+      servers: [
+        { id: 'a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
+      activeServerId: 'a',
+      libraryBrowseServerIds: ['a', 'b'],
+      musicFoldersByServer: {
+        a: [{ id: 'lib-a', name: 'A' }],
+        b: [{ id: 'lib-b', name: 'B' }],
+      },
+      libraryBrowseSelectionByServer: {},
+    });
+    onInvoke('library_get_status', args => {
+      const serverId = (args as { serverId: string }).serverId;
+      return { serverId, libraryScope: '', syncPhase: serverId === 'b.test' ? 'initial_sync' : 'ready' };
+    });
+    let invoked = false;
+    onInvoke('library_live_search', () => {
+      invoked = true;
+      return { artists: [], albums: [], tracks: [], source: 'local' };
+    });
+
+    await expect(runLocalLiveSearch('a', 'foo', neverStale)).resolves.toBeNull();
+    expect(invoked).toBe(false);
   });
 });
 

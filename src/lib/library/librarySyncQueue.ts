@@ -16,18 +16,22 @@ export type LibrarySyncQueueKind = 'full' | 'delta' | 'verify';
 interface QueueItem {
   serverId: string;
   kind: LibrarySyncQueueKind;
+  promise: Promise<void>;
   resolve: () => void;
   reject: (err: unknown) => void;
 }
 
 const queue: QueueItem[] = [];
 let draining = false;
+let activeItem: QueueItem | null = null;
 let idleListener: Promise<UnlistenFn> | null = null;
 let waitingForIdle: {
   serverId: string;
+  jobId: string;
   resolve: () => void;
   reject: (err: unknown) => void;
 } | null = null;
+const completedIdleByJobId = new Map<string, LibrarySyncIdlePayload>();
 
 function logQueue(message: string, serverId?: string, kind?: LibrarySyncQueueKind): void {
   if (!libraryDevEnabled()) return;
@@ -59,7 +63,24 @@ function onSyncIdle(payload: LibrarySyncIdlePayload): void {
     clearArtistBrowseCatalogCache();
     clearAlbumBrowseCatalogCache();
   }
-  if (!waitingForIdle || waitingForIdle.serverId !== payload.serverId) return;
+  if (payload.source === 'background') return;
+  if (!payload.jobId) return;
+  if (
+    !waitingForIdle
+    || waitingForIdle.serverId !== payload.serverId
+    || waitingForIdle.jobId !== payload.jobId
+  ) {
+    completedIdleByJobId.set(payload.jobId, payload);
+    if (completedIdleByJobId.size > 32) {
+      completedIdleByJobId.delete(completedIdleByJobId.keys().next().value!);
+    }
+    return;
+  }
+  settleIdleWaiter(payload);
+}
+
+function settleIdleWaiter(payload: LibrarySyncIdlePayload): void {
+  if (!waitingForIdle) return;
   const waiter = waitingForIdle;
   waitingForIdle = null;
   if (payload.ok) {
@@ -71,9 +92,15 @@ function onSyncIdle(payload: LibrarySyncIdlePayload): void {
   waiter.reject(new Error(payload.error ?? 'library sync failed'));
 }
 
-function waitForServerIdle(serverId: string): Promise<void> {
+function waitForServerIdle(serverId: string, jobId: string): Promise<void> {
+  const completed = completedIdleByJobId.get(jobId);
+  if (completed) {
+    completedIdleByJobId.delete(jobId);
+    if (completed.ok) return Promise.resolve();
+    return Promise.reject(new Error(completed.error ?? 'library sync failed'));
+  }
   return new Promise((resolve, reject) => {
-    waitingForIdle = { serverId, resolve, reject };
+    waitingForIdle = { serverId, jobId, resolve, reject };
   });
 }
 
@@ -86,7 +113,7 @@ export function waitForLibrarySyncIdle(serverId: string, timeoutMs = 15_000): Pr
       resolve();
     }, timeoutMs);
     void subscribeLibrarySyncIdle(p => {
-      if (p.serverId !== serverId) return;
+      if (p.serverId !== serverId || p.source === 'background') return;
       clearTimeout(timer);
       unlisten?.();
       resolve();
@@ -96,34 +123,75 @@ export function waitForLibrarySyncIdle(serverId: string, timeoutMs = 15_000): Pr
   });
 }
 
-async function invokeSync(serverId: string, kind: LibrarySyncQueueKind): Promise<void> {
+async function invokeSync(serverId: string, kind: LibrarySyncQueueKind): Promise<string> {
   if (kind === 'verify') {
-    await librarySyncVerifyIntegrity({ serverId });
-    return;
+    return (await librarySyncVerifyIntegrity({ serverId })).jobId;
   }
-  await librarySyncStart({ serverId, mode: kind === 'full' ? 'full' : 'delta' });
+  return (await librarySyncStart({ serverId, mode: kind === 'full' ? 'full' : 'delta' })).jobId;
 }
 
 async function drainQueue(): Promise<void> {
   if (draining) return;
   draining = true;
-  await ensureIdleListener();
+  try {
+    await ensureIdleListener();
+  } catch (error) {
+    idleListener = null;
+    draining = false;
+    activeItem = null;
+    if (waitingForIdle) {
+      waitingForIdle.reject(error);
+      waitingForIdle = null;
+    }
+    const failed = queue.splice(0, queue.length);
+    for (const item of failed) item.reject(error);
+    return;
+  }
   while (queue.length > 0) {
     const item = queue[0]!;
+    activeItem = item;
     logQueue(`start ${item.serverId}`, item.serverId, item.kind);
     try {
-      const idlePromise = waitForServerIdle(item.serverId);
-      await invokeSync(item.serverId, item.kind);
-      await idlePromise;
+      const jobId = await invokeSync(item.serverId, item.kind);
+      await waitForServerIdle(item.serverId, jobId);
       queue.shift();
       item.resolve();
     } catch (err) {
+      if (waitingForIdle?.serverId === item.serverId) waitingForIdle = null;
       queue.shift();
       item.reject(err);
+    } finally {
+      if (activeItem === item) activeItem = null;
     }
   }
   draining = false;
   if (queue.length > 0) void drainQueue();
+}
+
+const SYNC_KIND_PRECEDENCE: Record<LibrarySyncQueueKind, number> = {
+  delta: 1,
+  verify: 2,
+  full: 3,
+};
+
+function kindSatisfies(
+  existing: LibrarySyncQueueKind,
+  requested: LibrarySyncQueueKind,
+): boolean {
+  return SYNC_KIND_PRECEDENCE[existing] >= SYNC_KIND_PRECEDENCE[requested];
+}
+
+function createQueueItem(args: {
+  serverId: string;
+  kind: LibrarySyncQueueKind;
+}): QueueItem {
+  let resolveItem!: () => void;
+  let rejectItem!: (err: unknown) => void;
+  const promise = new Promise<void>((resolve, reject) => {
+    resolveItem = resolve;
+    rejectItem = reject;
+  });
+  return { ...args, promise, resolve: resolveItem, reject: rejectItem };
 }
 
 /**
@@ -135,13 +203,42 @@ export function enqueueLibrarySync(args: {
   kind: LibrarySyncQueueKind;
 }): Promise<void> {
   logQueue(`enqueue ${args.serverId}`, args.serverId, args.kind);
-  if (queue.some(item => item.serverId === args.serverId && item.kind === args.kind)) {
-    return Promise.resolve();
+  const matching = queue.filter(item => item.serverId === args.serverId);
+  const pending = matching.find(item => item !== activeItem);
+  if (pending) {
+    if (!kindSatisfies(pending.kind, args.kind)) {
+      logQueue(`upgrade pending ${args.serverId}`, args.serverId, args.kind);
+      pending.kind = args.kind;
+    }
+    return pending.promise;
   }
-  return new Promise((resolve, reject) => {
-    queue.push({ ...args, resolve, reject });
-    void drainQueue();
-  });
+
+  const active = matching.find(item => item === activeItem);
+  if (active && kindSatisfies(active.kind, args.kind)) return active.promise;
+
+  const item = createQueueItem(args);
+  queue.push(item);
+  void drainQueue();
+  return item.promise;
+}
+
+/** True while this webview has queued or started matching native sync work. */
+export function hasLibrarySyncWork(serverId: string, kind?: LibrarySyncQueueKind): boolean {
+  return queue.some(item => item.serverId === serverId && (!kind || item.kind === kind));
+}
+
+/** Remove queued work for one server while leaving its already-running job to native cancel. */
+export function clearPendingLibrarySync(serverId: string): number {
+  let removed = 0;
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    const item = queue[index];
+    if (item.serverId !== serverId || item === activeItem) continue;
+    queue.splice(index, 1);
+    item.resolve();
+    removed += 1;
+  }
+  if (removed > 0) logQueue(`cleared pending ${serverId}`, serverId);
+  return removed;
 }
 
 /** Skip enqueue when the local index is already complete. */
@@ -158,11 +255,14 @@ export async function queueInitialSyncIfNeeded(serverId: string): Promise<void> 
 
 /** Test-only reset — clears pending work and idle waiters. */
 export function resetLibrarySyncQueueForTests(): void {
-  queue.splice(0, queue.length);
+  const pending = queue.splice(0, queue.length);
+  for (const item of pending) item.reject(new Error('queue reset'));
   draining = false;
+  activeItem = null;
   if (waitingForIdle) {
     waitingForIdle.reject(new Error('queue reset'));
-    waitingForIdle = null;
+  waitingForIdle = null;
+  completedIdleByJobId.clear();
   }
   void idleListener?.then(unlisten => unlisten());
   idleListener = null;

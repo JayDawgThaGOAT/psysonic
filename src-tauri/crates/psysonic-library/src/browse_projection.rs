@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter};
 use crate::repos::TrackRow;
 use crate::store::LibraryStore;
 
-type AlbumScope = (String, String, String);
+pub(crate) type AlbumScope = (String, String, String);
 pub const MIGRATION_ID: &str = "scope_browse_album_projection_v1";
 const BACKFILL_BATCH_SIZE: i64 = 10_000;
 
@@ -39,7 +39,57 @@ fn add_scope(
     let Some(album_id) = album_id.filter(|id| !id.is_empty()) else {
         return;
     };
-    scopes.insert((server_id.to_string(), library_id.unwrap_or_default(), album_id));
+    scopes.insert((
+        server_id.to_string(),
+        library_id.unwrap_or_default(),
+        album_id,
+    ));
+}
+
+pub(crate) fn collect_album_scopes_for_track_ids(
+    tx: &Transaction<'_>,
+    server_id: &str,
+    track_ids: &[String],
+) -> rusqlite::Result<HashSet<AlbumScope>> {
+    let mut scopes = HashSet::new();
+    let mut statement = tx.prepare_cached(
+        "SELECT library_id, album_id FROM track WHERE server_id = ?1 AND id = ?2",
+    )?;
+    for track_id in track_ids {
+        if let Some((library_id, album_id)) = statement
+            .query_row(params![server_id, track_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()?
+        {
+            add_scope(&mut scopes, server_id, library_id, album_id);
+        }
+    }
+    Ok(scopes)
+}
+
+pub(crate) fn refresh_library_tagged_albums(
+    tx: &Transaction<'_>,
+    server_id: &str,
+    library_id: &str,
+    album_ids: &[String],
+) -> rusqlite::Result<()> {
+    let mut scopes = HashSet::new();
+    for album_id in album_ids {
+        add_scope(
+            &mut scopes,
+            server_id,
+            Some(String::new()),
+            Some(album_id.clone()),
+        );
+        add_scope(
+            &mut scopes,
+            server_id,
+            Some(library_id.to_string()),
+            Some(album_id.clone()),
+        );
+    }
+    refresh_album_scopes(tx, scopes)
 }
 
 /// Capture old and incoming album owners before a track batch changes them.
@@ -53,7 +103,9 @@ pub(crate) fn collect_affected_album_scopes(
     )?;
     for row in rows {
         if let Some((library_id, album_id)) = previous
-            .query_row(params![row.server_id, row.id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row(params![row.server_id, row.id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .optional()?
         {
             add_scope(&mut scopes, &row.server_id, library_id, album_id);
@@ -123,10 +175,7 @@ pub(crate) fn refresh_album_scopes(
 
 /// Full resync can tombstone arbitrary old rows, so rebuild one server's compact
 /// projection after its orphan sweep instead of leaving deleted albums visible.
-pub(crate) fn rebuild_server(
-    tx: &Transaction<'_>,
-    server_id: &str,
-) -> rusqlite::Result<()> {
+pub(crate) fn rebuild_server(tx: &Transaction<'_>, server_id: &str) -> rusqlite::Result<()> {
     tx.execute(
         "DELETE FROM album_browse_projection WHERE server_id = ?1",
         params![server_id],
@@ -176,6 +225,42 @@ pub(crate) fn rebuild_server(
     Ok(())
 }
 
+/// Rebuild the projection rows affected by an authoritative scope mutation.
+/// Empty scope means every library on the server; non-empty scope is exact.
+pub(crate) fn rebuild_scope(
+    tx: &Transaction<'_>,
+    server_id: &str,
+    library_scope: &str,
+) -> rusqlite::Result<()> {
+    if library_scope.is_empty() {
+        return rebuild_server(tx, server_id);
+    }
+    let mut scopes = HashSet::new();
+    for sql in [
+        "SELECT album_id FROM album_browse_projection \
+         WHERE server_id = ?1 AND library_id = ?2",
+        "SELECT DISTINCT album_id FROM track \
+         WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0 \
+           AND album_id IS NOT NULL AND album_id != ''",
+    ] {
+        let mut statement = tx.prepare(sql)?;
+        let album_ids = statement
+            .query_map(params![server_id, library_scope], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for album_id in album_ids {
+            add_scope(
+                &mut scopes,
+                server_id,
+                Some(library_scope.to_string()),
+                Some(album_id),
+            );
+        }
+    }
+    refresh_album_scopes(tx, scopes)
+}
+
 fn migration_completed(conn: &Connection) -> rusqlite::Result<bool> {
     let completed: Option<Option<i64>> = conn
         .query_row(
@@ -200,7 +285,10 @@ fn cursor_rowid(conn: &Connection) -> rusqlite::Result<i64> {
 pub fn inspect(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto, String> {
     store
         .with_read_conn(|conn| {
-            let total: i64 = conn.query_row("SELECT COUNT(*) FROM track WHERE deleted = 0", [], |r| r.get(0))?;
+            let total: i64 =
+                conn.query_row("SELECT COUNT(*) FROM track WHERE deleted = 0", [], |r| {
+                    r.get(0)
+                })?;
             if total == 0 || migration_completed(conn)? {
                 return Ok(ScopeBrowseProjectionInspectDto {
                     needed: false,
@@ -332,7 +420,10 @@ fn run_backfill_impl(store: &LibraryStore, app: Option<&AppHandle>) -> Result<()
         if let Some(app) = app {
             app.emit(
                 "scope_browse_projection:progress",
-                ScopeBrowseProjectionProgressEvent { done, total: inspect_result.total_tracks },
+                ScopeBrowseProjectionProgressEvent {
+                    done,
+                    total: inspect_result.total_tracks,
+                },
             )
             .map_err(|error| error.to_string())?;
         }
@@ -349,15 +440,41 @@ mod tests {
 
     fn track(id: &str, album_id: &str, album: &str, library_id: &str) -> TrackRow {
         TrackRow {
-            server_id: "s1".into(), id: id.into(), title: id.into(), title_sort: None,
-            artist: Some("Artist".into()), artist_id: Some("artist".into()), album: album.into(),
-            album_id: Some(album_id.into()), album_artist: Some("Artist".into()), duration_sec: 120,
-            track_number: None, disc_number: None, year: Some(2024), genre: None, suffix: None,
-            bit_rate: None, size_bytes: None, cover_art_id: None, starred_at: None, user_rating: None,
-            play_count: None, played_at: None, server_path: None, library_id: Some(library_id.into()),
-            isrc: None, mbid_recording: None, bpm: None, replay_gain_track_db: None,
-            replay_gain_album_db: None, replay_gain_peak: None, content_hash: None,
-            server_updated_at: None, server_created_at: None, deleted: false, synced_at: 1,
+            server_id: "s1".into(),
+            id: id.into(),
+            title: id.into(),
+            title_sort: None,
+            artist: Some("Artist".into()),
+            artist_id: Some("artist".into()),
+            album: album.into(),
+            album_id: Some(album_id.into()),
+            album_artist: Some("Artist".into()),
+            duration_sec: 120,
+            track_number: None,
+            disc_number: None,
+            year: Some(2024),
+            genre: None,
+            suffix: None,
+            bit_rate: None,
+            size_bytes: None,
+            cover_art_id: None,
+            starred_at: None,
+            user_rating: None,
+            play_count: None,
+            played_at: None,
+            server_path: None,
+            library_id: Some(library_id.into()),
+            isrc: None,
+            mbid_recording: None,
+            bpm: None,
+            replay_gain_track_db: None,
+            replay_gain_album_db: None,
+            replay_gain_peak: None,
+            content_hash: None,
+            server_updated_at: None,
+            server_created_at: None,
+            deleted: false,
+            synced_at: 1,
             raw_json: "{}".into(),
         }
     }
@@ -393,17 +510,28 @@ mod tests {
                 track("t1", "a1", "Album One", "lib"),
             ])
             .unwrap();
-        store.with_conn_mut("test.clear_projection_marker", |conn| {
-            conn.execute("DELETE FROM album_browse_projection", [])?;
-            conn.execute("DELETE FROM library_data_migration WHERE id = ?1", params![MIGRATION_ID])?;
-            Ok(())
-        }).unwrap();
+        store
+            .with_conn_mut("test.clear_projection_marker", |conn| {
+                conn.execute("DELETE FROM album_browse_projection", [])?;
+                conn.execute(
+                    "DELETE FROM library_data_migration WHERE id = ?1",
+                    params![MIGRATION_ID],
+                )?;
+                Ok(())
+            })
+            .unwrap();
 
         run_backfill_impl(&store, None).unwrap();
         assert!(is_ready(&store).unwrap());
-        let count: i64 = store.with_read_conn(|conn| conn.query_row(
-            "SELECT COUNT(*) FROM album_browse_projection WHERE album_id = 'a1'", [], |row| row.get(0),
-        )).unwrap();
+        let count: i64 = store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM album_browse_projection WHERE album_id = 'a1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
         assert_eq!(count, 1);
     }
 }

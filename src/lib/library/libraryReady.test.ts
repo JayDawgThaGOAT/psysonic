@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { SyncStateDto } from '@/lib/api/library';
-import { libraryStatusIsReady, syncIngestDisplayCount } from './libraryReady';
+import { onInvoke } from '@/test/mocks/tauri';
+import { resetAuthStore } from '@/test/helpers/storeReset';
+import { useAuthStore } from '@/store/authStore';
+import { useLibraryIndexStore } from '@/store/libraryIndexStore';
+import {
+  libraryStatusIsReady,
+  readyLibraryServerKeys,
+  syncIngestDisplayCount,
+} from './libraryReady';
 
 const status = (over: Partial<SyncStateDto>): SyncStateDto => ({
   serverId: 's1',
@@ -16,12 +24,12 @@ describe('libraryStatusIsReady', () => {
     expect(libraryStatusIsReady(status({ syncPhase: 'ready' }))).toBe(true);
   });
 
-  it('accepts initial_sync at 95% coverage', () => {
+  it('rejects initial_sync even at 95% coverage', () => {
     expect(
       libraryStatusIsReady(
         status({ syncPhase: 'initial_sync', localTrackCount: 950, serverTrackCount: 1000 }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('accepts idle after a completed full sync (legacy bind clobber)', () => {
@@ -66,6 +74,46 @@ describe('libraryStatusIsReady', () => {
 
   it('rejects idle without a prior full sync', () => {
     expect(libraryStatusIsReady(status({ syncPhase: 'idle', localTrackCount: 0 }))).toBe(false);
+  });
+});
+
+describe('readyLibraryServerKeys', () => {
+  beforeEach(() => {
+    resetAuthStore();
+    useLibraryIndexStore.setState({ masterEnabled: true });
+    useAuthStore.setState({
+      servers: [
+        { id: 'a', name: 'A', url: 'https://a.test/rest', username: 'u', password: 'p' },
+        { id: 'b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
+    });
+  });
+
+  it('returns URL-derived keys only when every server is ready', async () => {
+    const statusKeys: string[] = [];
+    onInvoke('library_get_status', args => {
+      const serverId = (args as { serverId: string }).serverId;
+      statusKeys.push(serverId);
+      return status({ serverId, syncPhase: 'ready' });
+    });
+
+    await expect(readyLibraryServerKeys(['a', 'b'])).resolves.toEqual([
+      'a.test/rest',
+      'b.test',
+    ]);
+    expect(statusKeys).toEqual(['a.test/rest', 'b.test']);
+  });
+
+  it('declines the complete scope when one server is still syncing', async () => {
+    onInvoke('library_get_status', args => {
+      const serverId = (args as { serverId: string }).serverId;
+      return status({
+        serverId,
+        syncPhase: serverId === 'b.test' ? 'initial_sync' : 'ready',
+      });
+    });
+
+    await expect(readyLibraryServerKeys(['a', 'b'])).resolves.toBeNull();
   });
 });
 

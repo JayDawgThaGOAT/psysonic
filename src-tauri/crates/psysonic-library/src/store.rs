@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::{fs, io};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+use std::{fs, io};
 
 use rusqlite::{functions::FunctionFlags, params, Connection, OpenFlags, OptionalExtension};
 use tauri::Manager;
@@ -122,7 +122,6 @@ pub(crate) fn ensure_scope_browse_projection_schema(conn: &Connection) -> rusqli
     conn.execute_batch(MIGRATION_020_SCOPE_BROWSE_PROJECTION)
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MigrationOutcome {
     /// Every missing migration was applied (or the DB was already at head).
@@ -239,11 +238,13 @@ impl LibraryStore {
         // Shared-cache identity DB: write connection created schema first.
         crate::identity::attach_cluster_read_memory(&read_conn, &cluster_uri)
             .expect("cluster attach read");
-        let mainstage_read_conn = Connection::open(&uri).expect("in-memory mainstage read connection");
+        let mainstage_read_conn =
+            Connection::open(&uri).expect("in-memory mainstage read connection");
         configure_read_connection(&mainstage_read_conn).expect("mainstage read pragmas");
         crate::identity::attach_cluster_read_memory(&mainstage_read_conn, &cluster_uri)
             .expect("cluster attach mainstage read");
-        let scope_detail_read_conn = Connection::open(&uri).expect("in-memory scope detail read connection");
+        let scope_detail_read_conn =
+            Connection::open(&uri).expect("in-memory scope detail read connection");
         configure_read_connection(&scope_detail_read_conn).expect("scope detail read pragmas");
         crate::identity::attach_cluster_read_memory(&scope_detail_read_conn, &cluster_uri)
             .expect("cluster attach scope detail read");
@@ -259,12 +260,52 @@ impl LibraryStore {
     }
 
     pub(crate) fn set_bulk_ingest_active(&self, active: bool) {
-        self.bulk_ingest_active
-            .store(active, Ordering::Release);
+        self.bulk_ingest_active.store(active, Ordering::Release);
     }
 
     pub(crate) fn bulk_ingest_active(&self) -> bool {
         self.bulk_ingest_active.load(Ordering::Acquire)
+    }
+
+    /// Verify the invariants that must hold after the production open pipeline.
+    /// Backup import calls this after swap/reopen so migrations and interrupted
+    /// bulk-ingest repair remain owned by one path.
+    pub fn verify_operational_schema(&self) -> Result<(), String> {
+        let (migration_head, missing_indexes, missing_triggers) =
+            self.with_conn("store.verify_operational_schema", |conn| {
+                let migration_head =
+                    conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                        row.get::<_, Option<i64>>(0)
+                    })?;
+                Ok((
+                    migration_head,
+                    crate::bulk_ingest::missing_track_secondary_indexes(conn)?,
+                    crate::track_fts::missing_track_fts_triggers(conn)?,
+                ))
+            })?;
+
+        if migration_head != Some(LIBRARY_DB_SCHEMA_VERSION) {
+            return Err(format!(
+                "library schema migration head mismatch: expected {}, found {}",
+                LIBRARY_DB_SCHEMA_VERSION,
+                migration_head
+                    .map(|version| version.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            ));
+        }
+        if !missing_indexes.is_empty() {
+            return Err(format!(
+                "library schema missing operational indexes: {}",
+                missing_indexes.join(", ")
+            ));
+        }
+        if !missing_triggers.is_empty() {
+            return Err(format!(
+                "library schema missing operational triggers: {}",
+                missing_triggers.join(", ")
+            ));
+        }
+        Ok(())
     }
 
     fn swap_in_progress(&self) -> bool {
@@ -317,7 +358,9 @@ impl LibraryStore {
         match self.scope_detail_read_conn.lock() {
             Ok(guard) => Ok(guard),
             Err(poisoned) => {
-                crate::app_eprintln!("[library-db] scope detail read lock was poisoned — recovering");
+                crate::app_eprintln!(
+                    "[library-db] scope detail read lock was poisoned — recovering"
+                );
                 Ok(poisoned.into_inner())
             }
         }
@@ -368,11 +411,14 @@ impl LibraryStore {
         let exec_start = std::time::Instant::now();
         let value = run_conn_closure(&conn, f)?;
         let exec_ms = exec_start.elapsed().as_millis() as u64;
-        Ok((value, ReadOpTiming {
-            lock_wait_ms,
-            exec_ms,
-            blocked_by: (lock_wait_ms > 0).then_some(blocked_by).flatten(),
-        }))
+        Ok((
+            value,
+            ReadOpTiming {
+                lock_wait_ms,
+                exec_ms,
+                blocked_by: (lock_wait_ms > 0).then_some(blocked_by).flatten(),
+            },
+        ))
     }
 
     /// Isolated reader for wide Mainstage scans. All other browse paths retain
@@ -402,13 +448,21 @@ impl LibraryStore {
         }
     }
 
-    fn mark_read_owner(&self, caller: &'static std::panic::Location<'static>) -> ReadOpOwnerGuard<'_> {
-        let owner = ReadOpOwner { file: caller.file(), line: caller.line() };
+    fn mark_read_owner(
+        &self,
+        caller: &'static std::panic::Location<'static>,
+    ) -> ReadOpOwnerGuard<'_> {
+        let owner = ReadOpOwner {
+            file: caller.file(),
+            line: caller.line(),
+        };
         match self.read_op_owner.lock() {
             Ok(mut current) => *current = Some(owner),
             Err(poisoned) => *poisoned.into_inner() = Some(owner),
         }
-        ReadOpOwnerGuard { owner: &self.read_op_owner }
+        ReadOpOwnerGuard {
+            owner: &self.read_op_owner,
+        }
     }
 
     pub(crate) fn with_conn_mut<R>(
@@ -431,7 +485,13 @@ impl LibraryStore {
         let out = run_conn_mut_closure(&mut conn, f)?;
         let exec_ms = exec_start.elapsed().as_millis() as u64;
         log_write_op(op, lock_wait_ms as u128, exec_ms as u128);
-        Ok((out, WriteOpTiming { lock_wait_ms, exec_ms }))
+        Ok((
+            out,
+            WriteOpTiming {
+                lock_wait_ms,
+                exec_ms,
+            },
+        ))
     }
 
     pub(crate) fn checkpoint_wal(&self, op: &'static str) -> Result<(), String> {
@@ -454,12 +514,14 @@ impl LibraryStore {
         }
 
         let mut swap_guard = SwapInProgressGuard::new(self);
-        let mut write_conn = self.write_conn.lock().map_err(|_| {
-            "library store write lock poisoned during database swap".to_string()
-        })?;
-        let mut read_conn = self.read_conn.lock().map_err(|_| {
-            "library store read lock poisoned during database swap".to_string()
-        })?;
+        let mut write_conn = self
+            .write_conn
+            .lock()
+            .map_err(|_| "library store write lock poisoned during database swap".to_string())?;
+        let mut read_conn = self
+            .read_conn
+            .lock()
+            .map_err(|_| "library store read lock poisoned during database swap".to_string())?;
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database swap".to_string()
         })?;
@@ -504,14 +566,20 @@ impl LibraryStore {
             drop(mainstage_read_conn);
             drop(scope_detail_read_conn);
             drop(write_conn);
-            let (reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read) = open_database_connections(active_path)
+            let (
+                reopened_write,
+                reopened_read,
+                reopened_mainstage_read,
+                reopened_scope_detail_read,
+            ) = open_database_connections(active_path)
                 .map_err(|e| format!("library swap reopen failed after rename error: {e}"))?;
             let mut write_conn = self.write_conn.lock().map_err(|_| {
                 "library store write lock poisoned during database swap".to_string()
             })?;
-            let mut read_conn = self.read_conn.lock().map_err(|_| {
-                "library store read lock poisoned during database swap".to_string()
-            })?;
+            let mut read_conn = self
+                .read_conn
+                .lock()
+                .map_err(|_| "library store read lock poisoned during database swap".to_string())?;
             let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
                 "library store mainstage read lock poisoned during database swap".to_string()
             })?;
@@ -540,12 +608,14 @@ impl LibraryStore {
 
         let reopen = open_database_connections(active_path);
 
-        let mut write_conn = self.write_conn.lock().map_err(|_| {
-            "library store write lock poisoned during database swap".to_string()
-        })?;
-        let mut read_conn = self.read_conn.lock().map_err(|_| {
-            "library store read lock poisoned during database swap".to_string()
-        })?;
+        let mut write_conn = self
+            .write_conn
+            .lock()
+            .map_err(|_| "library store write lock poisoned during database swap".to_string())?;
+        let mut read_conn = self
+            .read_conn
+            .lock()
+            .map_err(|_| "library store read lock poisoned during database swap".to_string())?;
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database swap".to_string()
         })?;
@@ -554,7 +624,12 @@ impl LibraryStore {
         })?;
 
         match reopen {
-            Ok((reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read)) => {
+            Ok((
+                reopened_write,
+                reopened_read,
+                reopened_mainstage_read,
+                reopened_scope_detail_read,
+            )) => {
                 *write_conn = reopened_write;
                 *read_conn = reopened_read;
                 *mainstage_read_conn = reopened_mainstage_read;
@@ -571,7 +646,12 @@ impl LibraryStore {
                     let _ = move_sidecar(&backup, active_path, "-wal");
                     let _ = move_sidecar(&backup, active_path, "-shm");
                 }
-                let (reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read) = open_database_connections(active_path)
+                let (
+                    reopened_write,
+                    reopened_read,
+                    reopened_mainstage_read,
+                    reopened_scope_detail_read,
+                ) = open_database_connections(active_path)
                     .map_err(|e| format!("library swap reopen failed after revert: {e}"))?;
                 *write_conn = reopened_write;
                 *read_conn = reopened_read;
@@ -583,14 +663,20 @@ impl LibraryStore {
         }
     }
 
-    pub fn restore_database_backup(&self, backup_path: &Path, active_path: &Path) -> Result<(), String> {
+    pub fn restore_database_backup(
+        &self,
+        backup_path: &Path,
+        active_path: &Path,
+    ) -> Result<(), String> {
         let mut swap_guard = SwapInProgressGuard::new(self);
-        let mut write_conn = self.write_conn.lock().map_err(|_| {
-            "library store write lock poisoned during database restore".to_string()
-        })?;
-        let mut read_conn = self.read_conn.lock().map_err(|_| {
-            "library store read lock poisoned during database restore".to_string()
-        })?;
+        let mut write_conn = self
+            .write_conn
+            .lock()
+            .map_err(|_| "library store write lock poisoned during database restore".to_string())?;
+        let mut read_conn = self
+            .read_conn
+            .lock()
+            .map_err(|_| "library store read lock poisoned during database restore".to_string())?;
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database restore".to_string()
         })?;
@@ -633,12 +719,14 @@ impl LibraryStore {
         let (reopened_write, reopened_read, reopened_mainstage_read, reopened_scope_detail_read) =
             open_database_connections(active_path).map_err(|e| e.to_string())?;
 
-        let mut write_conn = self.write_conn.lock().map_err(|_| {
-            "library store write lock poisoned during database restore".to_string()
-        })?;
-        let mut read_conn = self.read_conn.lock().map_err(|_| {
-            "library store read lock poisoned during database restore".to_string()
-        })?;
+        let mut write_conn = self
+            .write_conn
+            .lock()
+            .map_err(|_| "library store write lock poisoned during database restore".to_string())?;
+        let mut read_conn = self
+            .read_conn
+            .lock()
+            .map_err(|_| "library store read lock poisoned during database restore".to_string())?;
         let mut mainstage_read_conn = self.mainstage_read_conn.lock().map_err(|_| {
             "library store mainstage read lock poisoned during database restore".to_string()
         })?;
@@ -673,7 +761,9 @@ fn log_write_op(op: &str, lock_wait_ms: u128, exec_ms: u128) {
             "[library-db] SLOW write op={op} lock_wait_ms={lock_wait_ms} exec_ms={exec_ms}"
         );
     } else if lock_wait_ms >= 50 || exec_ms >= 200 {
-        crate::app_eprintln!("[library-db] write op={op} lock_wait_ms={lock_wait_ms} exec_ms={exec_ms}");
+        crate::app_eprintln!(
+            "[library-db] write op={op} lock_wait_ms={lock_wait_ms} exec_ms={exec_ms}"
+        );
     }
 }
 
@@ -891,9 +981,11 @@ fn open_database_connections(
 
     let read_conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     configure_read_connection(&read_conn)?;
-    let mainstage_read_conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mainstage_read_conn =
+        Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     configure_read_connection(&mainstage_read_conn)?;
-    let scope_detail_read_conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let scope_detail_read_conn =
+        Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     configure_read_connection(&scope_detail_read_conn)?;
 
     // The identity sidecar is fully rebuildable; a corrupt/unwritable
@@ -916,7 +1008,12 @@ fn open_database_connections(
             "[library-db] scope detail identity sidecar unavailable, multi-library dedup disabled: {e}"
         );
     }
-    Ok((write_conn, read_conn, mainstage_read_conn, scope_detail_read_conn))
+    Ok((
+        write_conn,
+        read_conn,
+        mainstage_read_conn,
+        scope_detail_read_conn,
+    ))
 }
 
 fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> {
@@ -931,8 +1028,66 @@ fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> 
     ensure_mainstage_feed_indexes(conn)?;
     ensure_entity_user_rating_schema(conn)?;
     ensure_scope_browse_projection_schema(conn)?;
+    crate::bulk_ingest::ensure_track_secondary_indexes(conn)?;
+    crate::track_fts::ensure_track_fts_triggers(conn)?;
+    reconcile_ready_rows_with_ingest_cursors(conn)?;
     checkpoint_wal_conn(conn, "open")?;
     Ok(())
+}
+
+/// Repair the narrow crash window used by older builds where `sync_phase`
+/// became ready before the ingest cursor was cleared. The non-empty cursor is
+/// the one-time guard, so the potentially large count runs only for anomalous
+/// rows and the repair can also heal the same interruption in future databases.
+fn reconcile_ready_rows_with_ingest_cursors(conn: &Connection) -> rusqlite::Result<()> {
+    let candidates = {
+        let mut stmt = conn.prepare(
+            "SELECT server_id, library_scope, initial_sync_cursor_json \
+             FROM sync_state WHERE sync_phase = 'ready'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let tx = conn.unchecked_transaction()?;
+    for (server_id, library_scope, raw_cursor) in candidates {
+        let has_ingest_cursor = raw_cursor.as_deref().is_some_and(|raw| {
+            match serde_json::from_str::<serde_json::Value>(raw) {
+                Ok(serde_json::Value::Object(cursor)) => !cursor.is_empty(),
+                Ok(serde_json::Value::Null) => false,
+                Ok(_) | Err(_) => true,
+            }
+        });
+        if !has_ingest_cursor {
+            continue;
+        }
+        let local_track_count: i64 = if library_scope.is_empty() {
+            tx.query_row(
+                "SELECT COUNT(*) FROM track WHERE server_id = ?1 AND deleted = 0",
+                [&server_id],
+                |row| row.get(0),
+            )?
+        } else {
+            tx.query_row(
+                "SELECT COUNT(*) FROM track \
+                 WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0",
+                params![server_id, library_scope],
+                |row| row.get(0),
+            )?
+        };
+        tx.execute(
+            "UPDATE sync_state SET initial_sync_cursor_json = '{}', local_track_count = ?3 \
+             WHERE server_id = ?1 AND library_scope = ?2 AND sync_phase = 'ready'",
+            params![server_id, library_scope, local_track_count],
+        )?;
+    }
+    tx.commit()
 }
 
 fn artist_name_sort_column_exists(conn: &Connection) -> rusqlite::Result<bool> {
@@ -1374,11 +1529,10 @@ pub(crate) fn run_migrations_with(
     )?;
 
     // Breaking-bump detection only meaningful for already-initialised DBs.
-    let max_applied: Option<i64> = conn.query_row(
-        "SELECT MAX(version) FROM schema_migrations",
-        [],
-        |row| row.get::<_, Option<i64>>(0),
-    )?;
+    let max_applied: Option<i64> =
+        conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get::<_, Option<i64>>(0)
+        })?;
     if let Some(max_applied) = max_applied {
         if max_applied < min_compatible {
             hook(conn, max_applied, LIBRARY_DB_SCHEMA_VERSION)?;
@@ -1434,6 +1588,30 @@ fn handle_breaking_schema_bump(
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    struct TestDatabase {
+        dir: PathBuf,
+        path: PathBuf,
+    }
+
+    impl TestDatabase {
+        fn new(label: &str) -> Self {
+            let nonce = IN_MEMORY_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "psysonic-library-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create test database directory");
+            let path = dir.join("library.sqlite");
+            Self { dir, path }
+        }
+    }
+
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
 
     #[test]
     fn read_conn_sees_committed_writes_from_write_conn() {
@@ -1561,8 +1739,7 @@ mod tests {
             .with_conn("misc", |c| {
                 let mut stmt =
                     c.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
-                let rows: rusqlite::Result<Vec<i64>> =
-                    stmt.query_map([], |r| r.get(0))?.collect();
+                let rows: rusqlite::Result<Vec<i64>> = stmt.query_map([], |r| r.get(0))?.collect();
                 rows
             })
             .unwrap();
@@ -1674,6 +1851,112 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[test]
+    fn reopen_repairs_bulk_indexes_and_missing_fts_triggers() {
+        let db = TestDatabase::new("bulk-schema-repair");
+        {
+            let store = LibraryStore::open_path_for_test(&db.path).expect("initial open");
+            store
+                .with_conn_mut("test.break_bulk_schema", |conn| {
+                    crate::track_fts::suspend_track_fts_triggers(conn)?;
+                    conn.execute(
+                        "INSERT INTO track (server_id, id, title, album, duration_sec, \
+                         deleted, synced_at, raw_json) \
+                         VALUES ('s1', 't1', 'Reopen Repair', 'Album', 1, 0, 1, '{}')",
+                        [],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO track (server_id, id, title, album, duration_sec, \
+                         deleted, synced_at, raw_json) \
+                         VALUES ('s1', 't2', 'Count Repair', 'Album', 1, 0, 1, '{}')",
+                        [],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO sync_state (server_id, library_scope, sync_phase, \
+                         initial_sync_cursor_json, local_track_count) \
+                         VALUES ('s1', '', 'ready', \
+                         '{\"phase\":\"ingest\",\"ingested_count\":1}', 1) \
+                         ON CONFLICT(server_id, library_scope) DO UPDATE SET \
+                           sync_phase = 'ready', \
+                           initial_sync_cursor_json = excluded.initial_sync_cursor_json, \
+                           local_track_count = excluded.local_track_count",
+                        [],
+                    )?;
+                    conn.execute("DROP INDEX idx_track_album", [])?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        let reopened = LibraryStore::open_path_for_test(&db.path).expect("repairing reopen");
+        let (album_index_count, trigger_count, fts_matches, cursor, local_count): (
+            i64,
+            i64,
+            i64,
+            String,
+            i64,
+        ) = reopened
+            .with_conn("test.verify_bulk_schema_repair", |conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master \
+                         WHERE type = 'index' AND name = 'idx_track_album'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master \
+                         WHERE type = 'trigger' AND name IN ('track_ai', 'track_ad', 'track_au')",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM track_fts WHERE track_fts MATCH 'Reopen'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT initial_sync_cursor_json FROM sync_state \
+                         WHERE server_id = 's1' AND library_scope = ''",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT local_track_count FROM sync_state \
+                         WHERE server_id = 's1' AND library_scope = ''",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(album_index_count, 1);
+        assert_eq!(trigger_count, 3);
+        assert_eq!(fts_matches, 1, "open repair rebuilds missed FTS rows");
+        assert_eq!(cursor, "{}", "ready rows cannot retain ingest cursors");
+        assert_eq!(local_count, 2, "repair refreshes the persisted count snapshot");
+        reopened
+            .verify_operational_schema()
+            .expect("reopened database satisfies backup-import health checks");
+    }
+
+    #[test]
+    fn operational_schema_verification_rejects_suspended_objects() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.suspend_operational_schema", |conn| {
+                crate::bulk_ingest::suspend_track_secondary_indexes(conn)?;
+                crate::track_fts::suspend_track_fts_triggers(conn)
+            })
+            .unwrap();
+
+        let err = store.verify_operational_schema().unwrap_err();
+        assert!(
+            err.contains("operational indexes") || err.contains("operational triggers"),
+            "unexpected verification error: {err}"
+        );
+    }
+
     // ── PR-1b: edge-case tests via the test-only `run_migrations_with` ─────
 
     /// `ALTER TABLE artist ADD COLUMN bio TEXT;` — minimal additive fixture,
@@ -1717,11 +2000,9 @@ mod tests {
 
         let (name, bio): (String, Option<String>) = store
             .with_conn("misc", |c| {
-                c.query_row(
-                    "SELECT name, bio FROM artist WHERE id = 'a1'",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
+                c.query_row("SELECT name, bio FROM artist WHERE id = 'a1'", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
             })
             .unwrap();
         assert_eq!(name, "Existing Artist");
@@ -1731,8 +2012,7 @@ mod tests {
             .with_conn("misc", |c| {
                 let mut stmt =
                     c.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
-                let rows: rusqlite::Result<Vec<i64>> =
-                    stmt.query_map([], |r| r.get(0))?.collect();
+                let rows: rusqlite::Result<Vec<i64>> = stmt.query_map([], |r| r.get(0))?.collect();
                 rows
             })
             .unwrap();
@@ -1992,7 +2272,9 @@ mod tests {
             assert_eq!(exists, 1, "missing index {index_name}");
         }
         let stat_rows: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM sqlite_stat1", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM sqlite_stat1", [], |r| r.get(0))
+            })
             .unwrap();
         assert!(stat_rows > 0, "ANALYZE should populate sqlite_stat1");
     }
@@ -2028,7 +2310,10 @@ mod tests {
         assert_eq!(version, 19);
 
         store
-            .with_conn("test.entity_user_rating_ensure", ensure_entity_user_rating_schema)
+            .with_conn(
+                "test.entity_user_rating_ensure",
+                ensure_entity_user_rating_schema,
+            )
             .expect("repeated schema repair succeeds");
         let table_count: i64 = store
             .with_conn("test.entity_user_rating_table", |conn| {
@@ -2172,7 +2457,11 @@ mod tests {
 
         let artists: i64 = store
             .with_read_conn(|c| {
-                c.query_row("SELECT COUNT(*) FROM artist WHERE server_id = 's1'", [], |r| r.get(0))
+                c.query_row(
+                    "SELECT COUNT(*) FROM artist WHERE server_id = 's1'",
+                    [],
+                    |r| r.get(0),
+                )
             })
             .unwrap();
         assert_eq!(artists, 1, "ghost artist pruned, live kept");
@@ -2192,10 +2481,17 @@ mod tests {
             .expect("reconcile again");
         let artists_after: i64 = store
             .with_read_conn(|c| {
-                c.query_row("SELECT COUNT(*) FROM artist WHERE server_id = 's1'", [], |r| r.get(0))
+                c.query_row(
+                    "SELECT COUNT(*) FROM artist WHERE server_id = 's1'",
+                    [],
+                    |r| r.get(0),
+                )
             })
             .unwrap();
-        assert_eq!(artists_after, 2, "guarded: does not re-run after completion");
+        assert_eq!(
+            artists_after, 2,
+            "guarded: does not re-run after completion"
+        );
     }
 
     #[test]
@@ -2286,17 +2582,29 @@ mod tests {
             .expect("seed tracks");
 
         store
-            .with_conn("test.duration_backfill", maybe_reconcile_duration_sec_backfill)
+            .with_conn(
+                "test.duration_backfill",
+                maybe_reconcile_duration_sec_backfill,
+            )
             .expect("duration backfill");
 
         let durations: Vec<(String, i64)> = store
             .with_read_conn(|conn| {
-                conn.prepare("SELECT id, duration_sec FROM track WHERE server_id = 's1' ORDER BY id")?
-                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                    .collect()
+                conn.prepare(
+                    "SELECT id, duration_sec FROM track WHERE server_id = 's1' ORDER BY id",
+                )?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
             })
             .expect("backfilled durations");
-        assert_eq!(durations, vec![("decimal".into(), 230), ("set".into(), 100), ("zero".into(), 0)]);
+        assert_eq!(
+            durations,
+            vec![
+                ("decimal".into(), 230),
+                ("set".into(), 100),
+                ("zero".into(), 0)
+            ]
+        );
 
         store
             .with_conn_mut("test.clear_decimal_duration", |conn| {
@@ -2304,11 +2612,18 @@ mod tests {
             })
             .expect("clear duration");
         store
-            .with_conn("test.duration_backfill_again", maybe_reconcile_duration_sec_backfill)
+            .with_conn(
+                "test.duration_backfill_again",
+                maybe_reconcile_duration_sec_backfill,
+            )
             .expect("guarded duration backfill");
         let duration_after: i64 = store
             .with_read_conn(|conn| {
-                conn.query_row("SELECT duration_sec FROM track WHERE id = 'decimal'", [], |row| row.get(0))
+                conn.query_row(
+                    "SELECT duration_sec FROM track WHERE id = 'decimal'",
+                    [],
+                    |row| row.get(0),
+                )
             })
             .expect("duration after guarded re-run");
         assert_eq!(duration_after, 0);

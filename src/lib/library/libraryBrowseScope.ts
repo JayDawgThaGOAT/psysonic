@@ -28,6 +28,8 @@ export function setLibraryBrowseScopeSource(source: () => LibraryBrowseScopeSour
 
 export interface LibraryBrowseScope {
   anchorServerId: string | null;
+  /** Ordered selected servers represented by this scope. */
+  serverIds: string[];
   pairs: LibraryBrowseScopePair[];
   fingerprint: string;
   multiServer: boolean;
@@ -111,6 +113,11 @@ export function deriveLibraryBrowseScope(
         ? deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds)[0]
         : undefined)
       ?? null,
+    serverIds: effectiveServerIds.length > 0
+      ? effectiveServerIds
+      : (orderedServerIds.length === 0
+          ? deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds)
+          : []),
     pairs,
     fingerprint: fingerprintEntries.length > 0 ? JSON.stringify(fingerprintEntries) : '',
     multiServer: effectiveServerIds.length > 1,

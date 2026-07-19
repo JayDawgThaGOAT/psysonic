@@ -6,6 +6,8 @@
 
 use rusqlite::Connection;
 
+const TRACK_FTS_TRIGGER_NAMES: [&str; 3] = ["track_ai", "track_ad", "track_au"];
+
 const RESTORE_TRACK_FTS_TRIGGERS: &str = r#"
 CREATE TRIGGER IF NOT EXISTS track_ai AFTER INSERT ON track BEGIN
   INSERT INTO track_fts(rowid, title, artist, album, album_artist, genre)
@@ -45,6 +47,41 @@ pub fn restore_track_fts_triggers(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(RESTORE_TRACK_FTS_TRIGGERS)
 }
 
+/// Repair an interrupted bulk ingest on open. Missing triggers mean the FTS
+/// table may have missed writes, so rebuild it before restoring all triggers.
+pub fn ensure_track_fts_triggers(conn: &Connection) -> rusqlite::Result<()> {
+    let trigger_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master \
+         WHERE type = 'trigger' AND name IN ('track_ai', 'track_ad', 'track_au')",
+        [],
+        |row| row.get(0),
+    )?;
+    if trigger_count == TRACK_FTS_TRIGGER_NAMES.len() as i64 {
+        return Ok(());
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    suspend_track_fts_triggers(&tx)?;
+    rebuild_track_fts_from_content(&tx)?;
+    restore_track_fts_triggers(&tx)?;
+    tx.commit()
+}
+
+pub(crate) fn missing_track_fts_triggers(conn: &Connection) -> rusqlite::Result<Vec<&'static str>> {
+    let mut missing = Vec::new();
+    for name in TRACK_FTS_TRIGGER_NAMES {
+        let present = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?1)",
+            [name],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !present {
+            missing.push(name);
+        }
+    }
+    Ok(missing)
+}
+
 /// Normalize trigger DDL for equality checks — strips `IF NOT EXISTS`
 /// and collapses whitespace so migration vs restore sources compare cleanly.
 #[cfg(test)]
@@ -61,8 +98,6 @@ mod tests {
     use super::*;
     use crate::store::LibraryStore;
     use std::collections::HashMap;
-
-    const TRACK_FTS_TRIGGER_NAMES: [&str; 3] = ["track_ai", "track_ad", "track_au"];
 
     fn fetch_track_fts_trigger_ddl(conn: &Connection, name: &str) -> String {
         conn.query_row(
@@ -99,8 +134,7 @@ mod tests {
                 for name in TRACK_FTS_TRIGGER_NAMES {
                     let after = normalize_trigger_ddl(&fetch_track_fts_trigger_ddl(conn, name));
                     assert_eq!(
-                        after,
-                        baseline[name],
+                        after, baseline[name],
                         "trigger `{name}` body drifted after suspend/restore"
                     );
                 }

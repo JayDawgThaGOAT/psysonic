@@ -18,7 +18,11 @@ import {
   syncServerHttpContextForProfile,
 } from '@/lib/server/syncServerHttpContext';
 import { type ServerMagicPayload } from '@/lib/server/serverMagicString';
-import { ensureConnectUrlResolved, invalidateReachableEndpointCache } from '@/lib/server/serverEndpoint';
+import {
+  ensureConnectUrlResolved,
+  invalidateReachableEndpointCache,
+  profileProbeFingerprint,
+} from '@/lib/server/serverEndpoint';
 import {
   verifySameServerEndpoints,
   type VerifySameServerResult,
@@ -41,6 +45,7 @@ import { useListReorderDnd } from '@/lib/hooks/useListReorderDnd';
 import { applyListReorderById, type ListReorderDropTarget } from '@/lib/util/listReorder';
 import { ReorderGripHandle } from '@/features/settings/components/ReorderGripHandle';
 import { tooltipAttrs } from '@/ui/tooltipAttrs';
+import { publishServerConnectionStatus } from '@/lib/network/serverReachability';
 
 const AUDIOMUSE_NV_PLUGIN_URL = 'https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin';
 
@@ -77,6 +82,7 @@ export function ServersTab({
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [pastedServerInvite, setPastedServerInvite] = useState<ServerMagicPayload | null>(initialInvite);
   const serversRef = useRef(auth.servers);
+  const editGenerationRef = useRef<Record<string, number>>({});
   // React Compiler refs rule: ref kept in sync with the latest value for use in effects/handlers/cleanup; not render data.
   // eslint-disable-next-line react-hooks/refs
   serversRef.current = auth.servers;
@@ -116,6 +122,11 @@ export function ServersTab({
       // public elsewhere). probe.baseUrl also feeds the AudioMuse probe so
       // that one hits the same endpoint.
       const probe = await ensureConnectUrlResolved(server);
+      publishServerConnectionStatus(
+        server.id,
+        probe.ok ? 'online' : 'offline',
+        useAuthStore.getState().activeServerId === server.id,
+      );
       if (probe.ok) {
         const identity = {
           type: probe.ping.type,
@@ -127,6 +138,11 @@ export function ServersTab({
       }
       setConnStatus(s => ({ ...s, [server.id]: probe.ok ? 'ok' : 'error' }));
     } catch {
+      publishServerConnectionStatus(
+        server.id,
+        'offline',
+        useAuthStore.getState().activeServerId === server.id,
+      );
       setConnStatus(s => ({ ...s, [server.id]: 'error' }));
     }
   };
@@ -135,10 +151,16 @@ export function ServersTab({
     setConnStatus(s => ({ ...s, [server.id]: 'testing' }));
     const ok = await switchActiveServer(server);
     if (ok) {
+      publishServerConnectionStatus(server.id, 'online', true);
       setConnStatus(s => ({ ...s, [server.id]: 'ok' }));
       // Auf der Servers-Seite bleiben, damit der User seinen Switch hier
       // sofort visuell bestaetigt sieht (gruener Check, aktiv-Badge).
     } else {
+      publishServerConnectionStatus(
+        server.id,
+        'offline',
+        useAuthStore.getState().activeServerId === server.id,
+      );
       setConnStatus(s => ({ ...s, [server.id]: 'error' }));
     }
   };
@@ -228,6 +250,11 @@ export function ServersTab({
         };
         auth.setSubsonicServerIdentity(id, identity);
         scheduleInstantMixProbeForServer(id, data.url, data.username, data.password, identity, true);
+        publishServerConnectionStatus(
+          id,
+          'online',
+          useAuthStore.getState().activeServerId === id,
+        );
         setConnStatus(s => ({ ...s, [id]: 'ok' }));
         const added = useAuthStore.getState().servers.find(s => s.id === id);
         if (added) {
@@ -270,6 +297,8 @@ export function ServersTab({
   // persisting. A mismatch here would silently bind library / cover / queue
   // data to two unrelated boxes — the spec blocks save in v1.
   const handleEditServer = async (id: string, data: Omit<ServerProfile, 'id'>) => {
+    const editGeneration = (editGenerationRef.current[id] ?? 0) + 1;
+    editGenerationRef.current[id] = editGeneration;
     const previous = auth.servers.find(s => s.id === id);
 
     // URL-change remigration — runs BEFORE everything else when the edit
@@ -332,32 +361,69 @@ export function ServersTab({
     setEditingServerId(null);
     auth.updateServer(id, data);
     const updated = useAuthStore.getState().servers.find(s => s.id === id);
+    if (!updated) return;
+    const updatedFingerprint = updated ? profileProbeFingerprint(updated) : null;
     if (updated) void syncServerHttpContextForProfile(updated);
-    // Profile edited → any cached sticky connect URL for this id may now be
+    // Profile edited → the cached endpoint and native session may now be stale.
     invalidateReachableEndpointCache(id);
     setConnStatus(s => ({ ...s, [id]: 'testing' }));
     try {
-      const ping = await pingWithCredentialsForProfile(data, data.url);
-      if (ping.ok) {
+      const probe = await ensureConnectUrlResolved(updated);
+      const current = useAuthStore.getState().servers.find(server => server.id === id);
+      const editIsCurrent = editGenerationRef.current[id] === editGeneration
+        && current != null
+        && updatedFingerprint != null
+        && profileProbeFingerprint(current) === updatedFingerprint;
+      if (!editIsCurrent) return;
+      if (probe.ok) {
+        const ping = probe.ping;
         const identity = {
           type: ping.type,
           serverVersion: ping.serverVersion,
           openSubsonic: ping.openSubsonic,
         };
         auth.setSubsonicServerIdentity(id, identity);
-        scheduleInstantMixProbeForServer(id, data.url, data.username, data.password, identity, true);
+        scheduleInstantMixProbeForServer(
+          id,
+          probe.baseUrl,
+          data.username,
+          data.password,
+          identity,
+          true,
+        );
+        publishServerConnectionStatus(
+          id,
+          'online',
+          useAuthStore.getState().activeServerId === id,
+        );
+        void bootstrapIndexedServer(current);
       }
-      setConnStatus(s => ({ ...s, [id]: ping.ok ? 'ok' : 'error' }));
-      if (!ping.ok) {
+      setConnStatus(s => ({ ...s, [id]: probe.ok ? 'ok' : 'error' }));
+      if (!probe.ok) {
+        publishServerConnectionStatus(
+          id,
+          'offline',
+          useAuthStore.getState().activeServerId === id,
+        );
         showToast(
-          ping.error
-            ? t('settings.serverConnectFailedReason', { reason: ping.error })
-            : t('settings.serverFailed'),
+          t('settings.serverFailed'),
           6000,
           'error',
         );
       }
     } catch (err) {
+      const current = useAuthStore.getState().servers.find(server => server.id === id);
+      if (
+        editGenerationRef.current[id] !== editGeneration
+        || !current
+        || updatedFingerprint == null
+        || profileProbeFingerprint(current) !== updatedFingerprint
+      ) return;
+      publishServerConnectionStatus(
+        id,
+        'offline',
+        useAuthStore.getState().activeServerId === id,
+      );
       setConnStatus(s => ({ ...s, [id]: 'error' }));
       showToast(
         err instanceof Error
@@ -538,7 +604,7 @@ export function ServersTab({
                     onFullSync={() => void librarySync.runServerAction(serverIndexKeyForProfile(srv), 'full')}
                     onDeltaSync={() => void librarySync.runServerAction(serverIndexKeyForProfile(srv), 'delta')}
                     onVerify={() => void librarySync.runServerAction(serverIndexKeyForProfile(srv), 'verify')}
-                    onCancel={() => void librarySync.handleCancel()}
+                    onCancel={() => void librarySync.handleCancel(serverIndexKeyForProfile(srv))}
                   />
                   {(() => {
                     if (!showLegacyAudiomuseToggle) return null;

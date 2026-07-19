@@ -3,7 +3,7 @@
 //! `State<LibraryRuntime>` so the top crate's `setup()` can wire one
 //! shared `Arc<LibraryStore>` across the whole IPC surface.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,36 +20,39 @@ use crate::analysis_backfill::{self, LibraryAnalysisBackfillBatchDto, LibraryAna
 use crate::cover_resolve::CoverEntryDto;
 use crate::cross_server;
 use crate::dto::{
-    count_local_tracks, local_tracks_max_updated_ms, track_index_nonempty, ArtifactInputDto,
-    EntityUserRatingDto, EntityUserRatingRefDto, FactInputDto, LibraryAdvancedSearchRequest,
-    LibraryAdvancedSearchResponse,
+    local_tracks_max_updated_ms, ArtifactInputDto, EntityUserRatingDto, EntityUserRatingRefDto,
+    FactInputDto, LibraryAdvancedSearchRequest, LibraryAdvancedSearchResponse,
     LibraryCrossServerSearchResponse, LibraryLiveSearchRequest, LibraryLiveSearchResponse,
-    LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse,
-    LibraryMostPlayedRequest, LibraryMostPlayedResponse,
-    LibraryScopeAlbumDetailRequest, LibraryScopeAlbumDetailResponse, LibraryScopeArtistDetailRequest,
-    LibraryScopeArtistDetailResponse, LibraryScopeBrowseRequest, LibraryScopeBrowseResponse,
-    LibraryScopeListRequest, LibraryScopeSearchRequest, LibraryStatisticsDto, LibraryStatisticsRequest,
-    LibraryTrackDto,
-    LibraryTracksEnvelope, OfflinePathDto, PlaySessionDayDetailDto, PlaySessionHeatmapDayDto,
-    PlaySessionInputDto, PlaySessionRecentDayDto, PlaySessionRecentTrackDto, PlaySessionYearBoundsDto, PlaySessionYearSummaryDto, PurgeReportDto, SyncJobDto, SyncStateDto,
-    TrackArtifactDto, TrackFactDto, TrackRefDto,
+    LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse, LibraryMostPlayedRequest,
+    LibraryMostPlayedResponse, LibraryScopeAlbumDetailRequest, LibraryScopeAlbumDetailResponse,
+    LibraryScopeArtistDetailRequest, LibraryScopeArtistDetailResponse, LibraryScopeBrowseRequest,
+    LibraryScopeBrowseResponse, LibraryScopeListRequest, LibraryScopeSearchRequest,
+    LibraryStatisticsDto, LibraryStatisticsRequest, LibraryTrackDto, LibraryTracksEnvelope,
+    OfflinePathDto, PlaySessionDayDetailDto, PlaySessionHeatmapDayDto, PlaySessionInputDto,
+    PlaySessionRecentDayDto, PlaySessionRecentTrackDto, PlaySessionYearBoundsDto,
+    PlaySessionYearSummaryDto, PurgeReportDto, SyncJobDto, SyncStateDto, TrackArtifactDto,
+    TrackFactDto, TrackRefDto,
 };
 use crate::live_search;
-use crate::payload::LibrarySyncProgressPayload;
+use crate::payload::{LibrarySyncIdlePayload, LibrarySyncProgressPayload};
 use crate::repos::{PlaySessionRepository, SyncStateRepository, TrackRepository};
 use crate::runtime::{CurrentJob, LibraryRuntime, SyncSession};
 use crate::scope_merge;
 use crate::search::search_tracks;
 use crate::store::LibraryStore;
-use crate::sync::bandwidth::PlaybackHint;
 use crate::sync::bandwidth::ParallelismBudget;
-use crate::sync::capability::{probe_and_persist, CapabilityFlags, NavidromeProbeCredentials};
+use crate::sync::bandwidth::PlaybackHint;
+use crate::sync::capability::{
+    probe_and_persist_with_timeout, CapabilityFlags, NavidromeProbeCredentials,
+};
 use crate::sync::delta::DeltaSyncRunner;
 use crate::sync::error::SyncError;
 use crate::sync::initial::InitialSyncRunner;
 use crate::sync::library_tag::run_tag_pass_best_effort;
 use crate::sync::progress::{ChannelProgress, Progress, ProgressEvent};
-use crate::sync::tombstone::should_auto_reconcile;
+use crate::sync::tombstone::should_auto_reconcile_scope;
+
+static NEXT_SYNC_JOB_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Run synchronous SQLite / library read work off the async runtime worker.
 async fn library_spawn_blocking<F, R>(f: F) -> Result<R, String>
@@ -67,6 +70,25 @@ const TRACKS_BATCH_LIMIT: usize = 100;
 /// Shared cache callers can request or update at most 300 entity ratings per call.
 const ENTITY_USER_RATINGS_BATCH_LIMIT: usize = 300;
 const ANALYSIS_PROGRESS_CACHE_TTL: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy)]
+struct BindSessionTimeouts {
+    token: Duration,
+    probe: Duration,
+}
+
+struct BindSessionRequest {
+    server_id: String,
+    base_url: String,
+    username: String,
+    password: String,
+    library_scope: Option<String>,
+}
+
+const BIND_SESSION_TIMEOUTS: BindSessionTimeouts = BindSessionTimeouts {
+    token: Duration::from_secs(10),
+    probe: Duration::from_secs(30),
+};
 
 #[derive(Debug, Clone, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -94,7 +116,9 @@ pub fn library_resolve_cover_entry(
         "album" => crate::cover_resolve::resolve_album_cover_entry(store, server_id, entity_id),
         "artist" => crate::cover_resolve::resolve_artist_cover_entry(store, server_id, entity_id),
         "track" => crate::cover_resolve::resolve_track_cover_entry(store, server_id, entity_id),
-        other => Err(format!("unknown cover entity kind: `{other}` (expected album|artist|track)")),
+        other => Err(format!(
+            "unknown cover entity kind: `{other}` (expected album|artist|track)"
+        )),
     }
 }
 
@@ -246,12 +270,16 @@ pub async fn library_get_status(
         })
         .map_err(|e| e.to_string())?;
 
-    let local_tracks_max_updated_ms = if row.as_ref().is_some_and(|r| r.sync_phase == "initial_sync") {
-        None
-    } else {
-        local_tracks_max_updated_ms(&runtime.store, &server_id)?
-    };
-    let has_local_tracks = track_index_nonempty(&runtime.store, &server_id).unwrap_or(false);
+    let local_tracks_max_updated_ms =
+        if row.as_ref().is_some_and(|r| r.sync_phase == "initial_sync") {
+            None
+        } else {
+            local_tracks_max_updated_ms(&runtime.store, &server_id)?
+        };
+    let tracks = TrackRepository::new(&runtime.store);
+    let has_local_tracks = tracks
+        .has_live_tracks_in_scope(&server_id, &scope)
+        .unwrap_or(false);
     let sync_state = SyncStateRepository::new(&runtime.store);
     let (ingest_strategy, ingest_phase, cursor_ingested_count) = sync_state
         .get_initial_sync_cursor(&server_id, &scope)
@@ -270,6 +298,7 @@ pub async fn library_get_status(
         has_local_tracks,
         &runtime.store,
         &server_id,
+        &scope,
     );
     // `SyncStateRepository::ensure` is intentionally NOT called from
     // the read path — `library_get_status` on a fresh server returns
@@ -327,16 +356,23 @@ fn resolve_local_track_count(
     has_local_tracks: bool,
     store: &LibraryStore,
     server_id: &str,
+    library_scope: &str,
 ) -> Option<i64> {
     if row.sync_phase == "initial_sync" {
         let snapshot = row.local_track_count.unwrap_or(0);
         let cursor = cursor_ingested_count.map(i64::from).unwrap_or(0);
         let best = snapshot.max(cursor);
-        return if best > 0 { Some(best) } else { row.local_track_count };
+        return if best > 0 {
+            Some(best)
+        } else {
+            row.local_track_count
+        };
     }
     match row.local_track_count {
         Some(n) if n > 0 => Some(n),
-        _ if has_local_tracks => count_local_tracks(store, server_id).ok(),
+        _ if has_local_tracks => TrackRepository::new(store)
+            .count_live_tracks_in_scope(server_id, library_scope)
+            .ok(),
         _ => row.local_track_count,
     }
 }
@@ -505,11 +541,7 @@ pub fn library_upsert_songs_from_api(
     for raw in songs {
         let song: Song = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
         rows.push(subsonic_song_to_track_row(
-            &server_id,
-            &song,
-            &raw,
-            synced_at,
-            None,
+            &server_id, &song, &raw, synced_at, None,
         ));
     }
     repo.upsert_batch(&rows)?;
@@ -619,7 +651,11 @@ pub async fn library_advanced_search(
         .library_scopes
         .as_ref()
         .map(|scopes| scopes.len())
-        .unwrap_or(if request.library_scope.is_some() { 1 } else { 0 });
+        .unwrap_or(if request.library_scope.is_some() {
+            1
+        } else {
+            0
+        });
     let trace_advanced_search = psysonic_core::logging::should_log_debug();
     let trace_entity_types = format!("{:?}", request.entity_types);
     let trace_filters = request
@@ -709,7 +745,8 @@ pub async fn library_list_lossless_albums(
     request: crate::dto::LibraryLosslessAlbumsRequest,
 ) -> Result<crate::dto::LibraryLosslessAlbumsResponse, String> {
     let store = Arc::clone(&runtime.store);
-    library_spawn_blocking(move || crate::lossless_albums::list_lossless_albums(&store, &request)).await
+    library_spawn_blocking(move || crate::lossless_albums::list_lossless_albums(&store, &request))
+        .await
 }
 
 // NOT specta-collected: returns a DTO carrying `raw_json: Value` (LibraryTrack/Album/ArtistDto) — specta rc.25 can't export serde_json::Value. Stays hand-written on generate_handler!.
@@ -747,7 +784,7 @@ pub async fn library_list_albums_by_genre(
         }
         result
     })
-        .await
+    .await
 }
 
 #[tauri::command]
@@ -765,8 +802,10 @@ pub async fn library_genre_tags_run(
     runtime: State<'_, LibraryRuntime>,
 ) -> Result<(), String> {
     let store = Arc::clone(&runtime.store);
-    library_spawn_blocking(move || crate::genre_tags_backfill::run_genre_tags_backfill(&store, &app))
-        .await
+    library_spawn_blocking(move || {
+        crate::genre_tags_backfill::run_genre_tags_backfill(&store, &app)
+    })
+    .await
 }
 
 /// Rebuild precomputed cluster identity keys (`library-cluster.db` attach).
@@ -838,8 +877,10 @@ pub async fn library_list_random_artists(
     limit: Option<u32>,
 ) -> Result<Vec<crate::dto::LibraryArtistDto>, String> {
     let store = Arc::clone(&runtime.store);
-    library_spawn_blocking(move || crate::random_artists::list_random_artists(&store, &server_id, limit))
-        .await
+    library_spawn_blocking(move || {
+        crate::random_artists::list_random_artists(&store, &server_id, limit)
+    })
+    .await
 }
 
 // NOT specta-collected: returns a DTO carrying `raw_json: Value` (LibraryTrack/Album/ArtistDto) — specta rc.25 can't export serde_json::Value. Stays hand-written on generate_handler!.
@@ -1044,23 +1085,56 @@ pub async fn library_sync_bind_session(
     password: String,
     library_scope: Option<String>,
 ) -> Result<(), String> {
+    bind_sync_session_inner(
+        &runtime,
+        http_registry.as_ref(),
+        BindSessionRequest {
+            server_id,
+            base_url,
+            username,
+            password,
+            library_scope,
+        },
+        BIND_SESSION_TIMEOUTS,
+    )
+    .await
+}
+
+async fn bind_sync_session_inner(
+    runtime: &LibraryRuntime,
+    http_registry: &ServerHttpRegistry,
+    request: BindSessionRequest,
+    timeouts: BindSessionTimeouts,
+) -> Result<(), String> {
+    let BindSessionRequest {
+        server_id,
+        base_url,
+        username,
+        password,
+        library_scope,
+    } = request;
     let base_url = normalize_base_url(&base_url);
+    let _barrier = runtime
+        .cancel_and_drain_sync(None, Some(&server_id))
+        .await?;
+
     // Prime the Navidrome native-API bearer at bind time (spec §6.1 + PR-5
     // kickoff Q5) so N1 probe / ingest works without every command passing a
     // token. `/auth/login` is flaky, so retry a few times; if it still fails,
     // keep a bearer cached from a prior bind rather than dropping to
     // Subsonic-only — a transient miss must not strip an N1-capable server
     // (R7-15 Q3). Non-Navidrome servers stay `None` and sync via Subsonic.
-    let navidrome_token_cached = match navidrome_token_with_retry(
-        Some(http_registry.as_ref()),
-        &base_url,
-        &username,
-        &password,
+    let old_session = runtime.get_session(&server_id);
+    let token_result = tokio::time::timeout(
+        timeouts.token,
+        navidrome_token_with_retry(Some(http_registry), &base_url, &username, &password),
     )
-    .await
-    {
-        Some(tok) => Some(tok),
-        None => runtime.get_session(&server_id).and_then(|s| s.navidrome_token),
+    .await;
+    let navidrome_token_cached = match token_result {
+        Ok(Some(token)) => Some(token),
+        Ok(None) | Err(_) => old_session
+            .as_ref()
+            .and_then(|session| session.navidrome_token.clone()),
     };
 
     let session = SyncSession {
@@ -1071,49 +1145,51 @@ pub async fn library_sync_bind_session(
         navidrome_token: navidrome_token_cached.clone(),
         library_scope: library_scope.clone(),
     };
-    runtime.set_session(session);
 
     // Run the probe + persist capability flags. Failure to probe is a
-    // bind-time error — caller should fix credentials / URL.
+    // bind-time error. Publish only after success so a failed replacement
+    // leaves the previous session available.
     let subsonic = subsonic_client_with_registry(
-        Some(http_registry.as_ref()),
+        Some(http_registry),
         &server_id,
-        base_url,
-        username,
-        password,
+        base_url.clone(),
+        username.clone(),
+        password.clone(),
     );
     let navidrome_creds = navidrome_token_cached.map(|tok| NavidromeProbeCredentials {
-        server_url: subsonic_base_url_from(&runtime, &server_id),
+        server_url: base_url,
         bearer_token: tok,
     });
     let scope = library_scope.as_deref().unwrap_or_default();
-    probe_and_persist(
+    probe_and_persist_with_timeout(
         &runtime.store,
         &subsonic,
         navidrome_creds.as_ref(),
-        Some(http_registry.as_ref()),
+        Some(http_registry),
         &server_id,
         scope,
+        timeouts.probe,
     )
     .await
     .map_err(|e| format!("bind probe failed: {e}"))?;
+    runtime.set_session(session)?;
     Ok(())
-}
-
-fn subsonic_base_url_from(runtime: &LibraryRuntime, server_id: &str) -> String {
-    runtime
-        .get_session(server_id)
-        .map(|s| s.base_url)
-        .unwrap_or_default()
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn library_sync_clear_session(
+pub async fn library_sync_clear_session(
     runtime: State<'_, LibraryRuntime>,
     server_id: String,
 ) -> Result<(), String> {
-    runtime.clear_session(&server_id);
+    clear_sync_session(&runtime, &server_id).await
+}
+
+async fn clear_sync_session(runtime: &LibraryRuntime, server_id: &str) -> Result<(), String> {
+    let _barrier = runtime
+        .cancel_and_drain_sync(None, Some(server_id))
+        .await?;
+    runtime.clear_session(server_id);
     Ok(())
 }
 
@@ -1175,10 +1251,19 @@ async fn library_sync_start_inner(
     library_scope: Option<String>,
     force_full_tombstone: bool,
 ) -> Result<SyncJobDto, String> {
+    // Every foreground start supersedes the previous job, regardless of mode
+    // or server. Drain it before installing the replacement so no late cursor
+    // or ingest write can race the new runner. Read the session afterwards so
+    // a concurrent rebind/purge cannot leave this start using a stale snapshot.
+    let _barrier = runtime.cancel_and_drain_sync(None, None).await?;
     let session = runtime.get_session(&server_id).ok_or_else(|| {
         format!("no bound session for server `{server_id}` — call library_sync_bind_session first")
     })?;
-    let scope = library_scope.clone().or(session.library_scope.clone()).unwrap_or_default();
+    let scope = library_scope
+        .clone()
+        .or(session.library_scope.clone())
+        .unwrap_or_default();
+    let kind = resolve_sync_job_kind(&mode, &scope, force_full_tombstone)?;
     let mut capability_flags = load_capability_flags(&runtime, &server_id, &scope)?;
     // N1 needs the Navidrome bearer. Without a cached token this run is
     // Subsonic-only even on an N1-capable server — mask the flag for *this*
@@ -1189,40 +1274,12 @@ async fn library_sync_start_inner(
         capability_flags.remove(CapabilityFlags::NAVIDROME_NATIVE_BULK);
     }
 
-    let kind = match mode.as_str() {
-        "full" => "initial_sync",
-        "delta" => "delta_sync",
-        other => return Err(format!("unknown sync mode: `{other}`")),
-    };
-    if let Some(existing) = runtime.current_job() {
-        if existing.kind == "initial_sync" {
-            match kind {
-                "initial_sync" if existing.server_id == server_id => {
-                    // Same-server full resync: cancel and drain the in-flight
-                    // runner so its cursor writes can't race the replacement.
-                    let done = Arc::clone(&existing.done);
-                    existing
-                        .cancel
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    drop(existing);
-                    done.notified().await;
-                }
-                "initial_sync" => {
-                    return Err(format!(
-                        "initial sync already running for `{}` — wait for it to finish",
-                        existing.server_id
-                    ));
-                }
-                _ => {
-                    return Err(format!(
-                        "initial sync in progress for `{}` — try again later",
-                        existing.server_id
-                    ));
-                }
-            }
-        }
-    }
-    let job_id = format!("{}_{}", server_id, now_unix_ms());
+    let job_id = format!(
+        "{}_{}_{}",
+        server_id,
+        now_unix_ms(),
+        NEXT_SYNC_JOB_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
     let cancel = Arc::new(AtomicBool::new(false));
     let done = Arc::new(tokio::sync::Notify::new());
     let job = CurrentJob {
@@ -1230,16 +1287,16 @@ async fn library_sync_start_inner(
         server_id: server_id.clone(),
         kind: kind.to_string(),
         cancel: Arc::clone(&cancel),
+        abort_handle: None,
         done: Arc::clone(&done),
     };
-    runtime.set_current_job(job);
+    runtime.install_current_job(job)?;
 
     // Spawn the runner in a detached task. Progress events flow
     // through an mpsc channel to the orchestrator that emits Tauri
     // events; the runner doesn't need an AppHandle.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProgressEvent>();
-    let progress: Arc<dyn Progress + Send + Sync> =
-        Arc::new(ChannelProgress::new(tx));
+    let progress: Arc<dyn Progress + Send + Sync> = Arc::new(ChannelProgress::new(tx));
 
     let store = Arc::clone(&runtime.store);
     let session_clone = session.clone();
@@ -1250,98 +1307,110 @@ async fn library_sync_start_inner(
     let parallelism = ParallelismBudget::resolve(runtime.current_playback_hint());
 
     let app_for_runner = app.clone();
-    let runner_handle: tokio::task::JoinHandle<Result<(), String>> = tokio::task::spawn(async move {
-        let registry = app_for_runner.state::<Arc<ServerHttpRegistry>>();
-        let subsonic = subsonic_client_with_registry(
-            Some(registry.as_ref()),
-            &session_clone.server_id,
-            session_clone.base_url.clone(),
-            session_clone.username.clone(),
-            session_clone.password.clone(),
-        );
-        let navidrome_creds = session_clone.navidrome_token.clone().map(|tok| {
-            NavidromeProbeCredentials {
-                server_url: session_clone.base_url.clone(),
-                bearer_token: tok,
-            }
-        });
+    let runner_handle: tokio::task::JoinHandle<Result<(), String>> =
+        tokio::task::spawn(async move {
+            let registry = app_for_runner.state::<Arc<ServerHttpRegistry>>();
+            let subsonic = subsonic_client_with_registry(
+                Some(registry.as_ref()),
+                &session_clone.server_id,
+                session_clone.base_url.clone(),
+                session_clone.username.clone(),
+                session_clone.password.clone(),
+            );
+            let navidrome_creds =
+                session_clone
+                    .navidrome_token
+                    .clone()
+                    .map(|tok| NavidromeProbeCredentials {
+                        server_url: session_clone.base_url.clone(),
+                        bearer_token: tok,
+                    });
 
-        let result: Result<(), String> = if kind_for_task == "initial_sync" {
-            let mut runner = InitialSyncRunner::new(
-                &store,
-                &subsonic,
-                session_clone.server_id.clone(),
-                scope_for_task.clone(),
-                capability_flags,
-            )
-            .with_cancellation(Arc::clone(&cancel_for_task))
-            .with_progress(Arc::clone(&progress))
-            .with_parallelism_budget(parallelism)
-            .with_http_registry(Some(Arc::clone(&registry)));
-            if let Some(creds) = navidrome_creds.clone() {
-                runner = runner.with_navidrome_credentials(creds);
-            }
-            let run = sync_outcome_to_result(runner.run().await);
-            if run.is_ok() {
-                run_tag_pass_best_effort(
+            let result: Result<(), String> = if kind_for_task == "initial_sync" {
+                let mut runner = InitialSyncRunner::new(
                     &store,
                     &subsonic,
-                    &session_clone.server_id,
-                    Some(Arc::clone(&cancel_for_task)),
-                    Arc::clone(&progress),
-                    false,
+                    session_clone.server_id.clone(),
+                    scope_for_task.clone(),
+                    capability_flags,
                 )
-                .await;
-            }
-            run
-        } else {
-            // Delta — Mode A manual integrity uses the DeltaMismatch
-            // budget for tombstones when the local/server count gap
-            // is over threshold; otherwise a small budget keeps the
-            // background-like pass cheap. Manual «Verify integrity»
-            // forces the full budget regardless of threshold.
-            let tombstone_budget = if force_full_tombstone {
-                crate::sync::budget::RequestBudget::DELTA_MISMATCH_CAP
+                .with_cancellation(Arc::clone(&cancel_for_task))
+                .with_progress(Arc::clone(&progress))
+                .with_parallelism_budget(parallelism)
+                .with_http_registry(Some(Arc::clone(&registry)));
+                if let Some(creds) = navidrome_creds.clone() {
+                    runner = runner.with_navidrome_credentials(creds);
+                }
+                let run = sync_outcome_to_result(runner.run().await);
+                if run.is_ok() {
+                    run_tag_pass_best_effort(
+                        &store,
+                        &subsonic,
+                        &session_clone.server_id,
+                        Some(Arc::clone(&cancel_for_task)),
+                        Arc::clone(&progress),
+                        false,
+                    )
+                    .await;
+                }
+                run
             } else {
-                compute_tombstone_budget(&store, &session_clone.server_id, &scope_for_task)
-            };
-            let mut runner = DeltaSyncRunner::new(
-                &store,
-                &subsonic,
-                session_clone.server_id.clone(),
-                scope_for_task.clone(),
-                capability_flags,
-            )
-            .with_cancellation(Arc::clone(&cancel_for_task))
-            .with_progress(Arc::clone(&progress))
-            .with_http_registry(Some(Arc::clone(&registry)));
-            if tombstone_budget > 0 {
-                runner = runner.with_tombstone_budget(tombstone_budget);
-            }
-            if let Some(creds) = navidrome_creds.clone() {
-                runner = runner.with_navidrome_credentials(creds);
-            }
-            let run = sync_outcome_to_result(runner.run().await);
-            if run.is_ok() {
-                run_tag_pass_best_effort(
+                // Delta uses the mismatch budget when the local/server count gap
+                // crosses the threshold. Manual Verify is a separate stable full
+                // pass, so it cannot be skipped by an unchanged watermark or stop
+                // after one 200-row chunk.
+                let tombstone_budget = if force_full_tombstone {
+                    0
+                } else {
+                    compute_tombstone_budget(&store, &session_clone.server_id, &scope_for_task)
+                };
+                let mut runner = DeltaSyncRunner::new(
                     &store,
                     &subsonic,
-                    &session_clone.server_id,
-                    Some(Arc::clone(&cancel_for_task)),
-                    Arc::clone(&progress),
-                    true,
+                    session_clone.server_id.clone(),
+                    scope_for_task.clone(),
+                    capability_flags,
                 )
-                .await;
-            }
-            run
-        };
+                .with_cancellation(Arc::clone(&cancel_for_task))
+                .with_progress(Arc::clone(&progress))
+                .with_http_registry(Some(Arc::clone(&registry)));
+                if force_full_tombstone {
+                    runner = runner.with_full_tombstone_pass();
+                } else if tombstone_budget > 0 {
+                    runner = runner.with_tombstone_budget(tombstone_budget);
+                }
+                if let Some(creds) = navidrome_creds.clone() {
+                    runner = runner.with_navidrome_credentials(creds);
+                }
+                let run = sync_outcome_to_result(runner.run().await);
+                if run.is_ok() {
+                    run_tag_pass_best_effort(
+                        &store,
+                        &subsonic,
+                        &session_clone.server_id,
+                        Some(Arc::clone(&cancel_for_task)),
+                        Arc::clone(&progress),
+                        true,
+                    )
+                    .await;
+                }
+                run
+            };
 
-        // Closing the mpsc sender by dropping `progress` so the
-        // orchestrator's drain loop terminates.
-        drop(progress);
-        let _ = job_id_for_task; // silence unused on Err
-        result
-    });
+            // Closing the mpsc sender by dropping `progress` so the
+            // orchestrator's drain loop terminates.
+            drop(progress);
+            let _ = job_id_for_task; // silence unused on Err
+            result
+        });
+    if let Err(error) =
+        runtime.attach_current_job_abort_handle(&job_id, runner_handle.abort_handle())
+    {
+        runner_handle.abort();
+        runtime.clear_current_job_if_matches(&job_id);
+        done.notify_one();
+        return Err(error);
+    }
 
     // Orchestrator: drain progress + emit Tauri events, then emit
     // sync-idle when the runner exits.
@@ -1350,6 +1419,7 @@ async fn library_sync_start_inner(
     let scope_for_emit = scope.clone();
     let kind_for_emit = kind.to_string();
     let job_id_for_emit = job_id.clone();
+    let done_for_emit = Arc::clone(&done);
     tokio::task::spawn(async move {
         // Drain progress events; loop ends when sender is dropped.
         while let Some(event) = rx.recv().await {
@@ -1358,34 +1428,56 @@ async fn library_sync_start_inner(
                 &server_id_for_emit,
                 &scope_for_emit,
             );
-            let _ = app_for_emit
-                .emit(LibrarySyncProgressPayload::PROGRESS_EVENT_NAME, &payload);
+            let _ = app_for_emit.emit(LibrarySyncProgressPayload::PROGRESS_EVENT_NAME, &payload);
         }
         // Wait for the runner to finish + emit sync-idle.
         let outcome = match runner_handle.await {
-            Ok(Ok(())) => SyncIdleAck::ok(&server_id_for_emit, &scope_for_emit, &kind_for_emit),
-            Ok(Err(msg)) => SyncIdleAck::err(&server_id_for_emit, &scope_for_emit, &kind_for_emit, &msg),
-            Err(join_err) => SyncIdleAck::err(
+            Ok(Ok(())) => {
+                LibrarySyncIdlePayload::ok(
+                    &server_id_for_emit,
+                    &scope_for_emit,
+                    &kind_for_emit,
+                    "foreground",
+                )
+                .with_job_id(&job_id_for_emit)
+            }
+            Ok(Err(msg)) => LibrarySyncIdlePayload::err(
                 &server_id_for_emit,
                 &scope_for_emit,
                 &kind_for_emit,
+                "foreground",
+                &msg,
+            )
+            .with_job_id(&job_id_for_emit),
+            Err(join_err) if join_err.is_cancelled() => {
+                LibrarySyncIdlePayload::ok(
+                    &server_id_for_emit,
+                    &scope_for_emit,
+                    &kind_for_emit,
+                    "foreground",
+                )
+                .with_job_id(&job_id_for_emit)
+            }
+            Err(join_err) => LibrarySyncIdlePayload::err(
+                &server_id_for_emit,
+                &scope_for_emit,
+                &kind_for_emit,
+                "foreground",
                 &format!("sync task panicked: {join_err}"),
-            ),
+            )
+            .with_job_id(&job_id_for_emit),
         };
         if let Some(runtime) = app_for_emit.try_state::<LibraryRuntime>() {
             let _ = runtime.store.checkpoint_wal("sync.checkpoint");
         }
         let _ = app_for_emit.emit(LibrarySyncProgressPayload::IDLE_EVENT_NAME, &outcome);
 
-        // Clear the slot only if it still names us — sync_start may
-        // have already overwritten with a newer job.
+        // Clear before notifying so a woken drain waiter cannot observe the
+        // completed slot and wait for a second, nonexistent notification.
         if let Some(state) = app_for_emit.try_state::<LibraryRuntime>() {
-            if let Some(job) = state.current_job() {
-                if job.job_id == job_id_for_emit {
-                    job.done.notify_one();
-                }
-            }
-            state.clear_current_job_if_matches(&job_id_for_emit);
+            state.complete_current_job(&job_id_for_emit, &done_for_emit);
+        } else {
+            done_for_emit.notify_one();
         }
     });
 
@@ -1397,11 +1489,8 @@ async fn library_sync_start_inner(
 }
 
 /// Manual «Verify library integrity» — same dispatch shape as
-/// `library_sync_start { mode: 'delta' }` but always sets the full
-/// `DELTA_MISMATCH_CAP` tombstone budget regardless of the
-/// local/server count gap. Per PR-5b review §5 note 2: spec §6.7
-/// Mode A user-initiated full reconcile bypasses the threshold
-/// check.
+/// `library_sync_start { mode: 'delta' }`, but the runner bypasses delta
+/// watermarks and completes a stable full tombstone pass.
 #[tauri::command]
 #[specta::specta]
 pub async fn library_sync_verify_integrity(
@@ -1421,21 +1510,33 @@ pub async fn library_sync_verify_integrity(
     .await
 }
 
+fn resolve_sync_job_kind(
+    mode: &str,
+    library_scope: &str,
+    force_full_tombstone: bool,
+) -> Result<&'static str, String> {
+    match mode {
+        "full" => Ok("initial_sync"),
+        // `getSong` proves that an id exists, not that it still belongs to a
+        // music folder. Scoped Verify uses the scope-safe full resync and
+        // generation sweep instead of the server-wide tombstone probe.
+        "delta" if force_full_tombstone && !library_scope.is_empty() => Ok("initial_sync"),
+        "delta" => Ok("delta_sync"),
+        other => Err(format!("unknown sync mode: `{other}`")),
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
-pub fn library_sync_cancel(
+pub async fn library_sync_cancel(
     runtime: State<'_, LibraryRuntime>,
     job_id: Option<String>,
 ) -> Result<(), String> {
-    // `job_id` is informational — there's at most one in-flight job
-    // per `LibraryRuntime` at a time. If it's supplied and doesn't
-    // match, treat as no-op (the named job already finished).
-    if let Some(id) = &job_id {
-        if runtime.current_job().is_none_or(|j| &j.job_id != id) {
-            return Ok(());
-        }
-    }
-    runtime.cancel_current_job();
+    // If supplied, `job_id` is matched while holding the lifecycle lock. A
+    // stale cancel therefore cannot race a replacement and cancel the new job.
+    let _barrier = runtime
+        .cancel_and_drain_sync(job_id.as_deref(), None)
+        .await?;
     Ok(())
 }
 
@@ -1575,7 +1676,12 @@ pub fn library_put_fact(
 ) -> Result<(), String> {
     // E4: typed repo owns the upsert + the §5.12 user-override rule
     // (a `user` bpm fact also writes the hot `track.bpm` column).
-    crate::repos::FactRepository::new(&runtime.store).put(&server_id, &track_id, &fact, now_unix_ms())
+    crate::repos::FactRepository::new(&runtime.store).put(
+        &server_id,
+        &track_id,
+        &fact,
+        now_unix_ms(),
+    )
 }
 
 #[tauri::command]
@@ -1638,13 +1744,12 @@ pub fn library_get_recent_play_sessions(
     limit: Option<u32>,
     since_ms: Option<i64>,
 ) -> Result<Vec<PlaySessionRecentTrackDto>, String> {
-    PlaySessionRepository::new(&runtime.store)
-        .recent_plays(limit.unwrap_or(50), since_ms)
+    PlaySessionRepository::new(&runtime.store).recent_plays(limit.unwrap_or(50), since_ms)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn library_purge_server(
+pub async fn library_purge_server(
     runtime: State<'_, LibraryRuntime>,
     server_id: String,
     include_analysis: Option<bool>,
@@ -1658,19 +1763,46 @@ pub fn library_purge_server(
     let _ = include_analysis;
     let include_offline = include_offline.unwrap_or(false);
 
+    // Stop a foreground job for this server and wait for any active scheduler
+    // tick before deleting. The guard also blocks replacement jobs and new
+    // scheduler ticks until the purge transaction and session clear finish.
+    let _barrier = runtime
+        .cancel_and_drain_sync(None, Some(&server_id))
+        .await?;
+    runtime.clear_session(&server_id);
+    purge_server_data(&runtime, &server_id, include_offline)
+}
+
+fn purge_server_data(
+    runtime: &LibraryRuntime,
+    server_id: &str,
+    include_offline: bool,
+) -> Result<PurgeReportDto, String> {
     let mut report = PurgeReportDto::default();
     runtime
         .store
         .with_conn_mut("cmd.purge_server", |conn| {
             let tx = conn.transaction()?;
-            let track_count: i64 =
-                tx.query_row("SELECT COUNT(*) FROM track WHERE server_id = ?1", params![server_id], |r| r.get(0))?;
-            let album_count: i64 =
-                tx.query_row("SELECT COUNT(*) FROM album WHERE server_id = ?1", params![server_id], |r| r.get(0))?;
-            let artist_count: i64 =
-                tx.query_row("SELECT COUNT(*) FROM artist WHERE server_id = ?1", params![server_id], |r| r.get(0))?;
-            let offline_count: i64 =
-                tx.query_row("SELECT COUNT(*) FROM track_offline WHERE server_id = ?1", params![server_id], |r| r.get(0))?;
+            let track_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM track WHERE server_id = ?1",
+                params![server_id],
+                |r| r.get(0),
+            )?;
+            let album_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM album WHERE server_id = ?1",
+                params![server_id],
+                |r| r.get(0),
+            )?;
+            let artist_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM artist WHERE server_id = ?1",
+                params![server_id],
+                |r| r.get(0),
+            )?;
+            let offline_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM track_offline WHERE server_id = ?1",
+                params![server_id],
+                |r| r.get(0),
+            )?;
             let offline_bytes: Option<i64> = tx
                 .query_row(
                     "SELECT SUM(file_size_bytes) FROM track_offline WHERE server_id = ?1",
@@ -1706,13 +1838,31 @@ pub fn library_purge_server(
                 params![server_id],
             )?;
             tx.execute(
-                "DELETE FROM track WHERE server_id = ?1",
+                "DELETE FROM track_genre WHERE server_id = ?1",
                 params![server_id],
             )?;
             tx.execute(
-                "DELETE FROM album WHERE server_id = ?1",
+                "DELETE FROM canonical_enrichment_link WHERE owner_server_id = ?1",
                 params![server_id],
             )?;
+            tx.execute(
+                "DELETE FROM album_browse_projection WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute(
+                "DELETE FROM artist_artwork_lookup WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute(
+                "DELETE FROM entity_user_rating WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute(
+                "DELETE FROM library_tag_state WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute("DELETE FROM track WHERE server_id = ?1", params![server_id])?;
+            tx.execute("DELETE FROM album WHERE server_id = ?1", params![server_id])?;
             tx.execute(
                 "DELETE FROM artist WHERE server_id = ?1",
                 params![server_id],
@@ -1746,14 +1896,6 @@ pub fn library_purge_server(
         })
         .map_err(|e| e.to_string())?;
 
-    // Drop any bound session / current job for this server — credentials
-    // out of memory, ongoing job cancelled.
-    runtime.clear_session(&server_id);
-    if let Some(job) = runtime.current_job() {
-        if job.server_id == server_id {
-            job.cancel.store(true, Ordering::SeqCst);
-        }
-    }
     Ok(report)
 }
 
@@ -1771,11 +1913,13 @@ pub fn library_migrate_server_index_keys(
 
 #[tauri::command]
 #[specta::specta]
-pub fn library_delete_server_data(
+pub async fn library_delete_server_data(
     runtime: State<'_, LibraryRuntime>,
     server_id: String,
 ) -> Result<(), String> {
-    library_purge_server(runtime, server_id, Some(false), Some(true)).map(|_| ())
+    library_purge_server(runtime, server_id, Some(false), Some(true))
+        .await
+        .map(|_| ())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -1809,7 +1953,12 @@ fn compute_tombstone_budget(
         .flatten()
         .unwrap_or(0)
         .max(0) as u32;
-    if should_auto_reconcile(local, server, crate::sync::scheduler::DEFAULT_TOMBSTONE_THRESHOLD_PCT) {
+    if should_auto_reconcile_scope(
+        library_scope,
+        local,
+        server,
+        crate::sync::scheduler::DEFAULT_TOMBSTONE_THRESHOLD_PCT,
+    ) {
         crate::sync::budget::RequestBudget::DELTA_MISMATCH_CAP
     } else {
         0
@@ -1901,42 +2050,12 @@ fn put_entity_user_ratings(
     })
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SyncIdleAck {
-    server_id: String,
-    library_scope: String,
-    kind: String,
-    ok: bool,
-    error: Option<String>,
-}
-
-impl SyncIdleAck {
-    fn ok(server_id: &str, scope: &str, kind: &str) -> Self {
-        Self {
-            server_id: server_id.to_string(),
-            library_scope: scope.to_string(),
-            kind: kind.to_string(),
-            ok: true,
-            error: None,
-        }
-    }
-    fn err(server_id: &str, scope: &str, kind: &str, message: &str) -> Self {
-        Self {
-            server_id: server_id.to_string(),
-            library_scope: scope.to_string(),
-            kind: kind.to_string(),
-            ok: false,
-            error: Some(message.to_string()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::repos::TrackRow;
     use crate::store::LibraryStore;
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     fn make_row(server: &str, id: &str, album_id: &str, track_no: i64) -> TrackRow {
@@ -1990,6 +2109,54 @@ mod tests {
         LibraryRuntime::new(store)
     }
 
+    fn populate_server_scoped_tables(store: &LibraryStore, server_id: &str) {
+        let canonical_id = format!("canonical-{server_id}");
+        let artist_id = format!("artist-{server_id}");
+        let album_id = format!("album-{server_id}");
+        let track_id = format!("track-{server_id}");
+        store
+            .with_conn("test.populate_server_scopes", |conn| {
+                conn.execute_batch(&format!(
+                    "INSERT INTO canonical_track(id, created_at, updated_at) VALUES ('{canonical_id}', 1, 1);
+                     INSERT INTO sync_state(server_id, library_scope) VALUES ('{server_id}', '');
+                     INSERT INTO artist(server_id, id, name, synced_at) VALUES ('{server_id}', '{artist_id}', 'Artist', 1);
+                     INSERT INTO album(server_id, id, name, synced_at) VALUES ('{server_id}', '{album_id}', 'Album', 1);
+                     INSERT INTO track(server_id, id, title, album, duration_sec, synced_at, raw_json)
+                       VALUES ('{server_id}', '{track_id}', 'Track', 'Album', 1, 1, '{{}}');
+                     INSERT INTO track_extension(server_id, track_id, kind, payload, updated_at)
+                       VALUES ('{server_id}', '{track_id}', 'waveform', X'01', 1);
+                     INSERT INTO track_fact(server_id, track_id, fact_kind, source_kind, source_id, fetched_at)
+                       VALUES ('{server_id}', '{track_id}', 'bpm', 'server', 'source', 1);
+                     INSERT INTO track_artifact(server_id, track_id, artifact_kind, format, source_kind, source_id, fetched_at)
+                       VALUES ('{server_id}', '{track_id}', 'lyrics', 'text', 'server', 'source', 1);
+                     INSERT INTO track_canonical_link(server_id, track_id, canonical_id, match_method, confidence, linked_at)
+                       VALUES ('{server_id}', '{track_id}', '{canonical_id}', 'isrc', 1.0, 1);
+                     INSERT INTO track_id_history(server_id, old_id, new_id, remapped_at)
+                       VALUES ('{server_id}', 'old-{track_id}', '{track_id}', 1);
+                     INSERT INTO play_session(server_id, track_id, started_at_ms, listened_sec, position_max_sec, completion, end_reason)
+                       VALUES ('{server_id}', '{track_id}', 1, 1.0, 1.0, 'full', 'ended');
+                     INSERT INTO track_offline(server_id, track_id, local_path, cached_at)
+                       VALUES ('{server_id}', '{track_id}', '/tmp/{track_id}', 1);
+                     INSERT INTO track_genre(server_id, track_id, genre, album_id)
+                       VALUES ('{server_id}', '{track_id}', 'Rock', '{album_id}');
+                     INSERT INTO artist_artwork_lookup(server_id, artist_id, surface_kind, status, updated_at)
+                       VALUES ('{server_id}', '{artist_id}', 'fanart', 'hit', 1);
+                     INSERT INTO library_tag_state(server_id, folders_hash, completed_at)
+                       VALUES ('{server_id}', 'hash', 1);
+                     INSERT INTO entity_user_rating(server_id, entity_kind, entity_id, rating, fetched_at)
+                       VALUES ('{server_id}', 'track', '{track_id}', 5, 1);
+                     INSERT INTO album_browse_projection(
+                       server_id, library_id, album_id, name, song_count, duration_sec, synced_at, representative_track_id
+                     ) VALUES ('{server_id}', '', '{album_id}', 'Album', 1, 1, 1, '{track_id}');
+                     INSERT INTO canonical_enrichment_link(
+                       canonical_id, enrichment_kind, owner_server_id, owner_track_id, linked_at
+                     ) VALUES ('{canonical_id}', 'lyrics', '{server_id}', '{track_id}', 1);"
+                ))?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
     #[test]
     fn get_status_returns_defaults_when_no_row_exists() {
         let store = Arc::new(LibraryStore::open_in_memory());
@@ -2005,7 +2172,10 @@ mod tests {
         TrackRepository::new(&store)
             .upsert_batch(&[make_row("s1", "tr_1", "al_1", 5)])
             .unwrap();
-        let found = TrackRepository::new(&store).find_one("s1", "tr_1").unwrap().unwrap();
+        let found = TrackRepository::new(&store)
+            .find_one("s1", "tr_1")
+            .unwrap()
+            .unwrap();
         let dto = LibraryTrackDto::from_row(&found);
         assert_eq!(dto.id, "tr_1");
         assert_eq!(dto.album_id.as_deref(), Some("al_1"));
@@ -2064,13 +2234,22 @@ mod tests {
                 .unwrap()
         };
 
-        apply_track_patch(&rt, "s1", "tr_1", &serde_json::json!({ "starredAt": 1700, "userRating": 4 }))
-            .unwrap();
+        apply_track_patch(
+            &rt,
+            "s1",
+            "tr_1",
+            &serde_json::json!({ "starredAt": 1700, "userRating": 4 }),
+        )
+        .unwrap();
         assert_eq!(read(&store), (Some(1700), Some(4)));
 
         // Explicit null clears starred_at; absent userRating stays.
         apply_track_patch(&rt, "s1", "tr_1", &serde_json::json!({ "starredAt": null })).unwrap();
-        assert_eq!(read(&store), (None, Some(4)), "null clears, absent key untouched");
+        assert_eq!(
+            read(&store),
+            (None, Some(4)),
+            "null clears, absent key untouched"
+        );
 
         // Empty patch is a no-op.
         apply_track_patch(&rt, "s1", "tr_1", &serde_json::json!({})).unwrap();
@@ -2087,7 +2266,9 @@ mod tests {
                 make_row("s1", "tr_c", "al_2", 1),
             ])
             .unwrap();
-        let album1 = TrackRepository::new(&store).find_by_album("s1", "al_1").unwrap();
+        let album1 = TrackRepository::new(&store)
+            .find_by_album("s1", "al_1")
+            .unwrap();
         let ids: Vec<&str> = album1.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["tr_a", "tr_b"]);
     }
@@ -2207,21 +2388,114 @@ mod tests {
 
     #[test]
     fn normalize_base_url_adds_scheme_and_strips_trailing_slash() {
-        assert_eq!(normalize_base_url("nas.example.com"), "http://nas.example.com");
-        assert_eq!(normalize_base_url("nas.example.com/"), "http://nas.example.com");
-        assert_eq!(normalize_base_url("192.168.1.5:4533"), "http://192.168.1.5:4533");
+        assert_eq!(
+            normalize_base_url("nas.example.com"),
+            "http://nas.example.com"
+        );
+        assert_eq!(
+            normalize_base_url("nas.example.com/"),
+            "http://nas.example.com"
+        );
+        assert_eq!(
+            normalize_base_url("192.168.1.5:4533"),
+            "http://192.168.1.5:4533"
+        );
     }
 
     #[test]
     fn normalize_base_url_preserves_existing_scheme() {
-        assert_eq!(normalize_base_url("https://nas.example.com"), "https://nas.example.com");
-        assert_eq!(normalize_base_url("https://nas.example.com/"), "https://nas.example.com");
-        assert_eq!(normalize_base_url("http://localhost:4533/"), "http://localhost:4533");
+        assert_eq!(
+            normalize_base_url("https://nas.example.com"),
+            "https://nas.example.com"
+        );
+        assert_eq!(
+            normalize_base_url("https://nas.example.com/"),
+            "https://nas.example.com"
+        );
+        assert_eq!(
+            normalize_base_url("http://localhost:4533/"),
+            "http://localhost:4533"
+        );
     }
 
     #[test]
     fn normalize_base_url_trims_whitespace() {
-        assert_eq!(normalize_base_url("  nas.example.com  "), "http://nas.example.com");
+        assert_eq!(
+            normalize_base_url("  nas.example.com  "),
+            "http://nas.example.com"
+        );
+    }
+
+    #[test]
+    fn scoped_verify_routes_through_scope_safe_full_resync() {
+        assert_eq!(
+            resolve_sync_job_kind("delta", "music-folder", true).unwrap(),
+            "initial_sync"
+        );
+        assert_eq!(
+            resolve_sync_job_kind("delta", "", true).unwrap(),
+            "delta_sync"
+        );
+        assert_eq!(
+            resolve_sync_job_kind("delta", "music-folder", false).unwrap(),
+            "delta_sync"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_bind_probe_preserves_previous_session_and_is_bounded() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token": "new-token",
+                "userId": "u1"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/ping.view"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+            .mount(&server)
+            .await;
+
+        let runtime = LibraryRuntime::new(Arc::new(LibraryStore::open_in_memory()));
+        let previous = SyncSession {
+            server_id: "s1".into(),
+            base_url: "https://old.example.com".into(),
+            username: "old-user".into(),
+            password: "old-password".into(),
+            navidrome_token: Some("old-token".into()),
+            library_scope: Some("old-scope".into()),
+        };
+        runtime.set_session(previous.clone()).unwrap();
+
+        let error = tokio::time::timeout(
+            Duration::from_millis(250),
+            bind_sync_session_inner(
+                &runtime,
+                &ServerHttpRegistry::new(),
+                BindSessionRequest {
+                    server_id: "s1".into(),
+                    base_url: server.uri(),
+                    username: "new-user".into(),
+                    password: "new-password".into(),
+                    library_scope: Some("new-scope".into()),
+                },
+                BindSessionTimeouts {
+                    token: Duration::from_millis(100),
+                    probe: Duration::from_millis(20),
+                },
+            ),
+        )
+        .await
+        .expect("bind exceeded its configured network bound")
+        .unwrap_err();
+        assert!(error.contains("timed out"));
+        assert_eq!(runtime.get_session("s1"), Some(previous));
     }
 
     #[test]
@@ -2232,6 +2506,202 @@ mod tests {
         assert!(sync_outcome_to_result::<()>(Err(SyncError::Cancelled)).is_ok());
         let err = sync_outcome_to_result::<()>(Err(SyncError::Transport("boom".into())));
         assert_eq!(err, Err("sync transport: boom".to_string()));
+    }
+
+    #[tokio::test]
+    async fn clear_session_cancels_and_drains_target_before_removing_it() {
+        let runtime = Arc::new(runtime(Arc::new(LibraryStore::open_in_memory())));
+        for server_id in ["s1", "s2"] {
+            runtime
+                .set_session(SyncSession {
+                    server_id: server_id.to_string(),
+                    base_url: format!("https://{server_id}.example.com"),
+                    username: "user".into(),
+                    password: "password".into(),
+                    navidrome_token: None,
+                    library_scope: None,
+                })
+                .unwrap();
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(tokio::sync::Notify::new());
+        runtime
+            .install_current_job(CurrentJob {
+                job_id: "target-job".into(),
+                server_id: "s1".into(),
+                kind: "delta_sync".into(),
+                cancel: Arc::clone(&cancel),
+                abort_handle: None,
+                done: Arc::clone(&done),
+            })
+            .unwrap();
+
+        let runtime_for_job = Arc::clone(&runtime);
+        let cancel_for_job = Arc::clone(&cancel);
+        let done_for_job = Arc::clone(&done);
+        let job = tokio::spawn(async move {
+            while !cancel_for_job.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            runtime_for_job.complete_current_job("target-job", &done_for_job);
+        });
+
+        clear_sync_session(&runtime, "s1").await.unwrap();
+        job.await.unwrap();
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(runtime.get_session("s1").is_none());
+        assert!(runtime.get_session("s2").is_some());
+    }
+
+    #[test]
+    fn purge_removes_every_target_scope_and_preserves_optional_offline_rows() {
+        let store = Arc::new(LibraryStore::open_in_memory());
+        populate_server_scoped_tables(&store, "s1");
+        populate_server_scoped_tables(&store, "s2");
+        let runtime = runtime(Arc::clone(&store));
+
+        let report = purge_server_data(&runtime, "s1", false).unwrap();
+        assert_eq!(report.tracks_deleted, 1);
+        assert_eq!(report.albums_deleted, 1);
+        assert_eq!(report.artists_deleted, 1);
+        assert_eq!(report.offline_rows_deleted, 0);
+
+        let scopes = [
+            ("track_extension", "server_id"),
+            ("track_fact", "server_id"),
+            ("track_artifact", "server_id"),
+            ("track_canonical_link", "server_id"),
+            ("track_id_history", "server_id"),
+            ("play_session", "server_id"),
+            ("track_genre", "server_id"),
+            ("artist_artwork_lookup", "server_id"),
+            ("library_tag_state", "server_id"),
+            ("entity_user_rating", "server_id"),
+            ("album_browse_projection", "server_id"),
+            ("canonical_enrichment_link", "owner_server_id"),
+            ("track", "server_id"),
+            ("album", "server_id"),
+            ("artist", "server_id"),
+            ("sync_state", "server_id"),
+        ];
+        store
+            .with_conn("test.assert_purge_scopes", |conn| {
+                for (table, column) in scopes {
+                    let target: i64 = conn.query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE {column} = 's1'"),
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    let other: i64 = conn.query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE {column} = 's2'"),
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(target, 0, "target rows remain in {table}.{column}");
+                    assert_eq!(other, 1, "other-server row removed from {table}.{column}");
+                }
+                let preserved_offline: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM track_offline WHERE server_id = 's1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(preserved_offline, 1);
+                let foreign_key_errors: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM pragma_foreign_key_check",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(foreign_key_errors, 0);
+                Ok(())
+            })
+            .unwrap();
+
+        let second = purge_server_data(&runtime, "s1", true).unwrap();
+        assert_eq!(second.offline_rows_deleted, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn purge_drains_http_waiting_job_before_deleting_rows() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/in-flight"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_string("ok"),
+            )
+            .mount(&server)
+            .await;
+
+        let store = Arc::new(LibraryStore::open_in_memory());
+        TrackRepository::new(&store)
+            .upsert_batch(&[make_row("s1", "before", "al_1", 1)])
+            .unwrap();
+        let runtime = Arc::new(runtime(Arc::clone(&store)));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(tokio::sync::Notify::new());
+        let job_id = "http-writer".to_string();
+        runtime
+            .install_current_job(CurrentJob {
+                job_id: job_id.clone(),
+                server_id: "s1".into(),
+                kind: "delta_sync".into(),
+                cancel: Arc::clone(&cancel),
+                abort_handle: None,
+                done: Arc::clone(&done),
+            })
+            .unwrap();
+
+        let runtime_for_job = Arc::clone(&runtime);
+        let request_url = format!("{}/in-flight", server.uri());
+        let writer = tokio::spawn(async move {
+            reqwest::get(request_url)
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+            // Model a response already in flight: even if cancellation was set,
+            // this late write must finish before the purge transaction starts.
+            TrackRepository::new(&runtime_for_job.store)
+                .upsert_batch(&[make_row("s1", "late", "al_1", 2)])
+                .unwrap();
+            runtime_for_job.complete_current_job(&job_id, &done);
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if server
+                    .received_requests()
+                    .await
+                    .expect("requests captured")
+                    .is_empty()
+                {
+                    tokio::task::yield_now().await;
+                } else {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("HTTP request did not start");
+
+        let barrier = runtime
+            .cancel_and_drain_sync(None, Some("s1"))
+            .await
+            .unwrap();
+        assert!(cancel.load(Ordering::SeqCst));
+        let report = purge_server_data(&runtime, "s1", false).unwrap();
+        drop(barrier);
+        writer.await.unwrap();
+
+        assert_eq!(report.tracks_deleted, 2);
+        assert!(TrackRepository::new(&store)
+            .find_one("s1", "late")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]

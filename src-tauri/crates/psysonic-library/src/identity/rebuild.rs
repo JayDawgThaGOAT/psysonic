@@ -2,7 +2,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
 
 use crate::store::LibraryStore;
 
@@ -22,6 +22,81 @@ ON CONFLICT(server_id, track_id) DO UPDATE SET
   duration_sec = excluded.duration_sec
 ";
 
+pub(crate) fn delete_cluster_keys_for_tracks(
+    tx: &Transaction<'_>,
+    server_id: &str,
+    track_ids: &[String],
+) -> rusqlite::Result<()> {
+    let mut statement = tx.prepare_cached(
+        "DELETE FROM cluster.track_cluster_key WHERE server_id = ?1 AND track_id = ?2",
+    )?;
+    for track_id in track_ids {
+        statement.execute(params![server_id, track_id])?;
+    }
+    Ok(())
+}
+
+pub(crate) fn prune_cluster_keys_for_scope(
+    tx: &Transaction<'_>,
+    server_id: &str,
+    library_scope: &str,
+) -> rusqlite::Result<()> {
+    if library_scope.is_empty() {
+        tx.execute(
+            "DELETE FROM cluster.track_cluster_key \
+             WHERE server_id = ?1 AND NOT EXISTS ( \
+               SELECT 1 FROM track t \
+               WHERE t.server_id = ?1 AND t.id = cluster.track_cluster_key.track_id \
+                 AND t.deleted = 0 \
+             )",
+            params![server_id],
+        )?;
+    } else {
+        tx.execute(
+            "DELETE FROM cluster.track_cluster_key \
+             WHERE server_id = ?1 AND library_id = ?2 AND NOT EXISTS ( \
+               SELECT 1 FROM track t \
+               WHERE t.server_id = ?1 AND t.id = cluster.track_cluster_key.track_id \
+                 AND t.library_id = ?2 AND t.deleted = 0 \
+             )",
+            params![server_id, library_scope],
+        )?;
+    }
+    Ok(())
+}
+
+/// Library tagging only changes `track.library_id`; identity keys stay valid.
+/// Refresh existing sidecar rows from the authoritative track rows in one batch.
+pub(crate) fn refresh_library_ids_for_albums(
+    tx: &Transaction<'_>,
+    server_id: &str,
+    album_ids: &[String],
+) -> rusqlite::Result<()> {
+    if album_ids.is_empty() {
+        return Ok(());
+    }
+    let placeholders = (0..album_ids.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "UPDATE cluster.track_cluster_key AS ck \
+         SET library_id = COALESCE(( \
+           SELECT t.library_id FROM track t \
+           WHERE t.server_id = ck.server_id AND t.id = ck.track_id \
+         ), '') \
+         WHERE ck.server_id = ? \
+           AND ck.track_id IN ( \
+             SELECT id FROM track WHERE server_id = ? AND album_id IN ({placeholders}) \
+           )"
+    );
+    let mut values: Vec<rusqlite::types::Value> =
+        vec![server_id.to_string().into(), server_id.to_string().into()];
+    values.extend(album_ids.iter().cloned().map(Into::into));
+    tx.execute(&sql, params_from_iter(values.iter()))?;
+    Ok(())
+}
+
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -33,9 +108,7 @@ fn now_unix() -> i64 {
 pub fn cluster_rebuild_needed(conn: &Connection) -> rusqlite::Result<bool> {
     let stored: Option<String> = conn
         .query_row(
-            &format!(
-                "SELECT value FROM {CLUSTER_SCHEMA}.cluster_meta WHERE key = 'norm_version'"
-            ),
+            &format!("SELECT value FROM {CLUSTER_SCHEMA}.cluster_meta WHERE key = 'norm_version'"),
             [],
             |r| r.get(0),
         )
@@ -82,10 +155,7 @@ fn concrete_physical_album_key(server_id: &str, album_id: &str) -> String {
 }
 
 /// Rebuild identity keys for one server or all servers. Returns rows upserted.
-pub fn rebuild_cluster_keys(
-    store: &LibraryStore,
-    server_id: Option<&str>,
-) -> Result<u64, String> {
+pub fn rebuild_cluster_keys(store: &LibraryStore, server_id: Option<&str>) -> Result<u64, String> {
     store.with_conn_mut("identity.rebuild_cluster_keys", |conn| {
         // `norm_version` is global. A stale per-server request must rebuild every
         // server before stamping the new version, otherwise untouched keys would
@@ -169,7 +239,9 @@ pub fn rebuild_cluster_keys(
                 keys.album_key = canonical_album_artist
                     .as_deref()
                     .filter(|name| !name.trim().is_empty())
-                    .and_then(|name| build_album_key(Some(name), canonical_album.as_deref().unwrap_or(&album)))
+                    .and_then(|name| {
+                        build_album_key(Some(name), canonical_album.as_deref().unwrap_or(&album))
+                    })
                     .or_else(|| Some(concrete_physical_album_key(&server_id, album_id)));
             }
             upsert.execute(params![
@@ -505,12 +577,26 @@ mod tests {
         TrackRepository::new(&store)
             .upsert_batch(&[
                 physical_album_track_row(
-                    "s1", "t1", "One", "Artist A", "artist-a", "Split", "album-1",
-                    "Various Artists", "lib-a",
+                    "s1",
+                    "t1",
+                    "One",
+                    "Artist A",
+                    "artist-a",
+                    "Split",
+                    "album-1",
+                    "Various Artists",
+                    "lib-a",
                 ),
                 physical_album_track_row(
-                    "s1", "t2", "Two", "Artist B", "artist-b", "Split", "album-1",
-                    "Various Artists", "lib-a",
+                    "s1",
+                    "t2",
+                    "Two",
+                    "Artist B",
+                    "artist-b",
+                    "Split",
+                    "album-1",
+                    "Various Artists",
+                    "lib-a",
                 ),
             ])
             .unwrap();
@@ -701,31 +787,16 @@ mod tests {
     fn norm_version_gate_and_bump() {
         let store = LibraryStore::open_in_memory();
         assert!(
-            store
-                .with_conn("misc", cluster_rebuild_needed)
-                .unwrap(),
+            store.with_conn("misc", cluster_rebuild_needed).unwrap(),
             "fresh attach should need rebuild"
         );
 
         TrackRepository::new(&store)
-            .upsert_batch(&[track_row(
-                "s1",
-                "t1",
-                "T",
-                Some("A"),
-                "Al",
-                None,
-                1,
-                "lib",
-            )])
+            .upsert_batch(&[track_row("s1", "t1", "T", Some("A"), "Al", None, 1, "lib")])
             .unwrap();
         rebuild_cluster_keys(&store, None).unwrap();
 
-        assert!(
-            !store
-                .with_conn("misc", cluster_rebuild_needed)
-                .unwrap()
-        );
+        assert!(!store.with_conn("misc", cluster_rebuild_needed).unwrap());
 
         store
             .with_conn_mut("test.stale_norm", |conn| {
@@ -735,11 +806,7 @@ mod tests {
                 )
             })
             .unwrap();
-        assert!(
-            store
-                .with_conn("misc", cluster_rebuild_needed)
-                .unwrap()
-        );
+        assert!(store.with_conn("misc", cluster_rebuild_needed).unwrap());
 
         rebuild_cluster_keys(&store, None).unwrap();
         let version: String = store
@@ -837,16 +904,7 @@ mod tests {
     fn cluster_attach_visible_on_read_connection() {
         let store = LibraryStore::open_in_memory();
         TrackRepository::new(&store)
-            .upsert_batch(&[track_row(
-                "s1",
-                "t1",
-                "T",
-                Some("A"),
-                "Al",
-                None,
-                42,
-                "lib",
-            )])
+            .upsert_batch(&[track_row("s1", "t1", "T", Some("A"), "Al", None, 42, "lib")])
             .unwrap();
         rebuild_cluster_keys(&store, None).unwrap();
 

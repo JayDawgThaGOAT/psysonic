@@ -1,6 +1,6 @@
-import { useRef, useEffect, useCallback, useState, type Dispatch, type SetStateAction, type MutableRefObject } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState, type Dispatch, type SetStateAction, type MutableRefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import { libraryGetStatus, subscribeLibrarySyncIdle, subscribeLibrarySyncProgress } from '@/lib/api/library';
+import { subscribeLibrarySyncProgress } from '@/lib/api/library';
 import type { SearchResults } from '@/lib/api/subsonicTypes';
 import {
   LIVE_SEARCH_DEBOUNCE_NETWORK_MS,
@@ -12,7 +12,7 @@ import {
   runNetworkLiveSearch,
 } from '@/lib/library/liveSearchLocal';
 import { raceLiveSearch } from '@/lib/library/searchRace';
-import { libraryStatusIsReady } from '@/lib/library/libraryReady';
+import { readyLibraryServerKeys } from '@/lib/library/libraryReady';
 import {
   emitLiveSearchDebug,
   searchHitCounts,
@@ -28,6 +28,7 @@ import { isLiveSearchDropdownBlocked } from '@/features/search/components/liveSe
 import type { useShareSearch } from '@/features/search/hooks/useShareSearch';
 import type { LiveSearchSource } from '@/features/search/components/LiveSearchDropdown';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 
 interface UseLiveSearchQueryParams {
   query: string;
@@ -63,6 +64,16 @@ export function useLiveSearchQuery({
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
+  const readinessServerIds = useMemo(() => {
+    // The scope version is the invalidation token for this imperative store snapshot.
+    void libraryBrowseScopeVersion;
+    const browseScope = getLibraryBrowseScope();
+    return browseScope.serverIds.length > 0
+      ? browseScope.serverIds
+      : (serverId ? [serverId] : []);
+  }, [libraryBrowseScopeVersion, serverId]);
+  const readinessScopeKey = readinessServerIds.join(',');
+  const librarySyncRevision = useLibraryScopeSyncRevision(readinessServerIds);
   const localReadyRef = useRef(false);
   const [indexIncomplete, setIndexIncomplete] = useState(false);
 
@@ -73,42 +84,36 @@ export function useLiveSearchQuery({
       return;
     }
     try {
-      const status = await libraryGetStatus(serverId);
-      const ready = libraryStatusIsReady(status);
+      const ready = (await readyLibraryServerKeys(readinessServerIds)) != null;
       localReadyRef.current = ready;
       setIndexIncomplete(!ready);
     } catch {
       localReadyRef.current = false;
       setIndexIncomplete(false);
     }
-  }, [serverId, indexEnabled]);
+  }, [serverId, indexEnabled, readinessScopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshIndexStatus();
-  }, [refreshIndexStatus, musicLibraryFilterVersion]);
+  }, [refreshIndexStatus, musicLibraryFilterVersion, librarySyncRevision]);
 
   useEffect(() => {
     if (!indexEnabled || !serverId) return;
     let unlistenProgress: (() => void) | undefined;
-    let unlistenIdle: (() => void) | undefined;
-    const indexKey = resolveIndexKey(serverId);
-    void subscribeLibrarySyncIdle(payload => {
-      if (payload.serverId === indexKey) void refreshIndexStatus();
-    }).then(fn => {
-      unlistenIdle = fn;
-    });
+    const indexKeys = new Set(readinessServerIds.map(resolveIndexKey));
     void subscribeLibrarySyncProgress(p => {
-      if (p.serverId === indexKey && p.kind === 'phase_changed') void refreshIndexStatus();
+      if (indexKeys.has(resolveIndexKey(p.serverId)) && p.kind === 'phase_changed') {
+        void refreshIndexStatus();
+      }
     }).then(fn => {
       unlistenProgress = fn;
     });
     return () => {
-      unlistenIdle?.();
       unlistenProgress?.();
     };
-  }, [indexEnabled, serverId, refreshIndexStatus]);
+  }, [indexEnabled, serverId, refreshIndexStatus, readinessScopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (isLiveSearchDropdownBlocked(scope)) {
@@ -137,9 +142,6 @@ export function useLiveSearchQuery({
       return;
     }
 
-    setSearchSource(null);
-    setActiveIndex(-1);
-
     const abort = new AbortController();
     const debounceMs = indexEnabled ? LIVE_SEARCH_DEBOUNCE_RACE_MS : LIVE_SEARCH_DEBOUNCE_NETWORK_MS;
 
@@ -150,11 +152,39 @@ export function useLiveSearchQuery({
           gen !== liveSearchGenRef.current || abort.signal.aborted;
 
         if (isStale()) return;
+        const browseScope = getLibraryBrowseScope();
+        const raceCtx = { epoch: gen, isStale, suppressLog: indexEnabled && !!serverId };
+        const queryRejected = liveSearchQueryRejected(q);
+        let multiServerResult: SearchResults | null = null;
 
+        if (
+          !queryRejected
+          && indexEnabled
+          && serverId
+          && browseScope.multiServer
+        ) {
+          if ((await readyLibraryServerKeys(readinessServerIds)) == null) return;
+          if (isStale()) return;
+          try {
+            multiServerResult = await runLocalLiveSearch(serverId, q, raceCtx);
+          } catch (err) {
+            if (isStale()) return;
+            const name = err instanceof Error ? err.name : '';
+            if (name !== 'CanceledError' && name !== 'AbortError') {
+              showToast(t('search.liveSearchFailed'), 3200, 'error');
+            }
+            return;
+          }
+          if (isStale() || !multiServerResult) return;
+        }
+        if (isStale()) return;
+
+        setSearchSource(null);
+        setActiveIndex(-1);
         setLoading(true);
         const searchT0 = performance.now();
         try {
-          if (liveSearchQueryRejected(q)) {
+          if (queryRejected) {
             if (!isStale()) {
               setResults(EMPTY_SEARCH_RESULTS);
               setSearchSource(null);
@@ -163,93 +193,87 @@ export function useLiveSearchQuery({
             return;
           }
 
-          const raceCtx = { epoch: gen, isStale, suppressLog: indexEnabled && !!serverId };
-
-            if (indexEnabled && serverId) {
-              if (getLibraryBrowseScope().multiServer) {
-                const local = await runLocalLiveSearch(serverId, q, raceCtx);
-                if (isStale()) return;
-                if (local) {
-                  setResults(local);
-                  setSearchSource('local');
-                  setOpen(true);
-                  return;
-                }
-                showToast(t('search.liveSearchFailed'), 3200, 'error');
-                return;
-              }
-              const winner = await raceLiveSearch(
-                () => runLocalLiveSearch(serverId, q, raceCtx),
-                () => runNetworkLiveSearch(q, abort.signal),
-                isStale,
-                meta => {
-                  emitLiveSearchDebug('race_settled', {
-                    query: q,
-                    winner: meta.winner,
-                    localMs: meta.localMs,
-                    networkMs: meta.networkMs,
-                    localHits: meta.localHits,
-                    networkHits: meta.networkHits,
-                  });
-                  if (isStale()) return;
-                  if (meta.localResult && meta.networkResult) {
-                    const primary =
-                      meta.winner === 'local' ? meta.localResult : meta.networkResult;
-                    const supplement =
-                      meta.winner === 'local' ? meta.networkResult : meta.localResult;
-                    const merged = mergeLiveSearchResults(primary, supplement);
-                    const primaryHits = searchHitCounts(primary);
-                    const mergedHits = searchHitCounts(merged);
-                    if (mergedHits !== primaryHits) {
-                      setResults(merged);
-                      setSearchSource(meta.winner);
-                      emitLiveSearchDebug('race_merged', {
-                        query: q,
-                        winner: meta.winner,
-                        before: primaryHits,
-                        after: mergedHits,
-                        samples: searchResultSamples(merged),
-                      });
-                    }
-                  }
-                },
-              );
-              if (isStale()) return;
-              if (winner) {
-                setResults(winner.result);
-                setSearchSource(winner.source);
+          if (indexEnabled && serverId) {
+            if (browseScope.multiServer) {
+              if (multiServerResult) {
+                setResults(multiServerResult);
+                setSearchSource('local');
                 setOpen(true);
-                const samples = searchResultSamples(winner.result);
-                emitLiveSearchDebug('race_winner', {
-                  query: q,
-                  winner: winner.source,
-                  raceMs: winner.durationMs,
-                  hits: searchHitCounts(winner.result),
-                  samples,
-                  path: 'search_race',
-                  localReady: localReadyRef.current,
-                });
-                logLibrarySearch({
-                  at: new Date().toISOString(),
-                  query: q,
-                  path: 'search_race',
-                  surface: 'live_search',
-                  durationMs: Math.round(performance.now() - searchT0),
-                  debounceMs,
-                  indexEnabled,
-                  localReadyCached: localReadyRef.current,
-                  raceWinner: winner.source,
-                  raceWinnerMs: winner.durationMs,
-                  counts: {
-                    artists: winner.result.artists.length,
-                    albums: winner.result.albums.length,
-                    songs: winner.result.songs.length,
-                  },
-                });
                 return;
               }
-              showToast(t('search.liveSearchFailed'), 3200, 'error');
-            } else if (serverId) {
+            }
+            const winner = await raceLiveSearch(
+              () => runLocalLiveSearch(serverId, q, raceCtx),
+              () => runNetworkLiveSearch(q, abort.signal),
+              isStale,
+              meta => {
+                emitLiveSearchDebug('race_settled', {
+                  query: q,
+                  winner: meta.winner,
+                  localMs: meta.localMs,
+                  networkMs: meta.networkMs,
+                  localHits: meta.localHits,
+                  networkHits: meta.networkHits,
+                });
+                if (isStale()) return;
+                if (meta.localResult && meta.networkResult) {
+                  const primary =
+                    meta.winner === 'local' ? meta.localResult : meta.networkResult;
+                  const supplement =
+                    meta.winner === 'local' ? meta.networkResult : meta.localResult;
+                  const merged = mergeLiveSearchResults(primary, supplement);
+                  const primaryHits = searchHitCounts(primary);
+                  const mergedHits = searchHitCounts(merged);
+                  if (mergedHits !== primaryHits) {
+                    setResults(merged);
+                    setSearchSource(meta.winner);
+                    emitLiveSearchDebug('race_merged', {
+                      query: q,
+                      winner: meta.winner,
+                      before: primaryHits,
+                      after: mergedHits,
+                      samples: searchResultSamples(merged),
+                    });
+                  }
+                }
+              },
+            );
+            if (isStale()) return;
+            if (winner) {
+              setResults(winner.result);
+              setSearchSource(winner.source);
+              setOpen(true);
+              const samples = searchResultSamples(winner.result);
+              emitLiveSearchDebug('race_winner', {
+                query: q,
+                winner: winner.source,
+                raceMs: winner.durationMs,
+                hits: searchHitCounts(winner.result),
+                samples,
+                path: 'search_race',
+                localReady: localReadyRef.current,
+              });
+              logLibrarySearch({
+                at: new Date().toISOString(),
+                query: q,
+                path: 'search_race',
+                surface: 'live_search',
+                durationMs: Math.round(performance.now() - searchT0),
+                debounceMs,
+                indexEnabled,
+                localReadyCached: localReadyRef.current,
+                raceWinner: winner.source,
+                raceWinnerMs: winner.durationMs,
+                counts: {
+                  artists: winner.result.artists.length,
+                  albums: winner.result.albums.length,
+                  songs: winner.result.songs.length,
+                },
+              });
+              return;
+            }
+            showToast(t('search.liveSearchFailed'), 3200, 'error');
+          } else if (serverId) {
             const network = await runNetworkLiveSearch(q, abort.signal);
             if (isStale()) return;
             if (network) {
@@ -290,7 +314,7 @@ export function useLiveSearchQuery({
       liveSearchGenRef.current += 1;
     };
   }, [
-    query, scope, shareMatch, serverId, indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, t,
+    query, scope, shareMatch, serverId, indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, librarySyncRevision, readinessServerIds, t,
     liveSearchGenRef, setResults, setOpen, setLoading, setSearchSource, setActiveIndex,
   ]);
 

@@ -8,10 +8,14 @@ import {
 import { albumToAlbum } from '@/lib/library/advancedSearchLocal';
 import { runLocalRandomArtists, runLocalRandomSongs } from '@/lib/library/browseTextSearch';
 import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { readyLibraryServerKeys } from '@/lib/library/libraryReady';
+import { runLibraryLocalReadSingleFlight } from '@/lib/library/localReadSingleFlight';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 import { shuffleArray } from '@/lib/util/shuffleArray';
 import type { HomeFeedOffsets, HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
 
 export const HOME_REQUEST_TIMEOUT_MS = 4000;
+export const HOME_LOCAL_READ_TIMEOUT_MS = 1000;
 export const HOME_PAGE_SIZE = 12;
 export const HOME_HERO_COUNT = 8;
 export const HOME_DISCOVER_SLICE = 20;
@@ -91,6 +95,7 @@ interface LoadHomeFeedOptions {
   anchorServerId: string;
   scopes: LibraryScopePair[];
   scopeVersion: number;
+  syncRevision?: number;
   randomSize: number;
   showArtists: boolean;
   showSongs: boolean;
@@ -104,6 +109,7 @@ interface LoadMoreHomeAlbumsOptions {
   snapshot: HomeFeedSnapshot;
   section: HomeAlbumSection;
   anchorServerId: string;
+  serverIds?: readonly string[];
   scopes: LibraryScopePair[];
   mixConfig: MixMinRatingsConfig;
   deps: Pick<HomeFeedLoaderDeps, 'filterAlbumsByMixRatingsAcrossServers'> & Partial<HomeFeedLoaderDeps>;
@@ -111,9 +117,11 @@ interface LoadMoreHomeAlbumsOptions {
 
 interface LoadHomeChronologicalFeedOptions {
   anchorServerId: string;
+  serverIds?: readonly string[];
   scopes: LibraryScopePair[];
   feed: 'newReleases' | 'recentlyPlayed';
   offset?: number;
+  freshness?: number;
   deps?: Pick<HomeFeedLoaderDeps, 'libraryScopeListMainstageAlbums'>;
 }
 
@@ -220,13 +228,13 @@ async function isolated<T>(request: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-export async function withinHomeDeadline<T>(request: Promise<T>, fallback: T): Promise<T> {
+async function withinDeadline<T>(request: Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       request,
       new Promise<T>(resolve => {
-        timer = setTimeout(() => resolve(fallback), HOME_REQUEST_TIMEOUT_MS);
+        timer = setTimeout(() => resolve(fallback), timeoutMs);
       }),
     ]);
   } finally {
@@ -234,19 +242,55 @@ export async function withinHomeDeadline<T>(request: Promise<T>, fallback: T): P
   }
 }
 
+export function withinHomeDeadline<T>(request: Promise<T>, fallback: T): Promise<T> {
+  return withinDeadline(request, fallback, HOME_REQUEST_TIMEOUT_MS);
+}
+
+function remainingHomeDeadline(startedAt: number): number {
+  return Math.max(0, HOME_REQUEST_TIMEOUT_MS - (nowMs() - startedAt));
+}
+
 export async function loadHomeChronologicalFeed(
   options: LoadHomeChronologicalFeedOptions,
 ): Promise<HomeChronologicalFeedResult> {
   const deps = { ...defaultDeps, ...options.deps };
   const startedAt = nowMs();
+  const requestedServerIds = options.serverIds?.length
+    ? [...options.serverIds]
+    : [...new Set(options.scopes.map(scope => scope.serverId))];
+  if (requestedServerIds.length === 0) requestedServerIds.push(options.anchorServerId);
+  const readyKeys = await readyLibraryServerKeys(requestedServerIds);
+  if (!readyKeys) {
+    return { status: 'error', durationMs: elapsedMs(startedAt), detail: 'local index not ready' };
+  }
+  const canonicalScopes = options.scopes.map(scope => ({
+    ...scope,
+    serverId: resolveIndexKey(scope.serverId),
+  }));
+  if (readyKeys.length > 1) {
+    const represented = new Set(canonicalScopes.map(scope => scope.serverId));
+    if (readyKeys.some(serverKey => !represented.has(serverKey))) {
+      return { status: 'error', durationMs: elapsedMs(startedAt), detail: 'local scope incomplete' };
+    }
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const request = deps.libraryScopeListMainstageAlbums(options.anchorServerId, {
-    scopes: options.scopes,
-    feed: options.feed,
-    limit: HOME_PAGE_SIZE,
-    offset: options.offset ?? 0,
-    includeGenreCounts: false,
-  }).then(response => ({
+  const request = runLibraryLocalReadSingleFlight(
+    JSON.stringify([
+      'home-chronological',
+      readyKeys,
+      canonicalScopes,
+      options.feed,
+      options.offset ?? 0,
+      options.freshness ?? 0,
+    ]),
+    () => deps.libraryScopeListMainstageAlbums(resolveIndexKey(options.anchorServerId), {
+      scopes: canonicalScopes,
+      feed: options.feed,
+      limit: HOME_PAGE_SIZE,
+      offset: options.offset ?? 0,
+      includeGenreCounts: false,
+    }),
+  ).then(response => ({
     status: 'success' as const,
     albums: response.albums.map(albumToAlbum),
     hasMore: response.hasMore,
@@ -341,6 +385,7 @@ async function loadServerAlbums(
 async function loadServerArtists(
   serverId: string,
   size: number,
+  scopeFlightKey: string,
   deps: HomeFeedLoaderDeps,
 ): Promise<TimedServerItems<OwnedArtist>> {
   const startedAt = nowMs();
@@ -351,13 +396,24 @@ async function loadServerArtists(
     outcome: TimedServerItems<OwnedArtist>['outcome'];
   }> = (async () => {
     try {
-      const local = await deps.runLocalRandomArtists(serverId, size);
+      const local = await withinDeadline(
+        runLibraryLocalReadSingleFlight(
+          JSON.stringify(['home-artists', scopeFlightKey, serverId, size]),
+          () => deps.runLocalRandomArtists(serverId, size),
+        ),
+        null,
+        Math.min(HOME_LOCAL_READ_TIMEOUT_MS, remainingHomeDeadline(startedAt)),
+      );
       if (local != null) return { artists: local, source: 'local' as const, outcome: local.length > 0 ? 'rows' as const : 'empty' as const };
     } catch {
       // A local read failure must not prevent the existing server fallback.
     }
     try {
-      const artists = await deps.getArtistsForServer(serverId, HOME_REQUEST_TIMEOUT_MS);
+      const remainingMs = remainingHomeDeadline(startedAt);
+      if (remainingMs <= 0) {
+        return { artists: [] as SubsonicArtist[], source: 'network' as const, outcome: 'timeout' as const };
+      }
+      const artists = await deps.getArtistsForServer(serverId, remainingMs);
       return { artists, source: 'network' as const, outcome: artists.length > 0 ? 'rows' as const : 'empty' as const };
     } catch {
       return { artists: [] as SubsonicArtist[], source: 'network' as const, outcome: 'error' as const };
@@ -378,14 +434,25 @@ async function loadServerArtists(
 async function loadServerSongs(
   serverId: string,
   size: number,
+  scopeFlightKey: string,
   deps: HomeFeedLoaderDeps,
 ): Promise<OwnedSong[]> {
   if (size <= 0) return [];
+  const startedAt = nowMs();
   const songs = await withinHomeDeadline(
     isolated(async () => {
-      const local = await deps.runLocalRandomSongs(serverId, size);
+      const local = await withinDeadline(
+        runLibraryLocalReadSingleFlight(
+          JSON.stringify(['home-songs', scopeFlightKey, serverId, size]),
+          () => deps.runLocalRandomSongs(serverId, size),
+        ),
+        null,
+        Math.min(HOME_LOCAL_READ_TIMEOUT_MS, remainingHomeDeadline(startedAt)),
+      );
       if (local != null) return local;
-      return deps.getRandomSongsForServer(serverId, size, undefined, HOME_REQUEST_TIMEOUT_MS);
+      const remainingMs = remainingHomeDeadline(startedAt);
+      if (remainingMs <= 0) return [];
+      return deps.getRandomSongsForServer(serverId, size, undefined, remainingMs);
     }, [] as SubsonicSong[]),
     [] as SubsonicSong[],
   );
@@ -427,6 +494,11 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
   const randomQuotas = allocateHomeQuotas(options.randomSize, options.serverIds.length);
   const artistQuotas = allocateHomeQuotas(HOME_DISCOVER_ARTISTS_SIZE, options.serverIds.length);
   const songQuotas = allocateHomeQuotas(HOME_DISCOVER_SONGS_SIZE, options.serverIds.length);
+  const scopeFlightKey = JSON.stringify([
+    options.scopeKey,
+    options.scopeVersion,
+    options.syncRevision ?? 0,
+  ]);
   const emptyGroups = () => options.serverIds.map(() => [] as OwnedAlbum[]);
   const loadAlbumGroups = (type: Parameters<typeof getAlbumListForServer>[1], quotas: number[]) => (
     Promise.all(options.serverIds.map((serverId, index) => (
@@ -494,7 +566,7 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
   const artistsStartedAt = nowMs();
   const artistsPromise = enabled.discoverArtists
     ? Promise.all(options.serverIds.map((serverId, index) => (
-      loadServerArtists(serverId, artistQuotas[index] ?? 0, deps)
+      loadServerArtists(serverId, artistQuotas[index] ?? 0, scopeFlightKey, deps)
     ))).then(groups => {
         const items = dedupeOwned(stableRoundRobin(
           groups.map((group, index) => deps.shuffle(group.items).slice(0, artistQuotas[index] ?? 0)),
@@ -511,7 +583,7 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
   const songsStartedAt = nowMs();
   const songsPromise = enabled.discoverSongs
     ? Promise.all(options.serverIds.map((serverId, index) => (
-        loadServerSongs(serverId, songQuotas[index] ?? 0, deps)
+        loadServerSongs(serverId, songQuotas[index] ?? 0, scopeFlightKey, deps)
       ))).then(groups => {
         const items = dedupeOwned(stableRoundRobin(groups, HOME_DISCOVER_SONGS_SIZE));
         report('discoverSongs', {
@@ -563,9 +635,11 @@ export async function loadMoreHomeAlbums(options: LoadMoreHomeAlbumsOptions): Pr
     if (!cursor.hasMore) return options.snapshot;
     const response = await loadHomeChronologicalFeed({
       anchorServerId: options.anchorServerId,
+      serverIds: options.serverIds,
       scopes: options.scopes,
       feed: mainstageFeeds[section],
       offset: cursor.offset,
+      freshness: options.snapshot.savedAt,
       deps: { libraryScopeListMainstageAlbums: deps.libraryScopeListMainstageAlbums },
     });
     if (response.status !== 'success') return options.snapshot;

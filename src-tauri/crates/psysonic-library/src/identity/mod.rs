@@ -12,5 +12,8 @@ pub use attach::{
 };
 pub use norm::NORM_VERSION;
 pub use rebuild::{cluster_rebuild_needed, ensure_cluster_keys_built, rebuild_cluster_keys};
+pub(crate) use rebuild::{
+    delete_cluster_keys_for_tracks, prune_cluster_keys_for_scope, refresh_library_ids_for_albums,
+};
 
 pub use keys::{build_track_cluster_keys, TrackClusterKeys};

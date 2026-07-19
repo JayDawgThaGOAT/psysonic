@@ -5,16 +5,15 @@
  * index when it's enabled and synced enough for trustworthy results.
  */
 import { libraryGetStatus, type SyncStateDto } from '@/lib/api/library';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
+import type { LibraryBrowseScope, LibraryBrowseScopePair } from './libraryBrowseScope';
 
 /** Spec §9.3 — shared by Live Search, Advanced Search, browse, … */
 export function libraryStatusIsReady(status: SyncStateDto): boolean {
   if (status.syncPhase === 'ready') return true;
-  if (status.syncPhase === 'initial_sync') {
-    const local = status.localTrackCount ?? 0;
-    const server = status.serverTrackCount ?? 0;
-    if (server > 0 && local / server >= 0.95) return true;
-  }
+  // Bulk schema/FTS work may remain suspended until initial sync fully exits.
+  if (status.syncPhase === 'initial_sync') return false;
   // Missing `sync_state` row (`""`) or post-bind `idle` — mirror Rust
   // `library_server_is_ready` when phase is absent or idle.
   if (status.syncPhase === '' || status.syncPhase === 'idle') {
@@ -55,13 +54,54 @@ export function librarySyncBlocksCoverWork(
 
 export async function libraryIsReady(serverId: string | null | undefined): Promise<boolean> {
   if (!serverId) return false;
-  if (!useLibraryIndexStore.getState().isIndexEnabled(serverId)) return false;
+  return (await readyLibraryServerKeys([serverId])) != null;
+}
+
+async function libraryServerIsReady(serverKey: string): Promise<boolean> {
   try {
-    const status = await libraryGetStatus(serverId);
-    return libraryStatusIsReady(status);
+    return libraryStatusIsReady(await libraryGetStatus(serverKey));
   } catch {
     return false;
   }
+}
+
+/** Canonical keys when every requested server is ready; otherwise decline local mode. */
+export async function readyLibraryServerKeys(
+  serverIds: readonly string[],
+): Promise<string[] | null> {
+  const serverKeys = [...new Set(serverIds.filter(Boolean).map(resolveIndexKey))];
+  if (serverKeys.length === 0 || !useLibraryIndexStore.getState().masterEnabled) return null;
+  const readiness = await Promise.all(serverKeys.map(libraryServerIsReady));
+  return readiness.every(Boolean) ? serverKeys : null;
+}
+
+export type ReadyLibraryBrowseScope = {
+  anchorServerKey: string;
+  serverKeys: string[];
+  pairs: LibraryBrowseScopePair[];
+};
+
+/** Resolve an all-or-nothing local scope so selected servers are never silently omitted. */
+export async function resolveReadyLibraryBrowseScope(
+  anchorServerId: string,
+  scope: LibraryBrowseScope,
+): Promise<ReadyLibraryBrowseScope | null> {
+  const requestedServerIds = scope.serverIds.length > 0 ? scope.serverIds : [anchorServerId];
+  const serverKeys = await readyLibraryServerKeys(requestedServerIds);
+  if (!serverKeys) return null;
+  const readySet = new Set(serverKeys);
+  const pairs = scope.pairs.map(pair => ({
+    ...pair,
+    serverId: resolveIndexKey(pair.serverId),
+  }));
+  if (pairs.some(pair => !readySet.has(pair.serverId))) return null;
+  if (scope.multiServer) {
+    const represented = new Set(pairs.map(pair => pair.serverId));
+    if (serverKeys.some(serverKey => !represented.has(serverKey))) return null;
+  }
+  const anchorServerKey = resolveIndexKey(anchorServerId);
+  if (!readySet.has(anchorServerKey)) return null;
+  return { anchorServerKey, serverKeys, pairs };
 }
 
 function sleep(ms: number): Promise<void> {

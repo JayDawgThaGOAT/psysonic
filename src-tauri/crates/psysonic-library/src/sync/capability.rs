@@ -5,6 +5,9 @@
 //! ingest strategy (§6.3). PR-3a only writes flags from the responses;
 //! interpretation lives in PR-3b's `IngestStrategy` selector.
 
+use std::future::Future;
+use std::time::Duration;
+
 use psysonic_integration::navidrome::probe::native_bulk_available;
 use psysonic_integration::subsonic::{ServerInfo, SubsonicClient, SubsonicError};
 
@@ -78,10 +81,9 @@ pub struct CapabilityProbeResult {
     pub server_track_count: Option<i64>,
 }
 
-/// Run `CapabilityProbe::run` and persist the resulting flags +
-/// transition `sync_phase` from whatever it was to `probing` →
-/// `idle` (caller is responsible for advancing to `initial_sync` /
-/// `ready` once the appropriate runner starts).
+/// Run `CapabilityProbe::run` and persist the resulting flags while temporarily
+/// transitioning `sync_phase` to `probing`. Phase restoration is conditional so
+/// a sync runner that advances the phase while the probe is in flight wins.
 ///
 /// PR-3d wires this in front of every initial / delta run so the
 /// stored `capability_flags` always reflects the current server.
@@ -95,69 +97,151 @@ pub async fn probe_and_persist(
     server_id: &str,
     library_scope: &str,
 ) -> Result<CapabilityProbeResult, psysonic_integration::subsonic::SubsonicError> {
+    probe_and_persist_inner(
+        store,
+        subsonic,
+        navidrome,
+        http_registry,
+        server_id,
+        library_scope,
+        None,
+    )
+    .await
+}
+
+pub async fn probe_and_persist_with_timeout(
+    store: &crate::store::LibraryStore,
+    subsonic: &psysonic_integration::subsonic::SubsonicClient,
+    navidrome: Option<&NavidromeProbeCredentials>,
+    http_registry: Option<&psysonic_core::server_http::ServerHttpRegistry>,
+    server_id: &str,
+    library_scope: &str,
+    timeout: Duration,
+) -> Result<CapabilityProbeResult, psysonic_integration::subsonic::SubsonicError> {
+    probe_and_persist_inner(
+        store,
+        subsonic,
+        navidrome,
+        http_registry,
+        server_id,
+        library_scope,
+        Some(timeout),
+    )
+    .await
+}
+
+async fn probe_and_persist_inner(
+    store: &crate::store::LibraryStore,
+    subsonic: &psysonic_integration::subsonic::SubsonicClient,
+    navidrome: Option<&NavidromeProbeCredentials>,
+    http_registry: Option<&psysonic_core::server_http::ServerHttpRegistry>,
+    server_id: &str,
+    library_scope: &str,
+    timeout: Option<Duration>,
+) -> Result<CapabilityProbeResult, psysonic_integration::subsonic::SubsonicError> {
+    with_probing_phase(store, server_id, library_scope, async {
+        let sync_state = crate::repos::SyncStateRepository::new(store);
+        let existing_flags = sync_state
+            .get_capability_flags(server_id, library_scope)
+            .map_err(SubsonicError::Transport)?
+            .unwrap_or(0);
+
+        let probe = CapabilityProbe::run(subsonic, navidrome, http_registry, Some(server_id));
+        let mut result = match timeout {
+            Some(limit) => tokio::time::timeout(limit, probe).await.map_err(|_| {
+                SubsonicError::Transport(format!(
+                    "capability probe timed out after {} ms",
+                    limit.as_millis()
+                ))
+            })??,
+            None => probe.await?,
+        };
+
+        // R7-15 Q3: a probe run without a Navidrome bearer can't test N1, so it
+        // must not drop a previously-learned NavidromeNativeBulk capability — the
+        // server still supports `/api/song`; only the token is missing this bind.
+        // Token availability gates actual N1 use per run (see library_sync_start).
+        if navidrome.is_none() && existing_flags & CapabilityFlags::NAVIDROME_NATIVE_BULK != 0 {
+            result.flags.insert(CapabilityFlags::NAVIDROME_NATIVE_BULK);
+        }
+
+        sync_state
+            .set_capability_flags(server_id, library_scope, result.flags.bits())
+            .map_err(SubsonicError::Transport)?;
+        // Refresh the track-count watermark only when the probe learned one — a
+        // missing `getScanStatus.count` must not clobber a count from a prior run.
+        if let Some(count) = result.server_track_count {
+            sync_state
+                .set_server_track_count(server_id, library_scope, count)
+                .map_err(SubsonicError::Transport)?;
+        }
+
+        Ok(result)
+    })
+    .await
+}
+
+async fn with_probing_phase<T>(
+    store: &crate::store::LibraryStore,
+    server_id: &str,
+    library_scope: &str,
+    operation: impl Future<Output = Result<T, SubsonicError>>,
+) -> Result<T, SubsonicError> {
     let sync_state = crate::repos::SyncStateRepository::new(store);
     sync_state
         .ensure(server_id, library_scope)
-        .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?;
-    let phase_before = sync_state
-        .get_sync_phase(server_id, library_scope)
-        .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?;
+        .map_err(SubsonicError::Transport)?;
+
+    let phase_before = loop {
+        let phase = sync_state
+            .get_sync_phase(server_id, library_scope)
+            .map_err(SubsonicError::Transport)?
+            .unwrap_or_else(|| "idle".to_string());
+        if sync_state
+            .set_sync_phase_if(server_id, library_scope, &phase, "probing")
+            .map_err(SubsonicError::Transport)?
+        {
+            break phase;
+        }
+    };
+
+    let completed = match operation.await {
+        Ok(value) => {
+            match phase_after_success(&sync_state, server_id, library_scope, &phase_before) {
+                Ok(phase) => Ok((value, phase)),
+                Err(error) => Err(SubsonicError::Transport(error)),
+            }
+        }
+        Err(error) => Err(error),
+    };
+    let restore_phase = match &completed {
+        Ok((_, phase)) => phase.as_str(),
+        Err(_) => phase_before.as_str(),
+    };
+
+    // Runtime lifecycle/activity serialization owns production bind ordering.
+    // The compare-and-set still preserves a newer phase if another writer
+    // advanced it while a direct caller or test probe was in flight.
     sync_state
-        .set_sync_phase(server_id, library_scope, "probing")
-        .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?;
+        .set_sync_phase_if(server_id, library_scope, "probing", restore_phase)
+        .map_err(SubsonicError::Transport)?;
 
-    let existing_flags = sync_state
-        .get_capability_flags(server_id, library_scope)
-        .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?
-        .unwrap_or(0);
+    completed.map(|(value, _)| value)
+}
 
-    let mut result = CapabilityProbe::run(subsonic, navidrome, http_registry, Some(server_id)).await?;
-
-    // R7-15 Q3: a probe run without a Navidrome bearer can't test N1, so it
-    // must not drop a previously-learned NavidromeNativeBulk capability — the
-    // server still supports `/api/song`; only the token is missing this bind.
-    // Token availability gates actual N1 use per run (see library_sync_start).
-    if navidrome.is_none()
-        && existing_flags & CapabilityFlags::NAVIDROME_NATIVE_BULK != 0
-    {
-        result.flags.insert(CapabilityFlags::NAVIDROME_NATIVE_BULK);
+fn phase_after_success(
+    sync_state: &crate::repos::SyncStateRepository<'_>,
+    server_id: &str,
+    library_scope: &str,
+    phase_before: &str,
+) -> Result<String, String> {
+    match phase_before {
+        // Re-bind on app restart must not clobber a finished or active index —
+        // callers gate local search on `ready` (§9.3 / P8).
+        "ready" | "initial_sync" | "error" => Ok(phase_before.to_string()),
+        _ if sync_state.has_last_full_sync_at(server_id, library_scope)? => Ok("ready".to_string()),
+        _ => Ok("idle".to_string()),
     }
-
-    sync_state
-        .set_capability_flags(server_id, library_scope, result.flags.bits())
-        .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?;
-    // Refresh the track-count watermark only when the probe learned one — a
-    // missing `getScanStatus.count` must not clobber a count from a prior run.
-    if let Some(count) = result.server_track_count {
-        sync_state
-            .set_server_track_count(server_id, library_scope, count)
-            .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?;
-    }
-    sync_state
-        .set_sync_phase(
-            server_id,
-            library_scope,
-            match phase_before.as_deref() {
-                // Re-bind on app restart must not clobber a finished index —
-                // callers gate local search on `ready` (§9.3 / P8).
-                Some("ready") => "ready",
-                Some("initial_sync") => "initial_sync",
-                Some("error") => "error",
-                _ => {
-                    if sync_state
-                        .has_last_full_sync_at(server_id, library_scope)
-                        .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?
-                    {
-                        "ready"
-                    } else {
-                        "idle"
-                    }
-                }
-            },
-        )
-        .map_err(psysonic_integration::subsonic::SubsonicError::Transport)?;
-
-    Ok(result)
 }
 
 pub struct CapabilityProbe;
@@ -241,6 +325,7 @@ mod tests {
     use super::*;
     use psysonic_integration::subsonic::{SubsonicClient, SubsonicCredentials};
     use serde_json::json;
+    use std::sync::Arc;
     use wiremock::matchers::{header, method as wm_method, path as wm_path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -333,10 +418,10 @@ mod tests {
         // getScanStatus
         Mock::given(wm_method("GET"))
             .and(wm_path("/rest/getScanStatus.view"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ok_envelope(
-                "scanStatus",
-                json!({ "scanning": false }),
-            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(ok_envelope("scanStatus", json!({ "scanning": false }))),
+            )
             .mount(server)
             .await;
         // getIndexes
@@ -358,13 +443,19 @@ mod tests {
         let result = CapabilityProbe::run(&test_subsonic_client(&server.uri()), None, None, None)
             .await
             .unwrap();
-        assert!(result.flags.contains(CapabilityFlags::SUBSONIC_SEARCH3_BULK));
-        assert!(result.flags.contains(CapabilityFlags::SCAN_STATUS_AVAILABLE));
+        assert!(result
+            .flags
+            .contains(CapabilityFlags::SUBSONIC_SEARCH3_BULK));
+        assert!(result
+            .flags
+            .contains(CapabilityFlags::SCAN_STATUS_AVAILABLE));
         assert!(result.flags.contains(CapabilityFlags::FILE_TREE_BROWSE));
         assert!(result.flags.contains(CapabilityFlags::OPEN_SUBSONIC));
         assert!(result.flags.contains(CapabilityFlags::UNSTABLE_TRACK_IDS));
         // No navidrome probe creds passed → N1 stays clear.
-        assert!(!result.flags.contains(CapabilityFlags::NAVIDROME_NATIVE_BULK));
+        assert!(!result
+            .flags
+            .contains(CapabilityFlags::NAVIDROME_NATIVE_BULK));
         assert_eq!(result.server_info.server_type.as_deref(), Some("navidrome"));
     }
 
@@ -403,10 +494,9 @@ mod tests {
             .await;
         Mock::given(wm_method("GET"))
             .and(wm_path("/rest/search3.view"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ok_envelope(
-                "searchResult3",
-                json!({}),
-            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ok_envelope("searchResult3", json!({}))),
+            )
             .mount(&server)
             .await;
         Mock::given(wm_method("GET"))
@@ -428,8 +518,12 @@ mod tests {
         let result = CapabilityProbe::run(&test_subsonic_client(&server.uri()), None, None, None)
             .await
             .unwrap();
-        assert!(result.flags.contains(CapabilityFlags::SUBSONIC_SEARCH3_BULK));
-        assert!(!result.flags.contains(CapabilityFlags::SCAN_STATUS_AVAILABLE));
+        assert!(result
+            .flags
+            .contains(CapabilityFlags::SUBSONIC_SEARCH3_BULK));
+        assert!(!result
+            .flags
+            .contains(CapabilityFlags::SCAN_STATUS_AVAILABLE));
         assert!(!result.flags.contains(CapabilityFlags::FILE_TREE_BROWSE));
         assert!(!result.flags.contains(CapabilityFlags::OPEN_SUBSONIC));
         assert!(!result.flags.contains(CapabilityFlags::UNSTABLE_TRACK_IDS));
@@ -450,10 +544,13 @@ mod tests {
             server_url: server.uri(),
             bearer_token: "nd-tok".into(),
         };
-        let result = CapabilityProbe::run(&test_subsonic_client(&server.uri()), Some(&nav), None, None)
-            .await
-            .unwrap();
-        assert!(result.flags.contains(CapabilityFlags::NAVIDROME_NATIVE_BULK));
+        let result =
+            CapabilityProbe::run(&test_subsonic_client(&server.uri()), Some(&nav), None, None)
+                .await
+                .unwrap();
+        assert!(result
+            .flags
+            .contains(CapabilityFlags::NAVIDROME_NATIVE_BULK));
     }
 
     // ── probe_and_persist round-trip ──────────────────────────────────────
@@ -519,6 +616,130 @@ mod tests {
         assert_eq!(
             sync_state.get_sync_phase("s1", "").unwrap().as_deref(),
             Some("ready")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_probe_and_persist_restores_ready_phase() {
+        use crate::repos::SyncStateRepository;
+        use crate::store::LibraryStore;
+
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/ping.view"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": {
+                    "status": "failed",
+                    "error": { "code": 40, "message": "Wrong credentials" }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let store = LibraryStore::open_in_memory();
+        let sync_state = SyncStateRepository::new(&store);
+        sync_state.ensure("failed-s1", "").unwrap();
+        sync_state.set_sync_phase("failed-s1", "", "ready").unwrap();
+
+        let error = super::probe_and_persist(
+            &store,
+            &test_subsonic_client(&server.uri()),
+            None,
+            None,
+            "failed-s1",
+            "",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, SubsonicError::Api { code: 40, .. }));
+        assert_eq!(
+            sync_state
+                .get_sync_phase("failed-s1", "")
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overlapping_probe_phase_guards_do_not_serialize_network_or_clobber_sync() {
+        use crate::repos::SyncStateRepository;
+        use crate::store::LibraryStore;
+
+        let store = Arc::new(LibraryStore::open_in_memory());
+        let sync_state = SyncStateRepository::new(&store);
+        sync_state.ensure("overlap-s1", "").unwrap();
+
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let first_release = Arc::new(tokio::sync::Notify::new());
+        let first = {
+            let store = Arc::clone(&store);
+            let started = Arc::clone(&first_started);
+            let release = Arc::clone(&first_release);
+            tokio::spawn(async move {
+                super::with_probing_phase(&store, "overlap-s1", "", async move {
+                    started.notify_one();
+                    release.notified().await;
+                    Ok::<(), SubsonicError>(())
+                })
+                .await
+            })
+        };
+
+        first_started.notified().await;
+        assert_eq!(
+            sync_state
+                .get_sync_phase("overlap-s1", "")
+                .unwrap()
+                .as_deref(),
+            Some("probing")
+        );
+
+        let second_attempting = Arc::new(tokio::sync::Notify::new());
+        let second_started = Arc::new(tokio::sync::Notify::new());
+        let second_release = Arc::new(tokio::sync::Notify::new());
+        let second = {
+            let store = Arc::clone(&store);
+            let attempting = Arc::clone(&second_attempting);
+            let started = Arc::clone(&second_started);
+            let release = Arc::clone(&second_release);
+            tokio::spawn(async move {
+                attempting.notify_one();
+                super::with_probing_phase(&store, "overlap-s1", "", async move {
+                    started.notify_one();
+                    release.notified().await;
+                    Ok::<(), SubsonicError>(())
+                })
+                .await
+            })
+        };
+
+        second_attempting.notified().await;
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            second_started.notified(),
+        )
+        .await
+        .expect("overlapping probes must not hold a process-global network mutex");
+
+        // A sync runner advances the phase while the first bind is deferred.
+        // Neither the stale first snapshot nor the queued second bind may leave
+        // the row downgraded after both probes finish.
+        sync_state
+            .set_sync_phase("overlap-s1", "", "initial_sync")
+            .unwrap();
+        first_release.notify_one();
+        second_release.notify_one();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+
+        assert_eq!(
+            sync_state
+                .get_sync_phase("overlap-s1", "")
+                .unwrap()
+                .as_deref(),
+            Some("initial_sync")
         );
     }
 
@@ -596,10 +817,16 @@ mod tests {
             .await;
 
         let store = LibraryStore::open_in_memory();
-        let result =
-            super::probe_and_persist(&store, &test_subsonic_client(&server.uri()), None, None, "s1", "")
-                .await
-                .unwrap();
+        let result = super::probe_and_persist(
+            &store,
+            &test_subsonic_client(&server.uri()),
+            None,
+            None,
+            "s1",
+            "",
+        )
+        .await
+        .unwrap();
         assert_eq!(result.server_track_count, Some(170_000));
 
         let sync_state = SyncStateRepository::new(&store);
@@ -637,7 +864,9 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            result.flags.contains(CapabilityFlags::NAVIDROME_NATIVE_BULK),
+            result
+                .flags
+                .contains(CapabilityFlags::NAVIDROME_NATIVE_BULK),
             "result must keep the previously-learned N1 capability"
         );
         let persisted = sync_state.get_capability_flags("s1", "").unwrap().unwrap();
@@ -660,10 +889,16 @@ mod tests {
         let server = MockServer::start().await;
         mount_subsonic_full_navidrome(&server).await; // scanStatus has no count
 
-        let result =
-            super::probe_and_persist(&store, &test_subsonic_client(&server.uri()), None, None, "s1", "")
-                .await
-                .unwrap();
+        let result = super::probe_and_persist(
+            &store,
+            &test_subsonic_client(&server.uri()),
+            None,
+            None,
+            "s1",
+            "",
+        )
+        .await
+        .unwrap();
         assert_eq!(result.server_track_count, None);
         // Watermark from the prior run survives the count-less probe.
         assert_eq!(
@@ -686,9 +921,12 @@ mod tests {
             server_url: server.uri(),
             bearer_token: "nd-tok".into(),
         };
-        let result = CapabilityProbe::run(&test_subsonic_client(&server.uri()), Some(&nav), None, None)
-            .await
-            .unwrap();
-        assert!(!result.flags.contains(CapabilityFlags::NAVIDROME_NATIVE_BULK));
+        let result =
+            CapabilityProbe::run(&test_subsonic_client(&server.uri()), Some(&nav), None, None)
+                .await
+                .unwrap();
+        assert!(!result
+            .flags
+            .contains(CapabilityFlags::NAVIDROME_NATIVE_BULK));
     }
 }

@@ -6,6 +6,7 @@ import { setServerReachability } from '@/lib/network/serverReachability';
 import { useLibraryServerReachability } from './useLibraryServerReachability';
 
 const switchActiveServerMock = vi.hoisted(() => vi.fn());
+const bootstrapIndexedServerMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/utils/server/switchActiveServer', () => ({
   switchActiveServer: switchActiveServerMock,
@@ -15,9 +16,14 @@ vi.mock('@/lib/perf/perfFlags', () => ({
   usePerfProbeFlags: () => ({ disableBackgroundPolling: true }),
 }));
 
+vi.mock('@/lib/library/librarySession', () => ({
+  bootstrapIndexedServer: bootstrapIndexedServerMock,
+}));
+
 beforeEach(() => {
   resetAuthStore();
   switchActiveServerMock.mockReset();
+  bootstrapIndexedServerMock.mockReset().mockResolvedValue('bound');
   switchActiveServerMock.mockImplementation(async (server: { id: string }) => {
     useAuthStore.getState().setActiveServer(server.id);
     return true;
@@ -97,5 +103,18 @@ describe('useLibraryServerReachability', () => {
     act(() => setServerReachability('b', 'available'));
     await waitFor(() => expect(useAuthStore.getState().libraryBrowseScopeVersion).toBe(2));
     expect(useAuthStore.getState().libraryBrowseServerIds).toEqual(['a', 'b']);
+  });
+
+  it('rebinds a recovered indexed server without requiring an active-server or list change', async () => {
+    act(() => setServerReachability('b', 'unavailable'));
+    renderHook(() => useLibraryServerReachability());
+
+    act(() => setServerReachability('b', 'available'));
+
+    await waitFor(() => expect(bootstrapIndexedServerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'b' }),
+    ));
+    expect(useAuthStore.getState().activeServerId).toBe('a');
+    expect(switchActiveServerMock).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,8 @@ import { useAuthStore } from '@/store/authStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
 import { runLocalLosslessAlbums } from '@/lib/library/browseTextSearch';
 import { LOSSLESS_MODE_QUERY } from '@/lib/library/losslessMode';
+import { runLibraryLocalReadSingleFlight } from '@/lib/library/localReadSingleFlight';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 
 interface Props {
   /** Ordered Home scope. Omit to preserve the legacy active-server rail. */
@@ -30,8 +32,9 @@ export type LosslessAlbumsDiagnosticResult = {
 const TARGET_ALBUMS = 20;
 const NETWORK_SONGS_PER_SERVER = 100;
 const LOSSLESS_RAIL_DEADLINE_MS = 4000;
+const LOSSLESS_LOCAL_READ_DEADLINE_MS = 1000;
 
-async function withinDeadline<T>(request: Promise<T>): Promise<
+async function withinDeadline<T>(request: Promise<T>, timeoutMs = LOSSLESS_RAIL_DEADLINE_MS): Promise<
   { status: 'ready'; value: T } | { status: 'timeout' }
 > {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -39,7 +42,7 @@ async function withinDeadline<T>(request: Promise<T>): Promise<
     return await Promise.race([
       request.then(value => ({ status: 'ready' as const, value })),
       new Promise<{ status: 'timeout' }>(resolve => {
-        timer = setTimeout(() => resolve({ status: 'timeout' }), LOSSLESS_RAIL_DEADLINE_MS);
+        timer = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
       }),
     ]);
   } finally {
@@ -82,6 +85,7 @@ export default function LosslessAlbumsRail({
     const requested = serverIds ?? (activeServerId ? [activeServerId] : []);
     return [...new Set(requested.filter(Boolean))];
   }, [activeServerId, serverIds]);
+  const librarySyncRevision = useLibraryScopeSyncRevision(orderedServerIds);
   const [albums, setAlbums] = useState<SubsonicAlbum[]>([]);
   const reportDiagnostic = useEffectEvent((result: LosslessAlbumsDiagnosticResult) => {
     onDiagnosticResult?.(result);
@@ -124,8 +128,19 @@ export default function LosslessAlbumsRail({
 
         if (indexEnabled) {
           try {
-            const local = await runLocalLosslessAlbums(serverId, quota, 0);
-            if (local && local.albums.length > 0) {
+            const localResult = await withinDeadline(runLibraryLocalReadSingleFlight(
+              JSON.stringify([
+                'lossless-rail',
+                orderedServerIds,
+                scopeVersion,
+                librarySyncRevision,
+                serverId,
+                quota,
+              ]),
+              () => runLocalLosslessAlbums(serverId, quota, 0),
+            ), LOSSLESS_LOCAL_READ_DEADLINE_MS);
+            const local = localResult.status === 'ready' ? localResult.value : null;
+            if (local?.albums.length) {
               return finish(
                 local.albums.slice(0, quota).map(album => ({ ...album, serverId })),
                 'ready',
@@ -141,11 +156,16 @@ export default function LosslessAlbumsRail({
         }
 
         try {
+          const remainingMs = Math.max(
+            0,
+            LOSSLESS_RAIL_DEADLINE_MS - (performance.now() - serverStartedAt),
+          );
+          if (remainingMs <= 0) return finish([], 'timeout', 'network');
           const result = await withinDeadline(ndListLosslessAlbumsPageForServer(serverId, {
               targetNewAlbums: quota,
               songsPerPage: NETWORK_SONGS_PER_SERVER,
               maxPagesPerCall: 1,
-            }));
+            }), remainingMs);
           if (result.status === 'timeout') {
             return finish([], 'timeout', 'network');
           }
@@ -175,7 +195,7 @@ export default function LosslessAlbumsRail({
       });
     })();
     return () => { cancelled = true; };
-  }, [indexEnabled, orderedServerIds, scopeVersion]);
+  }, [indexEnabled, orderedServerIds, scopeVersion, librarySyncRevision]);
 
   if (albums.length === 0) return null;
 

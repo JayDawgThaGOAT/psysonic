@@ -489,6 +489,8 @@ export interface LibrarySyncIdlePayload {
   serverId: string;
   libraryScope: string;
   kind: string; // 'initial_sync' | 'delta_sync'
+  source?: 'foreground' | 'background';
+  jobId?: string | null;
   ok: boolean;
   error?: string | null;
 }

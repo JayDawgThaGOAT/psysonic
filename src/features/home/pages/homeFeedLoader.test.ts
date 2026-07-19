@@ -1,8 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SubsonicAlbum, SubsonicSong } from '@/lib/api/subsonicTypes';
 import type { LibraryAlbumDto } from '@/lib/api/library/dto';
 import type { HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
+
+vi.mock('@/lib/library/libraryReady', () => ({
+  readyLibraryServerKeys: vi.fn(async (serverIds: readonly string[]) => [...serverIds]),
+}));
+
+import { resetLibraryLocalReadSingleFlightsForTests } from '@/lib/library/localReadSingleFlight';
 import {
+  HOME_LOCAL_READ_TIMEOUT_MS,
   HOME_REQUEST_TIMEOUT_MS,
   advanceHomeOffsets,
   allocateHomeQuotas,
@@ -18,12 +25,20 @@ import {
 
 const mixConfig = { enabled: false, minSong: 0, minAlbum: 0, minArtist: 0 };
 
+beforeEach(resetLibraryLocalReadSingleFlightsForTests);
+
 function album(serverId: string, id: string): SubsonicAlbum {
   return { id, name: id, artist: 'Artist', artistId: 'artist', songCount: 1, duration: 1, serverId };
 }
 
 function albumDto(serverId: string, id: string): LibraryAlbumDto {
   return { serverId, id, name: id, syncedAt: 1, rawJson: {} };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(res => { resolve = res; });
+  return { promise, resolve };
 }
 
 function snapshot(): HomeFeedSnapshot {
@@ -92,6 +107,58 @@ describe('homeFeedLoader pure helpers', () => {
 });
 
 describe('homeFeedLoader failure isolation', () => {
+  it('reuses a timed-out chronological invoke until the native read settles', async () => {
+    vi.useFakeTimers();
+    const libraryScopeListMainstageAlbums = vi.fn(() => new Promise<never>(() => {}));
+    const options = {
+      anchorServerId: 'a',
+      serverIds: ['a', 'b'],
+      scopes: [{ serverId: 'a', libraryId: 'lib-a' }, { serverId: 'b', libraryId: 'lib-b' }],
+      feed: 'newReleases' as const,
+      deps: { libraryScopeListMainstageAlbums },
+    };
+
+    const first = loadHomeChronologicalFeed(options);
+    const second = loadHomeChronologicalFeed(options);
+    await vi.waitFor(() => expect(libraryScopeListMainstageAlbums).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(HOME_REQUEST_TIMEOUT_MS);
+
+    await expect(first).resolves.toMatchObject({ status: 'timeout' });
+    await expect(second).resolves.toMatchObject({ status: 'timeout' });
+    expect(libraryScopeListMainstageAlbums).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('starts a fresh chronological flight when the sync freshness changes', async () => {
+    const first = deferred<{ albums: LibraryAlbumDto[]; hasMore: boolean; genreCounts: [] }>();
+    const second = deferred<{ albums: LibraryAlbumDto[]; hasMore: boolean; genreCounts: [] }>();
+    const libraryScopeListMainstageAlbums = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const base = {
+      anchorServerId: 'a',
+      serverIds: ['a'],
+      scopes: [{ serverId: 'a', libraryId: 'lib-a' }],
+      feed: 'newReleases' as const,
+      deps: { libraryScopeListMainstageAlbums },
+    };
+
+    const staleLoad = loadHomeChronologicalFeed({ ...base, freshness: 1 });
+    const freshLoad = loadHomeChronologicalFeed({ ...base, freshness: 2 });
+    await vi.waitFor(() => expect(libraryScopeListMainstageAlbums).toHaveBeenCalledTimes(2));
+
+    second.resolve({ albums: [albumDto('a', 'fresh')], hasMore: false, genreCounts: [] });
+    await expect(freshLoad).resolves.toMatchObject({
+      status: 'success',
+      albums: [expect.objectContaining({ id: 'fresh' })],
+    });
+    first.resolve({ albums: [albumDto('a', 'stale')], hasMore: false, genreCounts: [] });
+    await expect(staleLoad).resolves.toMatchObject({
+      status: 'success',
+      albums: [expect.objectContaining({ id: 'stale' })],
+    });
+  });
+
   it('resolves the network snapshot while local chronological work is pending', async () => {
     vi.useFakeTimers();
     const getAlbumListForServer = vi.fn(async (
@@ -294,7 +361,7 @@ describe('homeFeedLoader failure isolation', () => {
   });
 
   it('uses local random artists before the network and records each server source', async () => {
-    const getArtistsForServer = vi.fn(async (serverId: string) => [
+    const getArtistsForServer = vi.fn(async (serverId: string, _timeout?: number) => [
       { id: `network-${serverId}`, name: `Network ${serverId}` },
     ]);
     const runLocalRandomArtists = vi.fn(async (serverId: string | null | undefined) => (
@@ -320,7 +387,9 @@ describe('homeFeedLoader failure isolation', () => {
     expect(runLocalRandomArtists).toHaveBeenCalledWith('a', 8);
     expect(runLocalRandomArtists).toHaveBeenCalledWith('b', 8);
     expect(getArtistsForServer).toHaveBeenCalledTimes(1);
-    expect(getArtistsForServer).toHaveBeenCalledWith('b', HOME_REQUEST_TIMEOUT_MS);
+    const networkTimeout = getArtistsForServer.mock.calls[0]?.[1] ?? 0;
+    expect(networkTimeout).toBeGreaterThan(0);
+    expect(networkTimeout).toBeLessThanOrEqual(HOME_REQUEST_TIMEOUT_MS);
     expect(result.randomArtists.map(artist => `${artist.serverId}:${artist.id}`))
       .toEqual(['a:local-a', 'b:network-b']);
     const report = onSectionResult.mock.calls.find(([section]) => section === 'discoverArtists')?.[1];
@@ -328,6 +397,59 @@ describe('homeFeedLoader failure isolation', () => {
     expect(report.detail).toContain('/local/rows');
     expect(report.detail).toContain('b: ');
     expect(report.detail).toContain('/network/rows');
+  });
+
+  it('falls back to network random artists and songs when local reads never settle', async () => {
+    vi.useFakeTimers();
+    const getArtistsForServer = vi.fn(async () => [{ id: 'network-artist', name: 'Network Artist' }]);
+    const getRandomSongsForServer = vi.fn(async (
+      _serverId: string,
+      _size?: number,
+      _genre?: string,
+      _timeout?: number,
+    ) => [{
+      id: 'network-song', title: 'Network Song', artist: 'Artist', album: 'Album',
+      albumId: 'album', duration: 60,
+    } as SubsonicSong]);
+    const never = new Promise<never>(() => undefined);
+
+    const request = loadHomeFeed({
+      serverIds: ['a'], scopeKey: 'scope', scopeVersion: 1, syncRevision: 3, randomSize: 0,
+      anchorServerId: 'a', scopes: [], showArtists: true, showSongs: true, mixConfig,
+      enabledSections: {
+        starred: false,
+        mostPlayed: false,
+        hero: false,
+        discover: false,
+        discoverArtists: true,
+        discoverSongs: true,
+      },
+      deps: {
+        getAlbumListForServer: vi.fn(async () => []) as never,
+        getArtistsForServer,
+        getRandomSongsForServer,
+        runLocalRandomArtists: vi.fn(() => never),
+        runLocalRandomSongs: vi.fn(() => never),
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+        shuffle: items => items,
+      },
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(HOME_LOCAL_READ_TIMEOUT_MS - 1);
+    expect(getArtistsForServer).not.toHaveBeenCalled();
+    expect(getRandomSongsForServer).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await request;
+    expect(getArtistsForServer).toHaveBeenCalledWith(
+      'a', HOME_REQUEST_TIMEOUT_MS - HOME_LOCAL_READ_TIMEOUT_MS,
+    );
+    expect(getRandomSongsForServer).toHaveBeenCalledWith(
+      'a', 18, undefined, HOME_REQUEST_TIMEOUT_MS - HOME_LOCAL_READ_TIMEOUT_MS,
+    );
+    expect(result.randomArtists.map(item => item.id)).toEqual(['network-artist']);
+    expect(result.discoverSongs.map(item => item.id)).toEqual(['network-song']);
+    vi.useRealTimers();
   });
 
   it('uses per-server offsets, dedupes owner-qualified ids, and advances raw cursors', async () => {

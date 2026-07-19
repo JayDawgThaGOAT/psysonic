@@ -49,6 +49,30 @@ export function useLibrarySyncRevision(): number {
   );
 }
 
+/** Aggregate successful sync revision among the supplied canonical server scopes. */
+export function libraryScopeSyncRevision(serverIds: readonly string[]): number {
+  ensureOfflineLocalLibrarySyncHook();
+  let revision = 0;
+  const serverKeys = new Set(serverIds.map(resolveIndexKey));
+  for (const serverKey of serverKeys) {
+    revision += offlineLocalLibrarySyncRevision(serverKey);
+  }
+  return revision;
+}
+
+/** Reactive revision limited to the supplied server scopes. */
+export function useLibraryScopeSyncRevision(serverIds: readonly string[]): number {
+  ensureOfflineLocalLibrarySyncHook();
+  return useSyncExternalStore(
+    onStoreChange => {
+      listeners.add(onStoreChange);
+      return () => listeners.delete(onStoreChange);
+    },
+    () => libraryScopeSyncRevision(serverIds),
+    () => 0,
+  );
+}
+
 function ensureOfflineLocalLibrarySyncHook(): void {
   if (syncHookRegistered) return;
   syncHookRegistered = true;

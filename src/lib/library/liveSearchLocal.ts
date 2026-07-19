@@ -16,6 +16,7 @@ import {
 import { logLibrarySearch, timed } from './libraryDevLog';
 import { searchQueryIsFtsSafe } from './searchQueryFtsSafe';
 import { getLibraryBrowseScope } from './libraryBrowseScope';
+import { resolveReadyLibraryBrowseScope } from './libraryReady';
 
 export const LIVE_SEARCH_DEBOUNCE_LOCAL_MS = 200;
 export const LIVE_SEARCH_DEBOUNCE_NETWORK_MS = 300;
@@ -72,15 +73,16 @@ export async function runLocalLiveSearch(
   if (!serverId || ctx.isStale()) return null;
   const q = query.trim();
   if (liveSearchQueryRejected(q)) return null;
+  const readyScope = await resolveReadyLibraryBrowseScope(serverId, getLibraryBrowseScope());
+  if (!readyScope || ctx.isStale()) return null;
   const t0 = performance.now();
   try {
-    const browseScope = getLibraryBrowseScope();
     const { result: resp, ms: invokeMs } = await timed(() =>
       libraryLiveSearch({
-        serverId,
+        serverId: readyScope.anchorServerKey,
         query: q,
-        libraryScope: browseScope.pairs.length > 0 ? undefined : libraryScopeForServer(serverId),
-        libraryScopes: browseScope.pairs.length > 0 ? browseScope.pairs : libraryScopePairsForServer(serverId),
+        libraryScope: readyScope.pairs.length > 0 ? undefined : libraryScopeForServer(serverId),
+        libraryScopes: readyScope.pairs.length > 0 ? readyScope.pairs : libraryScopePairsForServer(serverId),
         artistLimit: ARTIST_LIMIT,
         albumLimit: ALBUM_LIMIT,
         songLimit: SONG_LIMIT,

@@ -61,11 +61,8 @@ export const commands = {
 	librarySyncStart: (serverId: string, mode: string, libraryScope: string | null) => typedError<SyncJobDto, string>(__TAURI_INVOKE("library_sync_start", { serverId, mode, libraryScope })),
 	/**
 	 *  Manual «Verify library integrity» — same dispatch shape as
-	 *  `library_sync_start { mode: 'delta' }` but always sets the full
-	 *  `DELTA_MISMATCH_CAP` tombstone budget regardless of the
-	 *  local/server count gap. Per PR-5b review §5 note 2: spec §6.7
-	 *  Mode A user-initiated full reconcile bypasses the threshold
-	 *  check.
+	 *  `library_sync_start { mode: 'delta' }`, but the runner bypasses delta
+	 *  watermarks and completes a stable full tombstone pass.
 	 */
 	librarySyncVerifyIntegrity: (serverId: string, libraryScope: string | null) => typedError<SyncJobDto, string>(__TAURI_INVOKE("library_sync_verify_integrity", { serverId, libraryScope })),
 	librarySyncCancel: (jobId: string | null) => typedError<null, string>(__TAURI_INVOKE("library_sync_cancel", { jobId })),

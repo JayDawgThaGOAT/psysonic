@@ -28,6 +28,7 @@ describe('getLibraryBrowseScope', () => {
 
     expect(getLibraryBrowseScope()).toEqual({
       anchorServerId: 'a',
+      serverIds: ['a', 'b'],
       pairs: [
         { serverId: 'a', libraryId: 'a2' },
         { serverId: 'a', libraryId: 'a1' },
@@ -71,6 +72,7 @@ describe('getLibraryBrowseScope', () => {
     ]);
     expect(deriveLibraryBrowseScope(state, new Set(['primary']))).toEqual({
       anchorServerId: 'secondary',
+      serverIds: ['secondary'],
       pairs: [{ serverId: 'secondary', libraryId: 'secondary-music' }],
       fingerprint: JSON.stringify([['secondary', ['secondary-music']]]),
       multiServer: false,
@@ -89,6 +91,7 @@ describe('getLibraryBrowseScope', () => {
 
     expect(scope).toEqual({
       anchorServerId: null,
+      serverIds: [],
       pairs: [],
       fingerprint: '',
       multiServer: false,
@@ -106,6 +109,7 @@ describe('getLibraryBrowseScope', () => {
 
     expect(scope).toEqual({
       anchorServerId: 'active',
+      serverIds: ['active'],
       pairs: [],
       fingerprint: '',
       multiServer: false,

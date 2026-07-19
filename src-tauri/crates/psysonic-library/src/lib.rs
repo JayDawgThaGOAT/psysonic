@@ -7,23 +7,21 @@
 //! - `filter` — `FilterFieldRegistry` (Rust source of truth for Advanced Search)
 //! - `sync`   — capability probe + orchestrator (PR-3*)
 
-pub(crate) mod bulk_ingest;
 pub mod advanced_search;
-pub mod album_compilation_filter;
-pub mod browse_support;
-pub mod scope_browse;
-pub mod browse_projection;
 mod advanced_search_mood;
+pub mod album_compilation_filter;
 pub mod analysis_backfill;
 pub mod analysis_backfill_policy;
-pub mod library_readiness;
 pub mod artist_artwork;
 pub mod artist_lossless_browse;
 pub mod artist_sort;
-pub mod cover_backfill;
-pub mod cover_resolve;
+pub mod browse_projection;
+pub mod browse_support;
+pub(crate) mod bulk_ingest;
 pub mod canonical;
 pub mod commands;
+pub mod cover_backfill;
+pub mod cover_resolve;
 pub mod cross_server;
 pub mod dto;
 pub mod enrichment;
@@ -32,26 +30,28 @@ pub mod genre_album_browse;
 pub mod genre_tags;
 pub mod genre_tags_backfill;
 pub mod identity;
-pub mod mood_groups;
-pub mod most_played;
+pub mod library_readiness;
 pub mod live_search;
-pub mod mainstage_browse;
-pub mod orphan_cleanup;
 pub mod lossless_albums;
 pub mod lossless_formats;
+pub mod mainstage_browse;
+pub mod mood_groups;
+pub mod most_played;
+pub mod orphan_cleanup;
 pub mod payload;
-pub mod repos;
 pub mod random_artists;
+pub mod repos;
 pub mod runtime;
+pub mod scope_browse;
 pub mod scope_merge;
 pub mod search;
-pub mod store;
 pub mod starred_browse;
 pub mod statistics;
+pub mod store;
 pub mod sync;
 pub(crate) mod track_fts;
 
-pub use payload::LibrarySyncProgressPayload;
+pub use payload::{LibrarySyncIdlePayload, LibrarySyncProgressPayload};
 pub use runtime::LibraryRuntime;
 
 pub use store::{LibraryStore, LIBRARY_DB_SCHEMA_VERSION};

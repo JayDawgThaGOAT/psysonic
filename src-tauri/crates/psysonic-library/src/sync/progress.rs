@@ -35,16 +35,27 @@ pub struct IngestBatchMetrics {
 /// these into Tauri events with their own envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProgressEvent {
-    PhaseChanged { phase: String },
+    PhaseChanged {
+        phase: String,
+    },
     IngestPage {
         ingested_total: u32,
         batch_count: u32,
         metrics: Option<IngestBatchMetrics>,
     },
-    Remapped { entries: Vec<RemapEntry> },
-    Tombstoned { deleted_count: u32, checked_count: u32 },
-    Completed { kind: String },
-    Error { message: String },
+    Remapped {
+        entries: Vec<RemapEntry>,
+    },
+    Tombstoned {
+        deleted_count: u32,
+        checked_count: u32,
+    },
+    Completed {
+        kind: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 impl ProgressEvent {
@@ -128,10 +139,7 @@ impl ChannelProgress {
         if self.min_interval.is_zero() {
             return;
         }
-        *self
-            .last_emit
-            .lock()
-            .expect("progress lock poisoned") = Some(Instant::now());
+        *self.last_emit.lock().expect("progress lock poisoned") = Some(Instant::now());
     }
 }
 
@@ -192,8 +200,12 @@ mod tests {
     #[test]
     fn noop_progress_swallows_events_without_panicking() {
         let p = NoopProgress;
-        p.emit(ProgressEvent::PhaseChanged { phase: "ingest".into() });
-        p.emit(ProgressEvent::Completed { kind: "initial_sync".into() });
+        p.emit(ProgressEvent::PhaseChanged {
+            phase: "ingest".into(),
+        });
+        p.emit(ProgressEvent::Completed {
+            kind: "initial_sync".into(),
+        });
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -221,10 +233,14 @@ mod tests {
         p.emit(ProgressEvent::IngestPage {
             ingested_total: 999,
             batch_count: 3,
-                metrics: None,
+            metrics: None,
         });
-        p.emit(ProgressEvent::Completed { kind: "delta_sync".into() });
-        p.emit(ProgressEvent::Error { message: "boom".into() });
+        p.emit(ProgressEvent::Completed {
+            kind: "delta_sync".into(),
+        });
+        p.emit(ProgressEvent::Error {
+            message: "boom".into(),
+        });
         assert!(matches!(
             rx.try_recv(),
             Ok(ProgressEvent::IngestPage {
@@ -232,10 +248,7 @@ mod tests {
                 ..
             })
         ));
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(ProgressEvent::Completed { .. })
-        ));
+        assert!(matches!(rx.try_recv(), Ok(ProgressEvent::Completed { .. })));
         assert!(matches!(rx.try_recv(), Ok(ProgressEvent::Error { .. })));
     }
 
@@ -266,17 +279,17 @@ mod tests {
         p.emit(ProgressEvent::IngestPage {
             ingested_total: 500,
             batch_count: 1,
-                metrics: None,
+            metrics: None,
         });
         p.emit(ProgressEvent::IngestPage {
             ingested_total: 2500,
             batch_count: 5,
-                metrics: None,
+            metrics: None,
         });
         p.emit(ProgressEvent::IngestPage {
             ingested_total: 5000,
             batch_count: 10,
-                metrics: None,
+            metrics: None,
         });
         assert!(matches!(
             rx.try_recv(),
@@ -291,7 +304,7 @@ mod tests {
         p.emit(ProgressEvent::IngestPage {
             ingested_total: 5500,
             batch_count: 11,
-                metrics: None,
+            metrics: None,
         });
         assert!(
             matches!(
@@ -323,7 +336,10 @@ mod tests {
     #[test]
     fn always_emit_true_for_terminal_events() {
         assert!(ProgressEvent::Completed { kind: "k".into() }.always_emit());
-        assert!(ProgressEvent::Error { message: "m".into() }.always_emit());
+        assert!(ProgressEvent::Error {
+            message: "m".into()
+        }
+        .always_emit());
         assert!(!ProgressEvent::PhaseChanged { phase: "p".into() }.always_emit());
     }
 }

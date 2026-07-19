@@ -5,7 +5,9 @@ import {
   useUnavailableServerIds,
 } from '@/lib/network/serverReachability';
 import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { bootstrapIndexedServer } from '@/lib/library/librarySession';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
+import { useLibraryIndexStore } from '@/store/libraryIndexStore';
 import { switchActiveServer } from '@/utils/server/switchActiveServer';
 
 const SERVER_REACHABILITY_POLL_MS = 120_000;
@@ -62,6 +64,15 @@ export function useLibraryServerReachability(): void {
     previousUnavailableServerIdsRef.current = unavailableServerIds;
     if (previousUnavailableServerIds === unavailableServerIds) return;
     const state = useAuthStore.getState();
+    if (isLoggedIn) {
+      for (const serverId of previousUnavailableServerIds) {
+        if (unavailableServerIds.has(serverId)) continue;
+        const recovered = state.servers.find(server => server.id === serverId);
+        if (recovered && useLibraryIndexStore.getState().isIndexEnabled(recovered.id)) {
+          void bootstrapIndexedServer(recovered);
+        }
+      }
+    }
     const previousEffectiveScopeKey = deriveEffectiveLibraryBrowseServerIds(
       state,
       previousUnavailableServerIds,
@@ -74,7 +85,7 @@ export function useLibraryServerReachability(): void {
     useAuthStore.setState(state => ({
       libraryBrowseScopeVersion: state.libraryBrowseScopeVersion + 1,
     }));
-  }, [unavailableServerIds]);
+  }, [isLoggedIn, unavailableServerIds]);
 
   useEffect(() => {
     if (!isLoggedIn || perfFlags.disableBackgroundPolling || selectedProfiles.length === 0) return;

@@ -24,8 +24,11 @@ import {
 import { useOfflineLocalBrowseReloadKey } from '@/store/localPlaybackBrowseRevision';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import { emitTrackBrowseDebug, trackBrowseTimed } from '@/lib/library/trackBrowseDebug';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
+import { readyLibraryServerKeys } from '@/lib/library/libraryReady';
 
 const PAGE_SIZE = 50;
+const BROWSE_READINESS_CHANGED = Symbol('browse-readiness-changed');
 
 type BrowseAllPage = {
   songs: SubsonicSong[];
@@ -40,9 +43,18 @@ async function fetchBrowseAllPage(
   serverId: string | null | undefined,
   offset: number,
   cursor?: string | null,
+  syncRevision = 0,
+  freshness = '',
 ): Promise<BrowseAllPage> {
   const scopeFingerprint = getLibraryBrowseScope().fingerprint;
-  const key = `${serverId ?? ''}\u0001${scopeFingerprint}\u0001${offset}\u0001${cursor ?? ''}`;
+  const key = [
+    serverId ?? '',
+    scopeFingerprint,
+    String(syncRevision),
+    freshness,
+    String(offset),
+    cursor ?? '',
+  ].join('\u0001');
   const existing = browseAllPageInflight.get(key);
   if (existing) return existing;
   const request = (async (): Promise<BrowseAllPage> => {
@@ -52,6 +64,7 @@ async function fetchBrowseAllPage(
       { offset, cursor: cursor != null },
     );
     if (scoped) return { ...scoped, local: true };
+    if (getLibraryBrowseScope().multiServer) throw BROWSE_READINESS_CHANGED;
     const local = await trackBrowseTimed(
       'local_advanced_page',
       () => runLocalSongBrowse(serverId, offset, PAGE_SIZE),
@@ -111,6 +124,10 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
     serverId,
     offlineBrowseActive,
   );
+  const browseScopeServerIds = getLibraryBrowseScope().serverIds;
+  const librarySyncRevision = useLibraryScopeSyncRevision(
+    browseScopeServerIds.length > 0 ? browseScopeServerIds : (serverId ? [serverId] : []),
+  );
 
   const [debouncedQuery, setDebouncedQuery] = useState(
     () => initialRestore?.query.trim() ?? searchQuery.trim(),
@@ -162,7 +179,14 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
       }
 
       if (q === '') {
-        const page = await fetchBrowseAllPage(serverId, pageOffset, browseCursorRef.current);
+        const page = await fetchBrowseAllPage(
+          serverId,
+          pageOffset,
+          browseCursorRef.current,
+          librarySyncRevision,
+          `${musicLibraryFilterVersion}:${libraryBrowseScopeVersion}`,
+        );
+        if (isStale()) return [];
         browseCursorRef.current = page.nextCursor ?? null;
         setBrowseCursor(browseCursorRef.current);
         browsePageMetaRef.current = { hasMore: page.hasMore, local: page.local };
@@ -172,8 +196,11 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
 
       if (pageOffset === 0 && indexEnabled && serverId) {
         if (getLibraryBrowseScope().multiServer) {
+          const local = await runLocalBrowseSongPage(serverId, q, 0, PAGE_SIZE);
+          if (isStale()) return [];
+          if (local == null) throw BROWSE_READINESS_CHANGED;
           localSearchModeRef.current = true;
-          return (await runLocalBrowseSongPage(serverId, q, 0, PAGE_SIZE)) ?? [];
+          return local;
         }
         const winner = await raceBrowseWithLocalFallback(
           isStale,
@@ -205,11 +232,7 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
 
       return (await runNetworkBrowseSongPage(q, pageOffset, PAGE_SIZE)) ?? [];
     },
-    // musicLibraryFilterVersion is an intentional re-create trigger: the page
-    // loaders read the active genre/library filter state internally, so the
-    // callback must refresh when that version bumps even though it is unused here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseActive, serverId],
+    [indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, librarySyncRevision, offlineBrowseActive, serverId],
   );
 
   useEffect(() => {
@@ -225,39 +248,44 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
     }
 
     let cancelled = false;
-    setSongs([]);
-    setOffset(0);
-    setHasMore(true);
-    setBrowseUnsupported(false);
-    localSearchModeRef.current = false;
-    browseCursorRef.current = null;
-    setBrowseCursor(null);
-    browsePageMetaRef.current = { hasMore: true, local: false };
-
     const seq = ++requestSeqRef.current;
     const isStale = () => cancelled || seq !== requestSeqRef.current;
-    setLoading(true);
-    emitTrackBrowseDebug('load_effect_start', {
-      queryActive: debouncedQuery !== '',
-      serverId,
-      indexEnabled,
-      offset: 0,
-    });
     void (async () => {
       try {
+        const browseScope = getLibraryBrowseScope();
+        if (
+          !offlineBrowseActive
+          && indexEnabled
+          && serverId
+          && browseScope.multiServer
+          && (await readyLibraryServerKeys(browseScope.serverIds)) == null
+        ) {
+          if (!isStale()) setLoading(false);
+          return;
+        }
+        if (isStale()) return;
+        localSearchModeRef.current = false;
+        browseCursorRef.current = null;
+        browsePageMetaRef.current = { hasMore: true, local: false };
+        setLoading(true);
+        emitTrackBrowseDebug('load_effect_start', {
+          queryActive: debouncedQuery !== '',
+          serverId,
+          indexEnabled,
+          offset: 0,
+        });
         const page = await fetchSongPage(debouncedQuery, 0, isStale);
         if (isStale()) return;
+        setSongs(page);
+        setOffset(page.length);
+        setBrowseCursor(browseCursorRef.current);
+        setBrowseUnsupported(page.length === 0 && debouncedQuery === '');
         if (page.length === 0) {
           setHasMore(false);
-          if (debouncedQuery === '') setBrowseUnsupported(true);
+        } else if (debouncedQuery === '') {
+          setHasMore(browsePageMetaRef.current.hasMore);
         } else {
-          setSongs(page);
-          setOffset(page.length);
-          if (debouncedQuery === '') {
-            setHasMore(browsePageMetaRef.current.hasMore);
-          } else if (page.length < PAGE_SIZE) {
-            setHasMore(false);
-          }
+          setHasMore(page.length === PAGE_SIZE);
         }
         setHasSearched(true);
         emitTrackBrowseDebug('load_effect_done', {
@@ -268,7 +296,6 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
         });
       } catch {
         emitTrackBrowseDebug('load_effect_error', { queryActive: debouncedQuery !== '' });
-        if (!isStale()) setHasMore(false);
       } finally {
         if (!isStale()) setLoading(false);
       }
@@ -277,7 +304,7 @@ export function useSongBrowseList({ enabled, searchQuery, initialRestore }: UseS
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, searchQuery, fetchSongPage, enabled, indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseReloadTs, offlineLocalBrowseReloadKey, serverId]);
+  }, [debouncedQuery, searchQuery, fetchSongPage, enabled, indexEnabled, musicLibraryFilterVersion, libraryBrowseScopeVersion, librarySyncRevision, offlineBrowseReloadTs, offlineLocalBrowseReloadKey, offlineBrowseActive, serverId]);
 
   const loadMore = useCallback(async () => {
     if (!enabled || loading || !hasMore) return;
