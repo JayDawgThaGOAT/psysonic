@@ -1,7 +1,6 @@
 import { useCoverArt } from '@/cover/useCoverArt';
-import { albumCoverRef } from '@/cover/ref';
+import { radioCoverRef } from '@/cover/ref';
 import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
-import { coverArtIdFromRadio } from '@/cover/ids';
 import type { SubsonicArtistInfo, SubsonicSong } from '@/lib/api/subsonicTypes';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { usePlaybackLibraryNavigate } from '@/features/playback/hooks/usePlaybackLibraryNavigate';
@@ -109,9 +108,8 @@ export default function NowPlaying() {
 
   const playbackCoverRef = usePlaybackTrackCoverRef(currentTrack ?? undefined);
 
-  const radioCoverArtId = currentRadio?.coverArt ? coverArtIdFromRadio(currentRadio.id) : undefined;
   const radioCover = useCoverArt(
-    radioCoverArtId ? albumCoverRef(radioCoverArtId, radioCoverArtId) : null,
+    currentRadio?.coverArt ? radioCoverRef(currentRadio) : null,
     800,
     { surface: 'sparse' },
   );

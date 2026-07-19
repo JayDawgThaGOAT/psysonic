@@ -7,7 +7,7 @@ import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
 import type { RadioMetadata } from '@/features/radio';
 import type { PreviewingTrack } from '@/features/playback/store/previewStore';
 import { CoverArtImage } from '@/cover/CoverArtImage';
-import { albumCoverRef } from '@/cover/ref';
+import { radioCoverRef } from '@/cover/ref';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
 import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
 import MarqueeText from '@/ui/MarqueeText';
@@ -94,7 +94,7 @@ export function PlayerTrackInfo({
           radioCoverArtId && currentRadio ? (
             <CoverArtImage
               className="player-album-art"
-              coverRef={albumCoverRef(radioCoverArtId, radioCoverArtId)}
+              coverRef={radioCoverRef(currentRadio)}
               displayCssPx={128}
               surface="sparse"
               alt={currentRadio?.name ?? ''}

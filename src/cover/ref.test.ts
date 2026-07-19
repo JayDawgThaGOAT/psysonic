@@ -5,9 +5,19 @@ import {
   albumCoverRefForSong,
   albumHasDistinctDiscCovers,
   rememberAlbumDistinctDiscCovers,
+  radioCoverRef,
   resolveAlbumCoverCacheEntityId,
   resolveDistinctDiscCoversForAlbum,
 } from './ref';
+
+describe('radioCoverRef', () => {
+  it('keeps duplicate radio ids in the owning server cover bucket', () => {
+    const ref = radioCoverRef({ id: 'shared', serverId: 'srv-b' });
+    expect(ref.cacheEntityId).toBe('ra-shared');
+    expect(ref.fetchCoverArtId).toBe('ra-shared');
+    expect(ref.serverScope).toMatchObject({ kind: 'server', serverId: 'srv-b' });
+  });
+});
 
 describe('resolveAlbumCoverCacheEntityId', () => {
   it('uses album id when fetch matches or is empty', () => {

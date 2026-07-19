@@ -1,7 +1,8 @@
 import { getPlaybackServerId } from '@/features/playback/utils/playback/playbackServer';
 import { useAuthStore } from '../store/authStore';
-import { coverServerScopeForServerId } from './serverScope';
-import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { coverServerScopeForOwnerServerId, coverServerScopeForServerId } from './serverScope';
+import type { InternetRadioStation, SubsonicSong } from '@/lib/api/subsonicTypes';
+import { coverArtIdFromRadio } from './ids';
 import type { CoverArtId, CoverArtRef, CoverCacheKind, CoverServerScope } from './types';
 import {
   albumHasDistinctDiscCovers,
@@ -92,6 +93,16 @@ export function albumCoverRef(
     );
   }
   return coverEntryToRef(entry, serverScope);
+}
+
+export function radioCoverRef(
+  station: Pick<InternetRadioStation, 'id' | 'serverId'>,
+): CoverArtRef {
+  const coverArtId = coverArtIdFromRadio(station.id);
+  const serverScope = station.serverId
+    ? coverServerScopeForOwnerServerId(station.serverId)
+    : { kind: 'active' as const };
+  return albumCoverRef(coverArtId, coverArtId, serverScope);
 }
 
 export function albumCoverRefForSong(

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackProgress';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
@@ -61,7 +62,7 @@ export function usePlayerSnapshotPublisher() {
       };
       const stableKey = JSON.stringify({
         trackId: s.currentTrack?.id ?? null,
-        radioId: s.currentRadio?.id ?? null,
+        radioId: s.currentRadio ? ownedEntityKey(s.currentRadio) : null,
         queueIndex: s.queueIndex,
         queueLength: total,
         isPlaying: s.isPlaying,

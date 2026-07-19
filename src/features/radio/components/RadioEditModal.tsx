@@ -4,8 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Camera, Cast, Loader2, X } from 'lucide-react';
 import type { InternetRadioStation } from '@/lib/api/subsonicTypes';
 import { CoverArtImage } from '@/cover/CoverArtImage';
-import { albumCoverRef } from '@/cover/ref';
-import { coverArtIdFromRadio } from '@/cover/ids';
+import { radioCoverRef } from '@/cover/ref';
 
 interface RadioEditModalProps {
   station: InternetRadioStation | null; // null = create new
@@ -73,7 +72,7 @@ export default function RadioEditModal({ station, onClose, onSave }: RadioEditMo
         style={{ maxWidth: 440, width: '90%', maxHeight: 'none', overflow: 'visible' }}
         onClick={e => e.stopPropagation()}
       >
-        <button className="btn btn-ghost modal-close" onClick={onClose} style={{ top: 16, right: 16 }}>
+        <button className="btn btn-ghost modal-close" onClick={onClose} aria-label={t('common.close')} style={{ top: 16, right: 16 }}>
           <X size={18} />
         </button>
 
@@ -93,7 +92,7 @@ export default function RadioEditModal({ station, onClose, onSave }: RadioEditMo
               <img src={coverPreview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
             ) : !coverRemoved && station?.coverArt ? (
               <CoverArtImage
-                coverRef={albumCoverRef(coverArtIdFromRadio(station.id), coverArtIdFromRadio(station.id))}
+                coverRef={radioCoverRef(station)}
                 displayCssPx={140}
                 surface="sparse"
                 alt=""
@@ -134,6 +133,7 @@ export default function RadioEditModal({ station, onClose, onSave }: RadioEditMo
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder={t('radio.stationName')}
+              aria-label={t('radio.stationName')}
               autoFocus
             />
             <input
@@ -141,12 +141,14 @@ export default function RadioEditModal({ station, onClose, onSave }: RadioEditMo
               value={streamUrl}
               onChange={e => setStreamUrl(e.target.value)}
               placeholder={t('radio.streamUrl')}
+              aria-label={t('radio.streamUrl')}
             />
             <input
               className="input"
               value={homepageUrl}
               onChange={e => setHomepageUrl(e.target.value)}
               placeholder={t('radio.homepageUrl')}
+              aria-label={t('radio.homepageUrl')}
             />
           </div>
         </div>

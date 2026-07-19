@@ -25,6 +25,7 @@ import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
 import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { sameRadioStation } from '@/features/radio';
 
 const FAV_COLUMNS: readonly ColDef[] = [
   { key: 'num',        i18nKey: null,              minWidth: 60,  defaultWidth: 60,  required: true  },
@@ -215,7 +216,7 @@ export default function Favorites() {
               currentRadio={currentRadio}
               isPlaying={isPlaying}
               onPlay={s => {
-                if (currentRadio?.id === s.id && isPlaying) stop();
+                if (sameRadioStation(currentRadio, s) && isPlaying) stop();
                 else playRadio(s);
               }}
               onUnfavorite={unfavoriteStation}

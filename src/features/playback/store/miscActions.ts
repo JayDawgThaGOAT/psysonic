@@ -6,6 +6,7 @@ import { showToast } from '@/lib/dom/toast';
 import { useAuthStore } from '@/store/authStore';
 import {
   bumpPlayGeneration,
+  getPlayGeneration,
   setIsAudioPaused,
 } from '@/features/playback/store/engineState';
 import { clearPreloadingIds } from '@/features/playback/store/gaplessPreloadState';
@@ -70,7 +71,7 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
     playRadio: async (station) => {
       const { volume } = get();
       prepareRadioPlaybackFromUserGesture();
-      bumpPlayGeneration();
+      const generation = bumpPlayGeneration();
       clearAllPlaybackScheduleTimers();
       set({ scheduledPauseAtMs: null, scheduledPauseStartMs: null, scheduledResumeAtMs: null, scheduledResumeStartMs: null });
       setIsAudioPaused(false);
@@ -84,16 +85,19 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
       // to HTML5 <audio> — the browser cannot play playlist files directly.
       const streamUrl = await commands.resolveStreamUrl(station.streamUrl)
         .catch(() => station.streamUrl);
+      if (getPlayGeneration() !== generation) return;
       const { replayGainFallbackDb } = useAuthStore.getState();
       const fallbackFactor = replayGainFallbackDb !== 0 ? Math.pow(10, replayGainFallbackDb / 20) : 1;
       try {
         await playRadioStream(streamUrl, Math.min(1, volume * fallbackFactor));
       } catch (err: unknown) {
+        if (getPlayGeneration() !== generation) return;
         console.error('[psysonic] radio HTML5 play failed:', err);
         showToast('Radio stream error', 3000, 'error');
         set({ isPlaying: false, currentRadio: null });
         return;
       }
+      if (getPlayGeneration() !== generation) return;
       set({
         currentRadio: station,
         currentTrack: null,

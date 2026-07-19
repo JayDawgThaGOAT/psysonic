@@ -3,8 +3,8 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Cast, Check, Loader2, Plus, X } from 'lucide-react';
 import {
-  createInternetRadioStation, fetchUrlBytes, getInternetRadioStations,
-  getTopRadioStations, searchRadioBrowser, uploadRadioCoverArtBytes,
+  createInternetRadioStationForServer, fetchUrlBytes, getInternetRadioStationsForServer,
+  getTopRadioStations, searchRadioBrowser, uploadRadioCoverArtBytesForServer,
 } from '@/lib/api/subsonicRadio';
 import {
   type InternetRadioStation, type RadioBrowserStation, RADIO_PAGE_SIZE,
@@ -12,11 +12,18 @@ import {
 import { showToast } from '@/lib/dom/toast';
 
 interface RadioDirectoryModalProps {
+  targetServerId: string;
+  onMutationStart: () => void;
   onClose: () => void;
   onAdded: () => void;
 }
 
-export default function RadioDirectoryModal({ onClose, onAdded }: RadioDirectoryModalProps) {
+export default function RadioDirectoryModal({
+  targetServerId,
+  onMutationStart,
+  onClose,
+  onAdded,
+}: RadioDirectoryModalProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<RadioBrowserStation[]>([]);
@@ -88,14 +95,21 @@ export default function RadioDirectoryModal({ onClose, onAdded }: RadioDirectory
     if (addedIds.has(s.stationuuid) || addingId !== null) return;
     setAddingId(s.stationuuid);
     try {
-      await createInternetRadioStation(s.name, s.url);
+      onMutationStart();
+      await createInternetRadioStationForServer(targetServerId, s.name, s.url);
       if (s.favicon) {
-        const list = await getInternetRadioStations().catch(() => [] as InternetRadioStation[]);
-        const created = list.find(r => r.streamUrl === s.url);
+        const list = await getInternetRadioStationsForServer(targetServerId)
+          .catch(() => [] as InternetRadioStation[]);
+        const created = list.find(r => r.name === s.name && r.streamUrl === s.url);
         if (created) {
           try {
             const [fileBytes, mimeType] = await fetchUrlBytes(s.favicon);
-            await uploadRadioCoverArtBytes(created.id, fileBytes, mimeType);
+            await uploadRadioCoverArtBytesForServer(
+              targetServerId,
+              created.id,
+              fileBytes,
+              mimeType,
+            );
           } catch { /* favicon optional */ }
         }
       }

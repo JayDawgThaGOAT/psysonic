@@ -5,6 +5,7 @@ import { resolveTrackCoverRefFromLibrary } from '@/cover/resolveEntryLibrary';
 import { coverArtUrlForMpris } from '@/cover/integrations/mpris';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { getPlaybackProgressSnapshot, subscribePlaybackProgress } from '@/features/playback/store/playbackProgress';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 /**
  * MPRIS / OS media-controls sync. Whenever the current track or playback state
@@ -13,7 +14,7 @@ import { getPlaybackProgressSnapshot, subscribePlaybackProgress } from '@/featur
  */
 export function setupMprisSync(): () => void {
   let prevTrackId: string | null = null;
-  let prevRadioId: string | null = null;
+  let prevRadioKey: string | null = null;
   let prevIsPlaying: boolean | null = null;
   let lastMprisPositionUpdate = 0;
 
@@ -23,7 +24,7 @@ export function setupMprisSync(): () => void {
     // Update metadata when track changes
     if (currentTrack && currentTrack.id !== prevTrackId) {
       prevTrackId = currentTrack.id;
-      prevRadioId = null;
+      prevRadioKey = null;
       const title = currentTrack.title;
       const artist = currentTrack.artist;
       const album = currentTrack.album;
@@ -62,8 +63,9 @@ export function setupMprisSync(): () => void {
 
     // Update metadata when a radio station starts (initial push — station name as title).
     // ICY StreamTitle updates are forwarded by the radio:metadata listener below.
-    if (currentRadio && currentRadio.id !== prevRadioId) {
-      prevRadioId = currentRadio.id;
+    const currentRadioKey = currentRadio ? ownedEntityKey(currentRadio) : null;
+    if (currentRadio && currentRadioKey !== prevRadioKey) {
+      prevRadioKey = currentRadioKey;
       prevTrackId = null;
       mprisSetMetadata({
         title: currentRadio.name,

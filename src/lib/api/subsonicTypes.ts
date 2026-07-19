@@ -115,6 +115,8 @@ export interface SubsonicSong {
 
 export interface InternetRadioStation {
   id: string;
+  /** Owning server profile when radio stations are aggregated across a Library scope. */
+  serverId?: string;
   name: string;
   streamUrl: string;
   homepageUrl?: string;

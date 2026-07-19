@@ -5,9 +5,9 @@ import { open } from '@tauri-apps/plugin-shell';
 import type { InternetRadioStation } from '@/lib/api/subsonicTypes';
 import { useDragDrop, useDragSource } from '@/lib/dnd/DragDropContext';
 import { CoverArtImage } from '@/cover/CoverArtImage';
-import { albumCoverRef } from '@/cover/ref';
-import { coverArtIdFromRadio } from '@/cover/ids';
+import { radioCoverRef } from '@/cover/ref';
 import { COVER_DENSE_GRID_MIN_CELL_CSS_PX } from '@/cover/layoutSizes';
+import { radioStationKey } from '@/features/radio/utils/radioStationIdentity';
 
 interface RadioCardProps {
   s: InternetRadioStation;
@@ -18,6 +18,7 @@ interface RadioCardProps {
   isManual: boolean;
   /** Navidrome ≥ 0.62 only lets admins manage stations — hides edit/delete. */
   canManage: boolean;
+  serverLabel?: string;
   dropIndicator: 'before' | 'after' | null;
   onPlay: (e: React.MouseEvent) => void;
   onDelete: (e: React.MouseEvent) => void;
@@ -30,7 +31,7 @@ interface RadioCardProps {
 }
 
 export default function RadioCard({
-  s, isActive, isPlaying, deleteConfirmId, isFavorite, isManual, canManage, dropIndicator,
+  s, isActive, isPlaying, deleteConfirmId, isFavorite, isManual, canManage, serverLabel, dropIndicator,
   onPlay, onDelete, onEdit, onFavoriteToggle, onDragEnter, onDragLeave,
   onDropOnto, onCardMouseLeave,
 }: RadioCardProps) {
@@ -38,12 +39,13 @@ export default function RadioCard({
   const cardRef = useRef<HTMLDivElement>(null);
   const lastSideRef = useRef<'before' | 'after'>('after');
   const { isDragging, payload } = useDragDrop();
+  const stationKey = radioStationKey(s);
   const isBeingDragged = isDragging && !!payload && (() => {
-    try { return JSON.parse(payload.data).id === s.id; } catch { return false; }
+    try { return JSON.parse(payload.data).id === stationKey; } catch { return false; }
   })();
 
   const dragHandlers = useDragSource(() => ({
-    data: JSON.stringify({ type: 'radio', id: s.id }),
+    data: JSON.stringify({ type: 'radio', id: stationKey }),
     label: s.name,
   }));
 
@@ -61,11 +63,11 @@ export default function RadioCard({
     if (!el) return;
     const handler = (e: Event) => {
       const data = JSON.parse((e as CustomEvent).detail?.data ?? '{}');
-      if (data.type === 'radio' && data.id !== s.id) onDropOnto(data.id, lastSideRef.current);
+      if (data.type === 'radio' && data.id !== stationKey) onDropOnto(data.id, lastSideRef.current);
     };
     el.addEventListener('psy-drop', handler);
     return () => el.removeEventListener('psy-drop', handler);
-  }, [isManual, s.id, onDropOnto]);
+  }, [isManual, stationKey, onDropOnto]);
 
   return (
     <div
@@ -90,7 +92,7 @@ export default function RadioCard({
       <div className="album-card-cover">
         {s.coverArt ? (
           <CoverArtImage
-            coverRef={albumCoverRef(coverArtIdFromRadio(s.id), coverArtIdFromRadio(s.id))}
+            coverRef={radioCoverRef(s)}
             displayCssPx={COVER_DENSE_GRID_MIN_CELL_CSS_PX}
             surface="dense"
             alt={s.name}
@@ -112,6 +114,7 @@ export default function RadioCard({
           <button
             className="album-card-details-btn"
             onClick={onPlay}
+            aria-label={isActive && isPlaying ? t('radio.stopStation') : t('radio.playStation')}
             data-tooltip={isActive && isPlaying ? t('radio.stopStation') : t('radio.playStation')}
             data-tooltip-pos="bottom"
           >
@@ -122,12 +125,13 @@ export default function RadioCard({
         {canManage && (
           <div className="playlist-card-actions">
             <button
-              className={`playlist-card-action playlist-card-action--delete ${deleteConfirmId === s.id ? 'playlist-card-action--delete-confirm' : ''}`}
+              className={`playlist-card-action playlist-card-action--delete ${deleteConfirmId === stationKey ? 'playlist-card-action--delete-confirm' : ''}`}
               onClick={onDelete}
-              data-tooltip={deleteConfirmId === s.id ? t('radio.confirmDelete') : t('radio.deleteStation')}
+              aria-label={deleteConfirmId === stationKey ? t('radio.confirmDelete') : t('radio.deleteStation')}
+              data-tooltip={deleteConfirmId === stationKey ? t('radio.confirmDelete') : t('radio.deleteStation')}
               data-tooltip-pos="bottom"
             >
-              {deleteConfirmId === s.id ? <Trash2 size={12} /> : <X size={12} />}
+              {deleteConfirmId === stationKey ? <Trash2 size={12} /> : <X size={12} />}
             </button>
           </div>
         )}
@@ -142,9 +146,11 @@ export default function RadioCard({
               {t('radio.editStation')}
             </button>
           )}
+          {serverLabel && <span>{serverLabel}</span>}
           <button
             className={`player-btn player-btn-sm radio-favorite-btn${isFavorite ? ' active' : ''}`}
             onClick={e => { e.stopPropagation(); onFavoriteToggle(); }}
+            aria-label={t(isFavorite ? 'radio.unfavorite' : 'radio.favorite')}
             data-tooltip={t(isFavorite ? 'radio.unfavorite' : 'radio.favorite')}
           >
             <Heart size={11} fill={isFavorite ? 'currentColor' : 'none'} />
@@ -154,6 +160,7 @@ export default function RadioCard({
               className="player-btn player-btn-sm"
               style={{ opacity: 0.6 }}
               onClick={() => open(s.homepageUrl!)}
+              aria-label={t('radio.openHomepage')}
               data-tooltip={t('radio.openHomepage')}
             >
               <Globe size={11} />
