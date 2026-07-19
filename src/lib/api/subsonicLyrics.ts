@@ -1,4 +1,4 @@
-import { api } from '@/lib/api/subsonicClient';
+import { api, apiForServer } from '@/lib/api/subsonicClient';
 import type { SubsonicStructuredLyrics } from '@/lib/api/subsonicTypes';
 
 export interface GetLyricsOptions {
@@ -8,6 +8,8 @@ export interface GetLyricsOptions {
    * unknown query parameter is not guaranteed to be ignored by every server.
    */
   enhanced?: boolean;
+  /** Explicit owning server for mixed-server playback. */
+  serverId?: string;
 }
 
 /**
@@ -43,13 +45,18 @@ export function pickMainStructuredLyrics(
  */
 export async function getLyricsBySongId(
   id: string,
-  { enhanced = false }: GetLyricsOptions = {},
+  { enhanced = false, serverId }: GetLyricsOptions = {},
 ): Promise<SubsonicStructuredLyrics | null> {
   try {
-    const data = await api<{ lyricsList: { structuredLyrics?: SubsonicStructuredLyrics[] } }>(
-      'getLyricsBySongId.view',
-      enhanced ? { id, enhanced: true } : { id },
-    );
+    const endpoint = 'getLyricsBySongId.view';
+    const params = enhanced ? { id, enhanced: true } : { id };
+    const data = serverId
+      ? await apiForServer<{ lyricsList: { structuredLyrics?: SubsonicStructuredLyrics[] } }>(
+          serverId,
+          endpoint,
+          params,
+        )
+      : await api<{ lyricsList: { structuredLyrics?: SubsonicStructuredLyrics[] } }>(endpoint, params);
     return pickMainStructuredLyrics(data.lyricsList?.structuredLyrics ?? []);
   } catch {
     // Server doesn't support the endpoint or track has no embedded lyrics
