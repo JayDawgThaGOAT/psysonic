@@ -23,6 +23,7 @@ pub fn list_composers(
     request: &LibraryScopeListRequest,
 ) -> Result<Vec<LibraryArtistDto>, String> {
     let scopes = non_empty_scopes(&request.scopes)?;
+    crate::scope_merge::ensure_cluster_keys_for_scopes(store, scopes)?;
     let limit = request.limit.unwrap_or(10_000).clamp(1, 10_000);
     let offset = request.offset.unwrap_or(0);
     let (cte, mut binds) = scope_cte_sql(scopes);
@@ -150,6 +151,7 @@ pub fn composer_detail(
     request: &LibraryScopeComposerDetailRequest,
 ) -> Result<LibraryScopeComposerDetailResponse, String> {
     let scopes = non_empty_scopes(&request.scopes)?;
+    crate::scope_merge::ensure_cluster_keys_for_scopes(store, scopes)?;
     let server_id = request.server_id.trim();
     let composer_id = request.composer_id.trim();
     if server_id.is_empty() || composer_id.is_empty() {
@@ -297,21 +299,23 @@ mod tests {
     #[test]
     fn browse_merges_unique_names_across_servers_and_detail_dedupes_album() {
         let store = LibraryStore::open_in_memory();
-        let repo = TrackRepository::new(&store);
-        repo.upsert_batch(&[
-            track("s1", "t1", "a1", "c1", "Composer"),
-            track("s2", "t2", "a2", "c2", "Composer"),
-        ])
-        .unwrap();
         store
-            .with_conn_mut("test", |conn| {
+            .with_conn_mut("test.composer_scope.artist", |conn| {
                 conn.execute(
-                    "UPDATE album_browse_projection SET identity_key = 'same-album'",
+                    "INSERT INTO artist(server_id, id, name, synced_at) VALUES \
+                     ('s1', 'performer', 'Performer', 1), \
+                     ('s2', 'performer', 'Performer', 1)",
                     [],
                 )?;
                 Ok(())
             })
             .unwrap();
+        let repo = TrackRepository::new(&store);
+        let mut first = track("s1", "t1", "a1", "c1", "Composer");
+        first.album = "Shared Album".into();
+        let mut second = track("s2", "t2", "a2", "c2", "Composer");
+        second.album = "Shared Album".into();
+        repo.upsert_batch(&[first, second]).unwrap();
 
         let composers = list_composers(
             &store,

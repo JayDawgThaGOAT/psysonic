@@ -208,6 +208,10 @@ impl<'a> TrackRepository<'a> {
                         sync_track_genre_row(&tx, r)?;
                     }
                     drop(upsert);
+                    crate::identity::mark_cluster_keys_dirty(
+                        &tx,
+                        rows.iter().map(|row| row.server_id.as_str()),
+                    )?;
                     crate::browse_projection::refresh_album_scopes(&tx, affected_album_scopes)?;
                     tx.commit()?;
                     Ok(())
@@ -762,6 +766,10 @@ impl<'a> TrackRepository<'a> {
 
                 drop(upsert);
                 drop(remap_lookup);
+                crate::identity::mark_cluster_keys_dirty(
+                    &tx,
+                    rows.iter().map(|row| row.server_id.as_str()),
+                )?;
                 crate::browse_projection::refresh_album_scopes(&tx, affected_album_scopes)?;
 
                 tx.commit()?;

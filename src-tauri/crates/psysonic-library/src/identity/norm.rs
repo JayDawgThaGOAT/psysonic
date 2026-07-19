@@ -23,7 +23,8 @@ pub(crate) const KEY_SEP: char = '\u{001f}';
 /// v2: locale-aware folding (ß→ss, æ→ae, œ→oe, Romanian ș/ț, Cyrillic ё/й).
 /// v3: artist keys use the canonical artist entity name when the track has an artist id.
 /// v4: physical albums use one canonical or server-qualified album key.
-pub const NORM_VERSION: &str = "4";
+/// v5: materialized album browse rows use the same physical-album identity partition.
+pub const NORM_VERSION: &str = "5";
 
 /// Normalize one identity field. Returns `None` when input is empty/whitespace-only
 /// or when normalization strips everything (punctuation-only, etc.).

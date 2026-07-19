@@ -147,28 +147,11 @@ pub(crate) fn refresh_album_scopes(
         "UPDATE album_browse_projection SET identity_key = ?4 \
          WHERE server_id = ?1 AND library_id = ?2 AND album_id = ?3",
     )?;
-    let mut identity_source = tx.prepare_cached(
-        "SELECT name, artist FROM album_browse_projection \
-         WHERE server_id = ?1 AND library_id = ?2 AND album_id = ?3",
-    )?;
     for (server_id, library_id, album_id) in &scopes {
         delete.execute(params![server_id, library_id, album_id])?;
         insert.execute(params![server_id, library_id, album_id])?;
-        let source = identity_source
-            .query_row(params![server_id, library_id, album_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            })
-            .optional()?;
-        if let Some((name, artist)) = source {
-            let identity_key = crate::identity::build_track_cluster_keys(
-                artist.as_deref(),
-                "",
-                &name,
-                artist.as_deref(),
-            )
-            .album_key;
-            update_identity.execute(params![server_id, library_id, album_id, identity_key])?;
-        }
+        let identity_key = crate::identity::concrete_physical_album_key(server_id, album_id);
+        update_identity.execute(params![server_id, library_id, album_id, identity_key])?;
     }
     crate::composer_projection::refresh_album_scopes(tx, &scopes)?;
     Ok(())
@@ -196,15 +179,13 @@ pub(crate) fn rebuild_server(tx: &Transaction<'_>, server_id: &str) -> rusqlite:
         params![server_id],
     )?;
     let mut stmt = tx.prepare(
-        "SELECT library_id, album_id, name, artist FROM album_browse_projection WHERE server_id = ?1",
+        "SELECT library_id, album_id FROM album_browse_projection WHERE server_id = ?1",
     )?;
     let rows = stmt
         .query_map(params![server_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -213,17 +194,48 @@ pub(crate) fn rebuild_server(tx: &Transaction<'_>, server_id: &str) -> rusqlite:
         "UPDATE album_browse_projection SET identity_key = ?4 \
          WHERE server_id = ?1 AND library_id = ?2 AND album_id = ?3",
     )?;
-    for (library_id, album_id, name, artist) in rows {
-        let identity_key = crate::identity::build_track_cluster_keys(
-            artist.as_deref(),
-            "",
-            &name,
-            artist.as_deref(),
-        )
-        .album_key;
+    for (library_id, album_id) in rows {
+        let identity_key = crate::identity::concrete_physical_album_key(server_id, &album_id);
         update.execute(params![server_id, library_id, album_id, identity_key])?;
     }
     crate::composer_projection::rebuild_scope(tx, server_id, "")?;
+    Ok(())
+}
+
+/// Keep materialized album browse partitions aligned with the cluster sidecar.
+/// Every physical album gets one unanimous cluster key or a server-qualified fallback.
+pub(crate) fn reconcile_identity_keys(
+    tx: &Transaction<'_>,
+    server_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    let server_filter = if server_id.is_some() {
+        " AND ap.server_id = ?1"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "UPDATE album_browse_projection AS ap \
+         SET identity_key = COALESCE(( \
+           SELECT CASE \
+             WHEN COUNT(*) > 0 \
+              AND COUNT(*) = COUNT(ck.album_key) \
+              AND COUNT(DISTINCT ck.album_key) = 1 \
+             THEN MAX(ck.album_key) \
+           END \
+           FROM track t \
+           LEFT JOIN cluster.track_cluster_key ck \
+             ON ck.server_id = t.server_id AND ck.track_id = t.id \
+           WHERE t.server_id = ap.server_id AND t.album_id = ap.album_id AND t.deleted = 0 \
+         ), 'physical:' || length(ap.server_id) || ':' || ap.server_id || ':' || ap.album_id) \
+         WHERE EXISTS ( \
+           SELECT 1 FROM track t \
+           WHERE t.server_id = ap.server_id AND t.album_id = ap.album_id AND t.deleted = 0 \
+         ){server_filter}"
+    );
+    match server_id {
+        Some(server_id) => tx.execute(&sql, params![server_id])?,
+        None => tx.execute(&sql, [])?,
+    };
     Ok(())
 }
 
@@ -462,6 +474,10 @@ fn run_backfill_impl(store: &LibraryStore, app: Option<&AppHandle>) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::{
+        LibraryScopeBrowseEntity, LibraryScopeBrowseRequest, LibraryScopePair, LibrarySortClause,
+        SortDir,
+    };
     use crate::repos::{TrackRepository, TrackRow};
 
     fn track(id: &str, album_id: &str, album: &str, library_id: &str) -> TrackRow {
@@ -503,6 +519,58 @@ mod tests {
             synced_at: 1,
             raw_json: "{}".into(),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn album_track(
+        server_id: &str,
+        id: &str,
+        artist: &str,
+        artist_id: &str,
+        album_id: &str,
+        album: &str,
+        album_artist: &str,
+        library_id: &str,
+    ) -> TrackRow {
+        let mut row = track(id, album_id, album, library_id);
+        row.server_id = server_id.into();
+        row.artist = Some(artist.into());
+        row.artist_id = Some(artist_id.into());
+        row.album_artist = Some(album_artist.into());
+        row
+    }
+
+    fn insert_artist(store: &LibraryStore, server_id: &str, artist_id: &str, name: &str) {
+        store
+            .with_conn_mut("test.browse_projection.artist", |conn| {
+                conn.execute(
+                    "INSERT INTO artist(server_id, id, name, synced_at) VALUES (?1, ?2, ?3, 1)",
+                    params![server_id, artist_id, name],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn browse_albums(
+        store: &LibraryStore,
+        scopes: Vec<LibraryScopePair>,
+    ) -> Vec<crate::dto::LibraryAlbumDto> {
+        crate::scope_browse::browse(
+            store,
+            &LibraryScopeBrowseRequest {
+                entity: LibraryScopeBrowseEntity::Album,
+                scopes,
+                sort: vec![LibrarySortClause {
+                    field: "name".into(),
+                    dir: SortDir::Asc,
+                }],
+                limit: 20,
+                cursor: None,
+            },
+        )
+        .unwrap()
+        .albums
     }
 
     #[test]
@@ -559,5 +627,128 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn ordinary_browse_reconciles_partial_keys_to_one_canonical_album_partition() {
+        let store = LibraryStore::open_in_memory();
+        insert_artist(&store, "s1", "artist-1", "Metallica");
+        insert_artist(&store, "s2", "artist-2", "Metallica");
+        TrackRepository::new(&store)
+            .upsert_batch(&[album_track(
+                "s1",
+                "t1",
+                "Metallica",
+                "artist-1",
+                "album-1",
+                "S&M2",
+                "Metallica & San Francisco Symphony",
+                "lib-a",
+            )])
+            .unwrap();
+        crate::identity::rebuild_cluster_keys(&store, None).unwrap();
+
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                album_track(
+                    "s1", "t2", "Metallica", "artist-1", "album-1", "S&M2",
+                    "Metallica", "lib-b",
+                ),
+                album_track(
+                    "s2", "t3", "Metallica", "artist-2", "album-2", "S&M2",
+                    "Metallica", "lib-c",
+                ),
+            ])
+            .unwrap();
+
+        let albums = browse_albums(
+            &store,
+            vec![
+                LibraryScopePair {
+                    server_id: "s1".into(),
+                    library_id: "lib-a".into(),
+                },
+                LibraryScopePair {
+                    server_id: "s1".into(),
+                    library_id: "lib-b".into(),
+                },
+                LibraryScopePair {
+                    server_id: "s2".into(),
+                    library_id: "lib-c".into(),
+                },
+            ],
+        );
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].server_id, "s1");
+        assert_eq!(albums[0].id, "album-1");
+
+        let keys = store
+            .with_read_conn(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT identity_key FROM album_browse_projection \
+                     WHERE album_id IN ('album-1', 'album-2')",
+                )?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(keys.len(), 1);
+    }
+
+    #[test]
+    fn ordinary_browse_keeps_ambiguous_physical_albums_separate() {
+        let store = LibraryStore::open_in_memory();
+        for (server, artist_id, name) in [
+            ("s1", "s1-a", "Artist A"),
+            ("s1", "s1-b", "Artist B"),
+            ("s2", "s2-a", "Artist A"),
+            ("s2", "s2-b", "Artist B"),
+        ] {
+            insert_artist(&store, server, artist_id, name);
+        }
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                album_track(
+                    "s1", "s1-t1", "Artist A", "s1-a", "s1-album", "Split",
+                    "Various Artists", "lib-a",
+                ),
+                album_track(
+                    "s1", "s1-t2", "Artist B", "s1-b", "s1-album", "Split",
+                    "Various Artists", "lib-a",
+                ),
+                album_track(
+                    "s2", "s2-t1", "Artist A", "s2-a", "s2-album", "Split",
+                    "Various Artists", "lib-b",
+                ),
+                album_track(
+                    "s2", "s2-t2", "Artist B", "s2-b", "s2-album", "Split",
+                    "Various Artists", "lib-b",
+                ),
+            ])
+            .unwrap();
+
+        let albums = browse_albums(
+            &store,
+            vec![
+                LibraryScopePair {
+                    server_id: "s1".into(),
+                    library_id: "lib-a".into(),
+                },
+                LibraryScopePair {
+                    server_id: "s2".into(),
+                    library_id: "lib-b".into(),
+                },
+            ],
+        );
+        assert_eq!(albums.len(), 2);
+        assert_eq!(
+            albums
+                .iter()
+                .map(|album| album.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["s1-album", "s2-album"]
+        );
     }
 }

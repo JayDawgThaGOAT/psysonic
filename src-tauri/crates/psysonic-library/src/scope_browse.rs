@@ -304,6 +304,9 @@ fn browse_albums(
 ) -> Result<LibraryScopeBrowseResponse, String> {
     let sort = album_sort(&request.sort)?;
     let cursor = parse_cursor(request.cursor.as_deref(), &request.scopes, sort)?;
+    if cursor.is_none() {
+        crate::scope_merge::ensure_cluster_keys_for_scopes(store, &request.scopes)?;
+    }
     let limit = request.limit.clamp(1, 200) as usize;
     let candidate_limit = CANDIDATE_PAGE_SIZE.max(limit.saturating_add(1));
     let mut candidates = Vec::with_capacity(request.scopes.len());

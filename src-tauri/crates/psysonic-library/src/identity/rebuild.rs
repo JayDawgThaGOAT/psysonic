@@ -1,5 +1,6 @@
 //! Batch rebuild of `cluster.track_cluster_key` from live `track` rows.
 
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
@@ -21,6 +22,29 @@ ON CONFLICT(server_id, track_id) DO UPDATE SET
   artist_key   = excluded.artist_key,
   duration_sec = excluded.duration_sec
 ";
+
+const DIRTY_META_PREFIX: &str = "dirty_server:";
+
+fn dirty_meta_key(server_id: &str) -> String {
+    format!("{DIRTY_META_PREFIX}{server_id}")
+}
+
+pub(crate) fn mark_cluster_keys_dirty<'a>(
+    tx: &Transaction<'_>,
+    server_ids: impl IntoIterator<Item = &'a str>,
+) -> rusqlite::Result<()> {
+    let mut seen = HashSet::new();
+    let mut statement = tx.prepare_cached(
+        "INSERT INTO cluster.cluster_meta(key, value) VALUES (?1, '1') \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )?;
+    for server_id in server_ids {
+        if seen.insert(server_id) {
+            statement.execute(params![dirty_meta_key(server_id)])?;
+        }
+    }
+    Ok(())
+}
 
 pub(crate) fn delete_cluster_keys_for_tracks(
     tx: &Transaction<'_>,
@@ -150,7 +174,7 @@ type SourceTrackRow = (
     i64,
 );
 
-fn concrete_physical_album_key(server_id: &str, album_id: &str) -> String {
+pub(crate) fn concrete_physical_album_key(server_id: &str, album_id: &str) -> String {
     format!("physical:{}:{server_id}:{album_id}", server_id.len())
 }
 
@@ -283,6 +307,21 @@ pub fn rebuild_cluster_keys(store: &LibraryStore, server_id: Option<&str>) -> Re
                 [],
             )?;
         }
+        crate::browse_projection::reconcile_identity_keys(&tx, server_id)?;
+        match server_id {
+            Some(server_id) => {
+                tx.execute(
+                    "DELETE FROM cluster.cluster_meta WHERE key = ?1",
+                    params![dirty_meta_key(server_id)],
+                )?;
+            }
+            None => {
+                tx.execute(
+                    "DELETE FROM cluster.cluster_meta WHERE key LIKE ?1",
+                    params![format!("{DIRTY_META_PREFIX}%")],
+                )?;
+            }
+        }
         set_cluster_meta(&tx)?;
         tx.commit()?;
         Ok(upserted)
@@ -294,7 +333,7 @@ pub fn rebuild_cluster_keys(store: &LibraryStore, server_id: Option<&str>) -> Re
 ///   changed) — then **all** servers are rebuilt, because [`rebuild_cluster_keys`]
 ///   stamps a single global `norm_version`; a per-server rebuild would flip the
 ///   gate and strand every other server's stale keys; or
-/// - this server has tracks but no keys yet (fresh index / newly synced server).
+/// - this server has live tracks missing sidecar keys (fresh or partially synced index).
 pub fn ensure_cluster_keys_built(store: &LibraryStore, server_id: &str) -> Result<(), String> {
     let rebuild_all = store
         .with_read_conn(cluster_rebuild_needed)
@@ -313,12 +352,20 @@ pub fn ensure_cluster_keys_built(store: &LibraryStore, server_id: &str) -> Resul
             if track_count == 0 {
                 return Ok(false);
             }
-            let key_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM cluster.track_cluster_key WHERE server_id = ?1",
-                [server_id],
+            let needs_rebuild: bool = conn.query_row(
+                "SELECT EXISTS( \
+                   SELECT 1 FROM track t \
+                   LEFT JOIN cluster.track_cluster_key ck \
+                     ON ck.server_id = t.server_id AND ck.track_id = t.id \
+                   WHERE t.server_id = ?1 AND t.deleted = 0 AND ck.track_id IS NULL \
+                   LIMIT 1 \
+                 ) OR EXISTS( \
+                   SELECT 1 FROM cluster.cluster_meta WHERE key = ?2 \
+                 )",
+                params![server_id, dirty_meta_key(server_id)],
                 |r| r.get(0),
             )?;
-            Ok(key_count == 0)
+            Ok(needs_rebuild)
         })
         .map_err(|e| e.to_string())?;
     if needs_rebuild {
