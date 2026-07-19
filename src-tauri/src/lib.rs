@@ -73,14 +73,18 @@ fn scheduler_idle_payload(
     server_id: &str,
     library_scope: &str,
 ) -> Option<psysonic_library::LibrarySyncIdlePayload> {
-    report.completed_delta().then(|| {
-        psysonic_library::LibrarySyncIdlePayload::ok(
-            server_id,
-            library_scope,
-            "delta_sync",
-            "background",
-        )
-    })
+    report
+        .delta
+        .as_ref()
+        .is_some_and(|delta| !delta.deferred_scanning && !delta.up_to_date)
+        .then(|| {
+            psysonic_library::LibrarySyncIdlePayload::ok(
+                server_id,
+                library_scope,
+                "delta_sync",
+                "background",
+            )
+        })
 }
 
 /// Shared handle to OS media controls (MPRIS2 on Linux, Now Playing on macOS, SMTC on Windows).
@@ -1461,7 +1465,7 @@ mod scheduler_driver_tests {
     }
 
     #[test]
-    fn scheduler_idle_payload_only_follows_completed_delta() {
+    fn scheduler_idle_payload_only_follows_refreshable_delta() {
         let skipped = psysonic_library::sync::scheduler::SchedulerTickReport {
             skipped_not_due: true,
             skipped_bulk_paused: false,
@@ -1471,11 +1475,26 @@ mod scheduler_driver_tests {
         };
         assert!(scheduler_idle_payload(&skipped, "s1", "").is_none());
 
+        let up_to_date = psysonic_library::sync::scheduler::SchedulerTickReport {
+            skipped_not_due: false,
+            skipped_bulk_paused: false,
+            skipped_sync_pass_active: false,
+            delta: Some(psysonic_library::sync::delta::DeltaSyncReport {
+                up_to_date: true,
+                ..Default::default()
+            }),
+            next_poll_at_ms: 1,
+        };
+        assert!(scheduler_idle_payload(&up_to_date, "s1", "").is_none());
+
         let completed = psysonic_library::sync::scheduler::SchedulerTickReport {
             skipped_not_due: false,
             skipped_bulk_paused: false,
             skipped_sync_pass_active: false,
-            delta: Some(psysonic_library::sync::delta::DeltaSyncReport::default()),
+            delta: Some(psysonic_library::sync::delta::DeltaSyncReport {
+                changed_count: 1,
+                ..Default::default()
+            }),
             next_poll_at_ms: 1,
         };
         let payload = scheduler_idle_payload(&completed, "s1", "scope").unwrap();
