@@ -5,11 +5,13 @@ const {
   librarySelectionMock,
   uploadArtistImageMock,
   findServerMock,
+  similarSongsRequestCountMock,
 } = vi.hoisted(() => ({
   apiForServerMock: vi.fn(),
   librarySelectionMock: vi.fn<() => string[]>(() => []),
   uploadArtistImageMock: vi.fn(),
   findServerMock: vi.fn(),
+  similarSongsRequestCountMock: vi.fn((count: number) => count),
 }));
 
 vi.mock('@/generated/bindings', () => ({
@@ -35,13 +37,14 @@ vi.mock('@/lib/api/subsonicClient', () => ({
 vi.mock('@/lib/api/subsonicLibrary', () => ({
   filterSongsToActiveLibrary: async (songs: unknown[]) => songs,
   filterSongsToServerLibrary: async (songs: unknown[]) => songs,
-  similarSongsRequestCount: (count: number) => count,
+  similarSongsRequestCount: similarSongsRequestCountMock,
 }));
 
 import {
   getArtistForServer,
   getArtistInfoForServer,
   getArtistsForServer,
+  getSimilarSongsForServer,
   getSimilarSongs2ForServer,
   getTopSongsForServer,
   uploadArtistImageForServer,
@@ -57,6 +60,7 @@ describe('explicit-server artist wrappers', () => {
     librarySelectionMock.mockReturnValue([]);
     uploadArtistImageMock.mockReset();
     findServerMock.mockReset();
+    similarSongsRequestCountMock.mockClear();
   });
 
   it('preserves multi-folder fan-out, timeout, deduplication, and stamping', async () => {
@@ -148,6 +152,23 @@ describe('explicit-server artist wrappers', () => {
       'srv-similar',
       'getSimilarSongs2.view',
       expect.objectContaining({ id: 'seed', count: 12 }),
+    );
+    expect(similarSongsRequestCountMock).toHaveBeenCalledWith(12, 'srv-similar');
+  });
+
+  it('routes legacy similar songs through the explicit owner scope', async () => {
+    apiForServerMock.mockResolvedValue({
+      similarSongs: { song: { id: 'similar-legacy', title: 'Similar' } },
+    });
+
+    await expect(getSimilarSongsForServer('srv-legacy', 'seed', 7)).resolves.toEqual([
+      { id: 'similar-legacy', title: 'Similar', serverId: 'srv-legacy' },
+    ]);
+    expect(similarSongsRequestCountMock).toHaveBeenCalledWith(7, 'srv-legacy');
+    expect(apiForServerMock).toHaveBeenCalledWith(
+      'srv-legacy',
+      'getSimilarSongs.view',
+      expect.objectContaining({ id: 'seed', count: 7 }),
     );
   });
 

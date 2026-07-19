@@ -5,6 +5,7 @@ import {
   clearRadioSessionSeenIds,
   deleteRadioSessionSeen,
   getCurrentRadioArtistId,
+  getCurrentRadioServerId,
   hasRadioSessionSeen,
   isRadioFetching,
   setCurrentRadioArtistId,
@@ -25,13 +26,16 @@ describe('radioFetching', () => {
   });
 });
 
-describe('currentRadioArtistId', () => {
-  it('starts null + round-trips', () => {
+describe('current radio seed', () => {
+  it('round-trips artist and owner together', () => {
     expect(getCurrentRadioArtistId()).toBeNull();
-    setCurrentRadioArtistId('artist-1');
+    expect(getCurrentRadioServerId()).toBeNull();
+    setCurrentRadioArtistId('artist-1', 'server-a');
     expect(getCurrentRadioArtistId()).toBe('artist-1');
+    expect(getCurrentRadioServerId()).toBe('server-a');
     setCurrentRadioArtistId(null);
     expect(getCurrentRadioArtistId()).toBeNull();
+    expect(getCurrentRadioServerId()).toBeNull();
   });
 });
 
@@ -64,13 +68,14 @@ describe('radioSessionSeenIds', () => {
 });
 
 describe('_resetRadioSessionStateForTest', () => {
-  it('resets all three pieces of state', () => {
+  it('resets all session state', () => {
     setRadioFetching(true);
-    setCurrentRadioArtistId('artist-1');
+    setCurrentRadioArtistId('artist-1', 'server-a');
     addRadioSessionSeen('t1');
     _resetRadioSessionStateForTest();
     expect(isRadioFetching()).toBe(false);
     expect(getCurrentRadioArtistId()).toBeNull();
+    expect(getCurrentRadioServerId()).toBeNull();
     expect(hasRadioSessionSeen('t1')).toBe(false);
   });
 });

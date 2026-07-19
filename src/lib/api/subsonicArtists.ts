@@ -213,7 +213,7 @@ export async function getSimilarSongs2ForServer(
   count = 50,
 ): Promise<SubsonicSong[]> {
   try {
-    const requestCount = similarSongsRequestCount(count);
+    const requestCount = similarSongsRequestCount(count, serverId);
     const data = await apiForServer<{ similarSongs2: { song: SubsonicSong[] } }>(
       serverId,
       'getSimilarSongs2.view',
@@ -240,7 +240,7 @@ export async function getSimilarSongsForServer(
   count = 50,
 ): Promise<SubsonicSong[]> {
   try {
-    const requestCount = similarSongsRequestCount(count);
+    const requestCount = similarSongsRequestCount(count, serverId);
     const data = await apiForServer<{ similarSongs: { song: SubsonicSong | SubsonicSong[] } }>(
       serverId,
       'getSimilarSongs.view',

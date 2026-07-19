@@ -9,6 +9,7 @@ import { getRandomSongs } from '@/lib/api/subsonicLibrary';
 import type { SubsonicAlbum, SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 /** Default target list size for Random Mix; per-call override via `fetchRandomMixSongsUntilFull(c, { targetSize })`. */
 export const RANDOM_MIX_TARGET_SIZE = 50;
@@ -67,9 +68,15 @@ function numRating(v: unknown): number | undefined {
 }
 
 /** Optimistic stars from the UI (`setUserRatingOverride`) take precedence over API payloads. */
-function mixRatingOverrideForEntity(entityId: string | undefined): number | undefined {
+function mixRatingOverrideForEntity(
+  entityId: string | undefined,
+  serverId?: string,
+): number | undefined {
   if (!entityId) return undefined;
-  const o = usePlayerStore.getState().userRatingOverrides[entityId];
+  const overrides = usePlayerStore.getState().userRatingOverrides;
+  const o = serverId
+    ? ownedOverrideValue(overrides, { id: entityId, serverId })
+    : overrides[entityId];
   if (o === undefined || o <= 0) return undefined;
   return o;
 }
@@ -123,7 +130,7 @@ function artistEntityIdForMixRating(song: SubsonicSong): string | undefined {
 /** Song-level artist rating: explicit field, then OpenSubsonic `artists` / `albumArtists` on the child. */
 function effectiveArtistRatingForFilter(song: SubsonicSong): number | undefined {
   const prefer = artistEntityIdForMixRating(song);
-  const fromOverride = mixRatingOverrideForEntity(prefer);
+  const fromOverride = mixRatingOverrideForEntity(prefer, song.serverId);
   if (fromOverride !== undefined) return fromOverride;
   const d = numRating(song.artistUserRating);
   if (d !== undefined) return d;
@@ -134,14 +141,14 @@ function effectiveArtistRatingForFilter(song: SubsonicSong): number | undefined 
 
 /** Song-level album (parent) rating when the server puts it on the child payload. */
 function effectiveAlbumRatingOnSong(song: SubsonicSong): number | undefined {
-  const fromOverride = mixRatingOverrideForEntity(song.albumId);
+  const fromOverride = mixRatingOverrideForEntity(song.albumId, song.serverId);
   if (fromOverride !== undefined) return fromOverride;
   const x = song as SubsonicSong & { albumRating?: unknown };
   return numRating(song.albumUserRating ?? x.albumRating);
 }
 
 function songTrackStarRatingForMix(song: SubsonicSong): number | undefined {
-  const fromOverride = mixRatingOverrideForEntity(song.id);
+  const fromOverride = mixRatingOverrideForEntity(song.id, song.serverId);
   if (fromOverride !== undefined) return fromOverride;
   const x = song as SubsonicSong & { rating?: unknown };
   return numRating(song.userRating ?? x.rating);
@@ -297,24 +304,29 @@ export async function filterTopArtistsForMixRatings<T extends { id: string }>(
 export async function enrichSongsForMixRatingFilter(
   songs: SubsonicSong[],
   c: MixMinRatingsConfig,
+  ownerServerId?: string,
 ): Promise<SubsonicSong[]> {
   if (!c.enabled || (c.minArtist <= 0 && c.minAlbum <= 0)) return songs;
-  const serverId = useAuthStore.getState().activeServerId;
+  const serverId = ownerServerId ?? useAuthStore.getState().activeServerId;
   if (!serverId) return songs;
+  const ownedSongs = songs.map(song => ({
+    ...song,
+    serverId: ownerServerId ?? song.serverId ?? serverId,
+  }));
   const artistIds =
     c.minArtist > 0
-      ? [...new Set(songs.map(s => artistEntityIdForMixRating(s)).filter((id): id is string => !!id))]
+      ? [...new Set(ownedSongs.map(s => artistEntityIdForMixRating(s)).filter((id): id is string => !!id))]
       : [];
   const albumIds =
     c.minAlbum > 0
-      ? [...new Set(songs.filter(s => s.albumId).map(s => s.albumId!))]
+      ? [...new Set(ownedSongs.filter(s => s.albumId).map(s => s.albumId!))]
       : [];
   const ratings = await resolveEntityUserRatings([
     ...artistIds.map(entityId => ({ serverId, entityKind: 'artist' as const, entityId })),
     ...albumIds.map(entityId => ({ serverId, entityKind: 'album' as const, entityId })),
   ]);
-  if (!ratings.size) return songs;
-  return songs.map(s => {
+  if (!ratings.size) return ownedSongs;
+  return ownedSongs.map(s => {
     const aid = artistEntityIdForMixRating(s);
     const payloadArtistRating = effectiveArtistRatingForFilter(s);
     const payloadAlbumRating = effectiveAlbumRatingOnSong(s);

@@ -105,8 +105,8 @@ export interface PlayerState {
    *  pushes any earlier Play-Next items down (default). Falls back to
    *  `playTrack` when nothing is currently playing. */
   playNext: (tracks: Track[]) => void;
-  enqueueRadio: (tracks: Track[], artistId?: string) => void;
-  setRadioArtistId: (artistId: string) => void;
+  enqueueRadio: (tracks: Track[], artistId?: string, serverId?: string) => void;
+  setRadioArtistId: (artistId: string, serverId?: string) => void;
   /** For Lucky Mix: drop upcoming tail; keep the currently playing item only.
    * When `skipQueueUndo` is true, callers must push undo separately (macro rebuild). */
   pruneUpcomingToCurrent: (skipQueueUndo?: boolean) => void;

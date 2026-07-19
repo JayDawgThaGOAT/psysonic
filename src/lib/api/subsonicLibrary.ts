@@ -204,12 +204,13 @@ export async function filterAlbumsToActiveLibrary(albums: SubsonicAlbum[]): Prom
 }
 
 /** When scoped to one library, ask the server for more similar tracks — many will be filtered out client-side. */
-export function similarSongsRequestCount(desired: number): number {
+export function similarSongsRequestCount(desired: number, serverId?: string): number {
   if (getLuckyMixLibraryScopeOverride()) {
     return Math.min(300, Math.max(desired, desired * 4));
   }
   const { activeServerId, musicLibraryFilterByServer } = useAuthStore.getState();
-  const f = activeServerId ? musicLibraryFilterByServer[activeServerId] : undefined;
+  const ownerServerId = serverId ?? activeServerId;
+  const f = ownerServerId ? musicLibraryFilterByServer[ownerServerId] : undefined;
   if (f === undefined || f === 'all') return desired;
   return Math.min(300, Math.max(desired, desired * 4));
 }

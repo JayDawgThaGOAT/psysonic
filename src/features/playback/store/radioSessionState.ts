@@ -7,10 +7,10 @@
  *    when both `next()` and the proactive top-up path fire close
  *    together.
  *
- *  - **currentRadioArtistId** — the seed artist that started the
- *    current radio session. Survives track advances so subsequent
- *    top-ups can resolve a new tail even when the now-playing track
- *    has no `artistId` of its own.
+ *  - **currentRadioArtistId / currentRadioServerId** — the owned seed
+ *    artist that started the current radio session. Survives track
+ *    advances so subsequent top-ups can resolve a new tail even when
+ *    the now-playing track has no `artistId` of its own.
  *
  *  - **radioSessionSeenIds** — every id the current radio session has
  *    enqueued so far, *including* entries that were trimmed off the
@@ -23,6 +23,7 @@
 
 let radioFetching = false;
 let currentRadioArtistId: string | null = null;
+let currentRadioServerId: string | null = null;
 let radioSessionSeenIds = new Set<string>();
 
 export function isRadioFetching(): boolean {
@@ -37,8 +38,13 @@ export function getCurrentRadioArtistId(): string | null {
   return currentRadioArtistId;
 }
 
-export function setCurrentRadioArtistId(id: string | null): void {
+export function getCurrentRadioServerId(): string | null {
+  return currentRadioServerId;
+}
+
+export function setCurrentRadioArtistId(id: string | null, serverId: string | null = null): void {
   currentRadioArtistId = id;
+  currentRadioServerId = id ? serverId : null;
 }
 
 export function hasRadioSessionSeen(id: string): boolean {
@@ -58,9 +64,10 @@ export function clearRadioSessionSeenIds(): void {
   radioSessionSeenIds = new Set();
 }
 
-/** Test-only: reset all three pieces of state. */
+/** Test-only: reset all session state. */
 export function _resetRadioSessionStateForTest(): void {
   radioFetching = false;
   currentRadioArtistId = null;
+  currentRadioServerId = null;
   radioSessionSeenIds = new Set();
 }

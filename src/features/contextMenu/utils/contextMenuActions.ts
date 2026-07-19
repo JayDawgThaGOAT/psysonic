@@ -64,7 +64,7 @@ export async function startRadio(
         : shuffleArray(
             top.map(songToTrack).filter(t => t.id !== seedTrack.id).map(t => ({ ...t, radioAdded: true as const })),
           );
-      if (radioTracks.length > 0) usePlayerStore.getState().enqueueRadio(radioTracks, artistId);
+      if (radioTracks.length > 0) usePlayerStore.getState().enqueueRadio(radioTracks, artistId, ownerServerId);
     } catch (e) {
       console.error('Failed to load radio queue', e);
     }
@@ -89,18 +89,18 @@ export async function startRadio(
       if (fallback.length === 0) return;
       const state = usePlayerStore.getState();
       if (state.currentTrack) {
-        state.enqueueRadio(fallback, artistId);
+        state.enqueueRadio(fallback, artistId, ownerServerId);
       } else {
-        state.setRadioArtistId(artistId);
+        state.setRadioArtistId(artistId, ownerServerId);
         playTrack(fallback[0], fallback);
       }
       return;
     }
     const state = usePlayerStore.getState();
     if (state.currentTrack) {
-      state.enqueueRadio([topTracks[0]], artistId);
+      state.enqueueRadio([topTracks[0]], artistId, ownerServerId);
     } else {
-      state.setRadioArtistId(artistId);
+      state.setRadioArtistId(artistId, ownerServerId);
       playTrack(topTracks[0], [topTracks[0]]);
     }
     similarPromise.then(similar => {
@@ -118,7 +118,7 @@ export async function startRadio(
         .slice(queueIndex + 1)
         .filter(r => r.radioAdded)
         .map(r => resolveQueueTrack(r));
-      usePlayerStore.getState().enqueueRadio([...pendingRadio, ...similarTracks], artistId);
+      usePlayerStore.getState().enqueueRadio([...pendingRadio, ...similarTracks], artistId, ownerServerId);
     });
   } catch (e) {
     console.error('Failed to start radio', e);
@@ -146,7 +146,7 @@ export async function startInstantMix(
     );
     if (shuffled.length > 0) {
       const aid = song.artistId?.trim() || undefined;
-      usePlayerStore.getState().enqueueRadio(shuffled, aid);
+      usePlayerStore.getState().enqueueRadio(shuffled, aid, serverId);
     }
   } catch (e) {
     console.error('Instant mix failed', e);

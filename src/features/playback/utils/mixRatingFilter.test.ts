@@ -92,6 +92,26 @@ describe('enrichSongsForMixRatingFilter', () => {
     expect(out[0].artistUserRating).toBe(5);
     expect(passesMixMinRatings(out[0], enabledArtist2)).toBe(true);
   });
+
+  it('uses and stamps the explicit owner instead of the active server', async () => {
+    vi.mocked(resolveEntityUserRatings).mockResolvedValue(new Map([
+      ['server-b\u0001artist\u0001art-1', 1],
+    ]));
+
+    const out = await enrichSongsForMixRatingFilter(
+      [song({ id: '1' })],
+      enabledArtist2,
+      'server-b',
+    );
+
+    expect(resolveEntityUserRatings).toHaveBeenCalledWith([
+      { serverId: 'server-b', entityKind: 'artist', entityId: 'art-1' },
+    ]);
+    expect(out[0]).toEqual(expect.objectContaining({
+      serverId: 'server-b',
+      artistUserRating: 1,
+    }));
+  });
 });
 
 describe('filterTopArtistsForMixRatings', () => {

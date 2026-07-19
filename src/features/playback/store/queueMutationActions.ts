@@ -15,6 +15,7 @@ import {
   clearRadioSessionSeenIds,
   deleteRadioSessionSeen,
   getCurrentRadioArtistId,
+  getCurrentRadioServerId,
   hasRadioSessionSeen,
   setCurrentRadioArtistId,
 } from '@/features/playback/store/radioSessionState';
@@ -154,19 +155,24 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       });
     },
 
-    setRadioArtistId: (artistId) => {
-      if (artistId !== getCurrentRadioArtistId()) {
+    setRadioArtistId: (artistId, serverId) => {
+      const ownerServerId = serverId ?? useAuthStore.getState().activeServerId ?? null;
+      if (artistId !== getCurrentRadioArtistId() || ownerServerId !== getCurrentRadioServerId()) {
         clearRadioSessionSeenIds();
       }
-      setCurrentRadioArtistId(artistId);
+      setCurrentRadioArtistId(artistId, ownerServerId);
     },
 
-    enqueueRadio: (tracks, artistId) => {
+    enqueueRadio: (tracks, artistId, serverId) => {
       if (artistId !== undefined) {
-        if (artistId !== getCurrentRadioArtistId()) {
+        const ownerServerId = serverId
+          ?? tracks.find(track => track.serverId)?.serverId
+          ?? useAuthStore.getState().activeServerId
+          ?? null;
+        if (artistId !== getCurrentRadioArtistId() || ownerServerId !== getCurrentRadioServerId()) {
           clearRadioSessionSeenIds();
         }
-        setCurrentRadioArtistId(artistId);
+        setCurrentRadioArtistId(artistId, ownerServerId);
       }
       pushQueueUndoFromGetter(get);
       ensureQueueServerPinned(tracks);

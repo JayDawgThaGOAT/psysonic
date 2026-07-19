@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { apiForServerMock, guardMock } = vi.hoisted(() => ({
+const { apiForServerMock, authState, guardMock } = vi.hoisted(() => ({
   apiForServerMock: vi.fn(),
+  authState: {
+    activeServerId: 'active',
+    musicLibraryFilterByServer: {} as Record<string, string>,
+    musicLibraryFilterVersion: 1,
+  },
   guardMock: vi.fn(() => true),
 }));
 
 vi.mock('@/store/authStore', () => ({
   useAuthStore: {
-    getState: () => ({
-      activeServerId: 'active',
-      musicLibraryFilterByServer: {},
-      musicLibraryFilterVersion: 1,
-    }),
+    getState: () => authState,
   },
 }));
 
@@ -41,6 +42,7 @@ import {
   getAlbumListForServer,
   getRandomSongsForServer,
   getSongForServer,
+  similarSongsRequestCount,
 } from '@/lib/api/subsonicLibrary';
 
 const album = { id: 'album-1', name: 'Album', artist: 'Artist', artistId: 'artist-1', songCount: 1, duration: 30 };
@@ -51,6 +53,8 @@ describe('explicit-server library wrappers', () => {
     apiForServerMock.mockReset();
     guardMock.mockReset();
     guardMock.mockReturnValue(true);
+    authState.activeServerId = 'active';
+    authState.musicLibraryFilterByServer = {};
   });
 
   it('forwards album-list timeout and stamps albums', async () => {
@@ -93,6 +97,13 @@ describe('explicit-server library wrappers', () => {
 
     await expect(getRandomSongsForServer('srv-offline', 5)).resolves.toEqual([]);
     expect(apiForServerMock).not.toHaveBeenCalled();
+  });
+
+  it('sizes similar-song requests from the explicit owner library scope', () => {
+    authState.musicLibraryFilterByServer = { active: 'all', 'srv-owner': 'folder-2' };
+
+    expect(similarSongsRequestCount(12, 'srv-owner')).toBe(48);
+    expect(similarSongsRequestCount(12, 'active')).toBe(12);
   });
 
   it('stamps explicit album details and song lookups', async () => {

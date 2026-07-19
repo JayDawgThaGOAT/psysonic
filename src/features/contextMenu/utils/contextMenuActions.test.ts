@@ -96,6 +96,7 @@ describe('context-menu radio ownership', () => {
     expect(mocks.enqueueRadio).toHaveBeenCalledWith(
       [expect.objectContaining({ id: 'similar', serverId: 'srv-owner', radioAdded: true })],
       'artist-1',
+      'srv-owner',
     );
   });
 
@@ -116,6 +117,7 @@ describe('context-menu radio ownership', () => {
       expect.objectContaining({ id: 'new', serverId: 'srv-b' }),
       [expect.objectContaining({ id: 'new', serverId: 'srv-b' })],
     );
+    expect(mocks.setRadioArtistId).toHaveBeenCalledWith('artist-b', 'srv-b');
   });
 
   it('builds album downloads with the album owner', async () => {
