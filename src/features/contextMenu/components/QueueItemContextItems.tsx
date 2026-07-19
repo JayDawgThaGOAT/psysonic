@@ -9,6 +9,7 @@ import StarRating from '@/ui/StarRating';
 import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/AddToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
 import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { buildAlbumDetailPath } from '@/lib/navigation/detailServerScope';
 import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export default function QueueItemContextItems(props: ContextMenuItemsProps) {
@@ -58,7 +59,9 @@ export default function QueueItemContextItems(props: ContextMenuItemsProps) {
               </div>
               <div className="context-menu-divider" />
               {song.albumId && (
-                <div className="context-menu-item" onClick={() => handleAction(() => navigateLibrary(`/album/${song.albumId}`))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => navigateLibrary(
+                  buildAlbumDetailPath(song.albumId!, { serverId: song.serverId }),
+                ))}>
                   <Disc3 size={14} /> {t('contextMenu.openAlbum')}
                 </div>
               )}
@@ -114,10 +117,10 @@ export default function QueueItemContextItems(props: ContextMenuItemsProps) {
                 />
               </div>
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('track', song.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('track', song.id, song.serverId))}>
                 <Share2 size={14} /> {t('contextMenu.shareLink')}
               </div>
-              <div className="context-menu-item" onClick={() => handleAction(() => openSongInfo(song.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => openSongInfo(song.id, song.serverId))}>
                 <Info size={14} /> {t('contextMenu.songInfo')}
               </div>
             </>

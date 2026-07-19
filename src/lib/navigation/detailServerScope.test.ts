@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { useAuthStore } from '@/store/authStore';
 import {
   appendServerQuery,
+  buildAlbumDetailPath,
   buildArtistDetailPath,
   readDetailServerId,
 } from '@/lib/navigation/detailServerScope';
@@ -40,6 +41,13 @@ describe('detailServerScope', () => {
       serverId: 'srv-b',
       search: '?lossless=1&server=old&tab=albums&server=older',
     })).toBe('/artist/art-1?lossless=1&server=srv-b&tab=albums');
+  });
+
+  it('buildAlbumDetailPath preserves search and owning server', () => {
+    expect(buildAlbumDetailPath('album-1', {
+      serverId: 'srv-b',
+      search: 'lossless=1',
+    })).toBe('/album/album-1?lossless=1&server=srv-b');
   });
 
   it('buildArtistDetailPath preserves an existing server when no owner is supplied', () => {

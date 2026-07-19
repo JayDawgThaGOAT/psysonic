@@ -180,7 +180,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
               <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('track', song.id, song.serverId))}>
                 <Share2 size={14} /> {t('contextMenu.shareLink')}
               </div>
-              <div className="context-menu-item" onClick={() => handleAction(() => openSongInfo(song.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => openSongInfo(song.id, song.serverId))}>
                 <Info size={14} /> {t('contextMenu.songInfo')}
               </div>
               {offlinePolicy.canEditPlaylist && playlistId && playlistSongIndex !== undefined && playlistSongRemove && (
@@ -261,7 +261,10 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
               )}
               <div className="context-menu-divider" />
               {song.albumId && (
-                <div className="context-menu-item" onClick={() => handleAction(() => navigateToAlbum(song.albumId!))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => navigateToAlbum(
+                  song.albumId!,
+                  { search: appendServerQuery(undefined, song.serverId) },
+                ))}>
                   <Disc3 size={14} /> {t('contextMenu.openAlbum')}
                 </div>
               )}
@@ -314,10 +317,10 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                 </div>
               )}
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('track', song.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('track', song.id, song.serverId))}>
                 <Share2 size={14} /> {t('contextMenu.shareLink')}
               </div>
-              <div className="context-menu-item" onClick={() => handleAction(() => openSongInfo(song.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => openSongInfo(song.id, song.serverId))}>
                 <Info size={14} /> {t('contextMenu.songInfo')}
               </div>
               {offlinePolicy.canFavorite && (

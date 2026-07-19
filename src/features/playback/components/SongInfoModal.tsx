@@ -1,4 +1,4 @@
-import { getSong } from '@/lib/api/subsonicLibrary';
+import { getSong, getSongForServer } from '@/lib/api/subsonicLibrary';
 import { libraryGetFacts } from '@/lib/api/library';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import React, { useEffect, useState } from 'react';
@@ -92,8 +92,11 @@ export default function SongInfoModal() {
     setEnrichment(null);
     setAbsolutePath(null);
     const songId = songInfoModal.songId;
+    const ownerServerId = songInfoModal.serverId;
     void (async () => {
-      const s = await getSong(songId);
+      const s = ownerServerId
+        ? await getSongForServer(ownerServerId, songId)
+        : await getSong(songId);
       if (cancelled) return;
       setSong(s);
       setLoading(false);
@@ -101,8 +104,7 @@ export default function SongInfoModal() {
         setEnrichment(null);
         return;
       }
-      const auth = useAuthStore.getState();
-      const sid = auth.activeServerId;
+      const sid = ownerServerId ?? useAuthStore.getState().activeServerId;
       const indexEnabled = sid ? useLibraryIndexStore.getState().isIndexEnabled(sid) : false;
       if (sid && indexEnabled && await libraryIsReady(sid)) {
         try {
@@ -121,7 +123,7 @@ export default function SongInfoModal() {
     // and we have credentials. Failures are silent — modal falls back to
     // whatever the Subsonic `path` field carried (typically nothing).
     const auth = useAuthStore.getState();
-    const sid = auth.activeServerId;
+    const sid = ownerServerId ?? auth.activeServerId;
     const profile = sid ? auth.servers.find(p => p.id === sid) : null;
     const identity = sid ? auth.subsonicServerIdentityByServer[sid] : undefined;
     const isNavidrome = identity?.type?.trim().toLowerCase() === 'navidrome';
@@ -132,7 +134,7 @@ export default function SongInfoModal() {
       });
     }
     return () => { cancelled = true; };
-  }, [songInfoModal.isOpen, songInfoModal.songId]);
+  }, [songInfoModal.isOpen, songInfoModal.songId, songInfoModal.serverId]);
 
   useEffect(() => {
     if (!songInfoModal.isOpen) return;

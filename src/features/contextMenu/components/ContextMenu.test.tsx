@@ -160,6 +160,19 @@ describe('ContextMenu — type=song', () => {
     fireEvent.click(getByText('Play Next'));
     expect(usePlayerStore.getState().contextMenu.isOpen).toBe(false);
   });
+
+  it('opens Song Info with the context track owner', () => {
+    openMenuFor('song', makeTrack({ id: 'shared', serverId: 'srv-owner' }));
+    const { getByText } = renderWithProviders(<ContextMenu />);
+
+    fireEvent.click(getByText('Song Info'));
+
+    expect(usePlayerStore.getState().songInfoModal).toEqual({
+      isOpen: true,
+      songId: 'shared',
+      serverId: 'srv-owner',
+    });
+  });
 });
 
 describe('ContextMenu — type=album', () => {

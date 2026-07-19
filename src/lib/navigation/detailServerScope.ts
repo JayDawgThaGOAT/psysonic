@@ -5,6 +5,17 @@ export interface ArtistDetailPathOptions {
   search?: string | URLSearchParams;
 }
 
+/** Build an album detail path while preserving query parameters and owning server. */
+export function buildAlbumDetailPath(
+  albumId: string,
+  options: ArtistDetailPathOptions = {},
+): string {
+  const params = new URLSearchParams(options.search ?? '');
+  if (options.serverId) params.set('server', options.serverId);
+  const query = params.toString();
+  return `/album/${albumId}${query ? `?${query}` : ''}`;
+}
+
 /** Build an artist detail path while preserving query parameters and owning server. */
 export function buildArtistDetailPath(
   artistId: string,

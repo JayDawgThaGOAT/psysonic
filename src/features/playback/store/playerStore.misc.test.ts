@@ -119,8 +119,12 @@ describe('openContextMenu / closeContextMenu', () => {
 
 describe('openSongInfo / closeSongInfo', () => {
   it('opens with the song id and clears on close', () => {
-    usePlayerStore.getState().openSongInfo('song-1');
-    expect(usePlayerStore.getState().songInfoModal).toEqual({ isOpen: true, songId: 'song-1' });
+    usePlayerStore.getState().openSongInfo('song-1', 'srv-owner');
+    expect(usePlayerStore.getState().songInfoModal).toEqual({
+      isOpen: true,
+      songId: 'song-1',
+      serverId: 'srv-owner',
+    });
 
     usePlayerStore.getState().closeSongInfo();
     expect(usePlayerStore.getState().songInfoModal).toEqual({ isOpen: false, songId: null });

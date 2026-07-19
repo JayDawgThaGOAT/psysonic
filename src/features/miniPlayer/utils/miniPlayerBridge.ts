@@ -239,14 +239,14 @@ export function initMiniPlayerBridgeOnMain(): () => void {
   });
 
   // Open the SongInfo modal in main for a given track id.
-  const songInfoUnlisten = listen<{ id: string }>('mini:song-info', (e) => {
+  const songInfoUnlisten = listen<{ id: string; serverId?: string }>('mini:song-info', (e) => {
     const id = e.payload?.id;
     if (!id) return;
     const w = getCurrentWindow();
     w.unminimize().catch(() => {});
     w.show().catch(() => {});
     w.setFocus().catch(() => {});
-    usePlayerStore.getState().openSongInfo(id);
+    usePlayerStore.getState().openSongInfo(id, e.payload?.serverId);
   });
 
   return () => {

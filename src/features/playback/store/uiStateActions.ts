@@ -81,7 +81,7 @@ export function createUiStateActions(set: SetState): Pick<
         contextMenu: { ...state.contextMenu, isOpen: false },
       })),
 
-    openSongInfo: (songId) => set({ songInfoModal: { isOpen: true, songId } }),
+    openSongInfo: (songId, serverId) => set({ songInfoModal: { isOpen: true, songId, serverId } }),
     closeSongInfo: () => set({ songInfoModal: { isOpen: false, songId: null } }),
 
     toggleQueue: () =>
