@@ -220,6 +220,8 @@ describe('MostPlayed owner-scoped artwork and actions', () => {
       },
       { libraryResolve: true },
     );
-    expect(mocks.wakeMissingMetadata).toHaveBeenCalledWith(orphanOwner);
+    await waitFor(() => {
+      expect(mocks.wakeMissingMetadata).toHaveBeenCalledWith(orphanOwner);
+    });
   });
 });
