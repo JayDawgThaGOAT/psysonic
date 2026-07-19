@@ -78,9 +78,9 @@ export function useShareSearch(query: string, onSuccess?: () => void) {
   const openShareAlbum = useCallback(() => {
     if (shareMatch?.type !== 'album' || !preview.shareAlbum) return;
     if (!activateShareSearchServer(shareMatch.payload.srv, t)) return;
-    navigateToAlbum(preview.shareAlbum.id);
+    navigateToAlbum(preview.shareAlbum.id, { serverId: shareServerId });
     onSuccess?.();
-  }, [shareMatch, preview.shareAlbum, navigateToAlbum, t, onSuccess]);
+  }, [shareMatch, preview.shareAlbum, navigateToAlbum, shareServerId, t, onSuccess]);
 
   const openShareArtist = useCallback(() => {
     if (shareMatch?.type !== 'artist' || !preview.shareArtist) return;
