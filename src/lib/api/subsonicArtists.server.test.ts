@@ -42,6 +42,7 @@ import {
   getArtistForServer,
   getArtistInfoForServer,
   getArtistsForServer,
+  getSimilarSongs2ForServer,
   getTopSongsForServer,
   uploadArtistImageForServer,
 } from '@/lib/api/subsonicArtists';
@@ -133,6 +134,21 @@ describe('explicit-server artist wrappers', () => {
       { id: 'top-1', title: 'First', serverId: 'srv-top' },
       { id: 'top-2', title: 'Second', serverId: 'srv-top' },
     ]);
+  });
+
+  it('loads and stamps similar songs for one explicit server', async () => {
+    apiForServerMock.mockResolvedValue({
+      similarSongs2: { song: [{ id: 'similar-1', title: 'Similar' }] },
+    });
+
+    await expect(getSimilarSongs2ForServer('srv-similar', 'seed', 12)).resolves.toEqual([
+      { id: 'similar-1', title: 'Similar', serverId: 'srv-similar' },
+    ]);
+    expect(apiForServerMock).toHaveBeenCalledWith(
+      'srv-similar',
+      'getSimilarSongs2.view',
+      expect.objectContaining({ id: 'seed', count: 12 }),
+    );
   });
 
   it('uploads an artist image with the explicit server credentials', async () => {

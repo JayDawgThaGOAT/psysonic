@@ -9,8 +9,8 @@ import StarRating from '@/ui/StarRating';
 import { AlbumToPlaylistSubmenu } from '@/features/contextMenu/components/AlbumArtistToPlaylistSubmenu';
 import { MultiAlbumToPlaylistSubmenu } from '@/features/contextMenu/components/MultiAlbumToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
-import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
-import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedEntityKey, ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export default function AlbumContextItems(props: ContextMenuItemsProps) {
   const {
@@ -33,7 +33,9 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
           const albumRatingDisabled = entityRatingSupport === 'track_only';
           return (
             <>
-              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(`/album/${album.id}`))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(
+                buildAlbumDetailPath(album.id, { serverId: album.serverId }),
+              ))}>
                 <Play size={14} /> {t('contextMenu.openAlbum')}
               </div>
               <div className="context-menu-item" onClick={() => handleAction(async () => {
@@ -92,7 +94,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   <StarRating
                     value={keyboardRating?.kind === 'album' && keyboardRating.id === album.id
                       ? keyboardRating.value
-                      : userRatingOverrides[album.id] ?? album.userRating ?? 0}
+                      : ownedOverrideValue(userRatingOverrides, album) ?? album.userRating ?? 0}
                     disabled={albumRatingDisabled}
                     labelKey="entityRating.albumAriaLabel"
                     onChange={r => { setKeyboardRating({ kind: 'album', id: album.id, value: r }); applyAlbumRating(album, r); }}
@@ -100,11 +102,11 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                 </div>
               )}
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('album', album.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('album', album.id, album.serverId))}>
                 <Share2 size={14} /> {t('contextMenu.shareLink')}
               </div>
               {offlinePolicy.canDownload && (
-                <div className="context-menu-item" onClick={() => handleAction(() => downloadAlbum(album.name, album.id))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => downloadAlbum(album.name, album.id, album.serverId))}>
                   <Download size={14} /> {t('contextMenu.download')}
                 </div>
               )}
@@ -134,7 +136,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
           const multiAlbumRatingId = [...albumIds].sort().join('\x1e');
           const unifiedAlbumRating = (() => {
             if (albums.length === 0) return 0;
-            const vals = albums.map(a => userRatingOverrides[a.id] ?? a.userRating ?? 0);
+            const vals = albums.map(a => ownedOverrideValue(userRatingOverrides, a) ?? a.userRating ?? 0);
             const first = vals[0];
             return vals.every(v => v === first) ? first : 0;
           })();

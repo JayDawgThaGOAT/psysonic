@@ -7,8 +7,7 @@ import {
   libraryFilterParamsForServer,
   librarySelectionForServer,
 } from '@/lib/api/subsonicClient';
-import { filterSongsToServerLibrary } from '@/lib/api/subsonicLibrary';
-import { filterSongsToActiveLibrary, similarSongsRequestCount } from '@/lib/api/subsonicLibrary';
+import { filterSongsToServerLibrary, similarSongsRequestCount } from '@/lib/api/subsonicLibrary';
 import {
   FEATURE_AUDIOMUSE_SIMILAR_TRACKS,
   OP_SIMILAR_TRACKS,
@@ -203,12 +202,26 @@ export async function getTopSongsForServer(
 }
 
 export async function getSimilarSongs2(id: string, count = 50): Promise<SubsonicSong[]> {
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) return [];
+  return getSimilarSongs2ForServer(serverId, id, count);
+}
+
+export async function getSimilarSongs2ForServer(
+  serverId: string,
+  id: string,
+  count = 50,
+): Promise<SubsonicSong[]> {
   try {
     const requestCount = similarSongsRequestCount(count);
-    const data = await api<{ similarSongs2: { song: SubsonicSong[] } }>('getSimilarSongs2.view', { id, count: requestCount, ...libraryFilterParams() });
+    const data = await apiForServer<{ similarSongs2: { song: SubsonicSong[] } }>(
+      serverId,
+      'getSimilarSongs2.view',
+      { id, count: requestCount, ...libraryFilterParamsForServer(serverId) },
+    );
     const raw = data.similarSongs2?.song ?? [];
-    const filtered = await filterSongsToActiveLibrary(raw);
-    return filtered.slice(0, count);
+    const filtered = await filterSongsToServerLibrary(raw, serverId);
+    return filtered.slice(0, count).map(song => ({ ...song, serverId }));
   } catch {
     return [];
   }
@@ -216,14 +229,28 @@ export async function getSimilarSongs2(id: string, count = 50): Promise<Subsonic
 
 /** Similar tracks for a song id (Subsonic `getSimilarSongs`) — Navidrome + AudioMuse Instant Mix. */
 export async function getSimilarSongs(id: string, count = 50): Promise<SubsonicSong[]> {
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) return [];
+  return getSimilarSongsForServer(serverId, id, count);
+}
+
+export async function getSimilarSongsForServer(
+  serverId: string,
+  id: string,
+  count = 50,
+): Promise<SubsonicSong[]> {
   try {
     const requestCount = similarSongsRequestCount(count);
-    const data = await api<{ similarSongs: { song: SubsonicSong | SubsonicSong[] } }>('getSimilarSongs.view', { id, count: requestCount, ...libraryFilterParams() });
+    const data = await apiForServer<{ similarSongs: { song: SubsonicSong | SubsonicSong[] } }>(
+      serverId,
+      'getSimilarSongs.view',
+      { id, count: requestCount, ...libraryFilterParamsForServer(serverId) },
+    );
     const raw = data.similarSongs?.song;
     if (!raw) return [];
     const list = Array.isArray(raw) ? raw : [raw];
-    const filtered = await filterSongsToActiveLibrary(list);
-    return filtered.slice(0, count);
+    const filtered = await filterSongsToServerLibrary(list, serverId);
+    return filtered.slice(0, count).map(song => ({ ...song, serverId }));
   } catch {
     return [];
   }
@@ -235,18 +262,29 @@ export async function getSimilarSongs(id: string, count = 50): Promise<SubsonicS
  * has no provider (HTTP 404) so callers can fall back.
  */
 export async function getSonicSimilarTracks(id: string, count = 50): Promise<SubsonicSong[]> {
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) return [];
+  return getSonicSimilarTracksForServer(serverId, id, count);
+}
+
+export async function getSonicSimilarTracksForServer(
+  serverId: string,
+  id: string,
+  count = 50,
+): Promise<SubsonicSong[]> {
   try {
     const requestCount = similarSongsRequestCount(count);
-    const data = await api<{ sonicMatch: Array<{ entry?: SubsonicSong }> | { entry?: SubsonicSong } }>(
+    const data = await apiForServer<{ sonicMatch: Array<{ entry?: SubsonicSong }> | { entry?: SubsonicSong } }>(
+      serverId,
       'getSonicSimilarTracks.view',
-      { id, count: requestCount, ...libraryFilterParams() },
+      { id, count: requestCount, ...libraryFilterParamsForServer(serverId) },
     );
     const raw = data.sonicMatch;
     const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
     const songs = list.map(m => m.entry).filter((e): e is SubsonicSong => !!e);
     if (songs.length === 0) return [];
-    const filtered = await filterSongsToActiveLibrary(songs);
-    return filtered.slice(0, count);
+    const filtered = await filterSongsToServerLibrary(songs, serverId);
+    return filtered.slice(0, count).map(song => ({ ...song, serverId }));
   } catch {
     return [];
   }
@@ -259,13 +297,21 @@ export async function getSonicSimilarTracks(id: string, count = 50): Promise<Sub
  */
 export async function fetchSimilarTracksRouted(songId: string, count = 50): Promise<SubsonicSong[]> {
   const { activeServerId } = useAuthStore.getState();
-  if (!activeServerId) return getSimilarSongs(songId, count);
-  const routes = resolveCallRoutesForServer(activeServerId, FEATURE_AUDIOMUSE_SIMILAR_TRACKS, OP_SIMILAR_TRACKS);
-  if (routes.length === 0) return getSimilarSongs(songId, count);
+  if (!activeServerId) return [];
+  return fetchSimilarTracksRoutedForServer(activeServerId, songId, count);
+}
+
+export async function fetchSimilarTracksRoutedForServer(
+  serverId: string,
+  songId: string,
+  count = 50,
+): Promise<SubsonicSong[]> {
+  const routes = resolveCallRoutesForServer(serverId, FEATURE_AUDIOMUSE_SIMILAR_TRACKS, OP_SIMILAR_TRACKS);
+  if (routes.length === 0) return getSimilarSongsForServer(serverId, songId, count);
   for (const route of routes) {
     const songs = route.transport === 'opensubsonic'
-      ? await getSonicSimilarTracks(songId, count)
-      : await getSimilarSongs(songId, count);
+      ? await getSonicSimilarTracksForServer(serverId, songId, count)
+      : await getSimilarSongsForServer(serverId, songId, count);
     if (songs.length > 0) return songs;
   }
   return [];

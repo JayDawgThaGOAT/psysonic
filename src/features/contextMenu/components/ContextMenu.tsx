@@ -41,6 +41,15 @@ function contextMenuSurfaceForType(type: string | null): OfflineSurface {
   }
 }
 
+function contextMenuServerIds(item: unknown): string[] {
+  const items = Array.isArray(item) ? item : [item];
+  return [...new Set(items.flatMap(candidate => {
+    if (!candidate || typeof candidate !== 'object' || !('serverId' in candidate)) return [];
+    const serverId = (candidate as { serverId?: unknown }).serverId;
+    return typeof serverId === 'string' && serverId ? [serverId] : [];
+  }))];
+}
+
 export { AddToPlaylistSubmenu };
 
 
@@ -69,9 +78,6 @@ export default function ContextMenu() {
     }))
   );
   const auth = useAuthStore();
-  const entityRatingSupport =
-    auth.activeServerId ? auth.entityRatingSupportByServer[auth.activeServerId] ?? 'unknown' : 'unknown';
-  const audiomuseNavidromeEnabled = !!(auth.activeServerId && auth.audiomuseNavidromeByServer[auth.activeServerId]);
   const menuRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -175,6 +181,22 @@ export default function ContextMenu() {
     shareKindOverride,
     pinToPlaybackServer = false,
   } = contextMenu;
+  const itemServerIds = contextMenuServerIds(item);
+  const capabilityServerIds = itemServerIds.length > 0
+    ? itemServerIds
+    : auth.activeServerId ? [auth.activeServerId] : [];
+  const ratingSupports = capabilityServerIds.map(
+    serverId => auth.entityRatingSupportByServer[serverId] ?? 'unknown',
+  );
+  const entityRatingSupport = ratingSupports.includes('track_only')
+    ? 'track_only'
+    : ratingSupports.length > 0 && ratingSupports.every(value => value === 'full')
+      ? 'full'
+      : 'unknown';
+  const singleOwnerServerId = capabilityServerIds.length === 1 ? capabilityServerIds[0] : undefined;
+  const audiomuseNavidromeEnabled = Boolean(
+    singleOwnerServerId && auth.audiomuseNavidromeByServer[singleOwnerServerId],
+  );
   const navigateLibrary = pinToPlaybackServer
     ? navigatePlaybackLibrary
     : (path: string) => { navigate(path); };
@@ -212,8 +234,8 @@ export default function ContextMenu() {
     [t],
   );
 
-  const startRadio = (artistId: string, artistName: string, seedTrack?: Track) =>
-    startRadioAction(artistId, artistName, playTrack, seedTrack);
+  const startRadio = (artistId: string, artistName: string, seedTrack?: Track, serverId?: string) =>
+    startRadioAction(artistId, artistName, playTrack, seedTrack, serverId);
 
   const startInstantMix = (song: Track) => startInstantMixAction(song, t);
 

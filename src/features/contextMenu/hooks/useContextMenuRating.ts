@@ -38,10 +38,11 @@ export function useContextMenuRating({
   }, []);
 
   const applyAlbumRating = useCallback((album: SubsonicAlbum, rating: number) => {
-    setUserRatingOverride(album.id, rating);
+    const ownerServerId = album.serverId ?? activeServerId ?? undefined;
+    setUserRatingOverride(ownedEntityKey(album), rating);
     if (entityRatingSupport !== 'full') return;
-    setRating(album.id, rating, { serverId: album.serverId ?? activeServerId ?? undefined, kind: 'album' }).catch(err => {
-      if (activeServerId) setEntityRatingSupport(activeServerId, 'track_only');
+    setRating(album.id, rating, { serverId: ownerServerId, kind: 'album' }).catch(err => {
+      if (ownerServerId) setEntityRatingSupport(ownerServerId, 'track_only');
       showToast(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
         4500,
@@ -51,10 +52,11 @@ export function useContextMenuRating({
   }, [setUserRatingOverride, entityRatingSupport, activeServerId, setEntityRatingSupport, t]);
 
   const applyArtistRating = useCallback((artist: SubsonicArtist, rating: number) => {
-    setUserRatingOverride(artist.id, rating);
+    const ownerServerId = artist.serverId ?? activeServerId ?? undefined;
+    setUserRatingOverride(ownedEntityKey(artist), rating);
     if (entityRatingSupport !== 'full') return;
-    setRating(artist.id, rating, { serverId: artist.serverId ?? activeServerId ?? undefined, kind: 'artist' }).catch(err => {
-      if (activeServerId) setEntityRatingSupport(activeServerId, 'track_only');
+    setRating(artist.id, rating, { serverId: ownerServerId, kind: 'artist' }).catch(err => {
+      if (ownerServerId) setEntityRatingSupport(ownerServerId, 'track_only');
       showToast(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
         4500,
@@ -70,27 +72,27 @@ export function useContextMenuRating({
     }
     if (kind === 'album' && type === 'album') {
       const album = item as SubsonicAlbum;
-      if (album.id === id) return userRatingOverrides[id] ?? album.userRating ?? 0;
+      if (album.id === id) return userRatingOverrides[ownedEntityKey(album)] ?? userRatingOverrides[id] ?? album.userRating ?? 0;
     }
     if (kind === 'album' && type === 'multi-album') {
       const albums = item as SubsonicAlbum[];
       const compositeId = [...albums.map(a => a.id)].sort().join('\x1e');
       if (id !== compositeId) return userRatingOverrides[id] ?? 0;
       if (albums.length === 0) return 0;
-      const vals = albums.map(a => userRatingOverrides[a.id] ?? a.userRating ?? 0);
+      const vals = albums.map(a => userRatingOverrides[ownedEntityKey(a)] ?? userRatingOverrides[a.id] ?? a.userRating ?? 0);
       const first = vals[0];
       return vals.every(v => v === first) ? first : 0;
     }
     if (kind === 'artist' && type === 'artist') {
       const artist = item as SubsonicArtist;
-      if (artist.id === id) return userRatingOverrides[id] ?? artist.userRating ?? 0;
+      if (artist.id === id) return userRatingOverrides[ownedEntityKey(artist)] ?? userRatingOverrides[id] ?? artist.userRating ?? 0;
     }
     if (kind === 'artist' && type === 'multi-artist') {
       const artists = item as SubsonicArtist[];
       const compositeId = [...artists.map(a => a.id)].sort().join('\x1e');
       if (id !== compositeId) return userRatingOverrides[id] ?? 0;
       if (artists.length === 0) return 0;
-      const vals = artists.map(a => userRatingOverrides[a.id] ?? a.userRating ?? 0);
+      const vals = artists.map(a => userRatingOverrides[ownedEntityKey(a)] ?? userRatingOverrides[a.id] ?? a.userRating ?? 0);
       const first = vals[0];
       return vals.every(v => v === first) ? first : 0;
     }

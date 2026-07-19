@@ -50,9 +50,9 @@ export interface ContextMenuItemsProps {
   applyAlbumRating: (album: SubsonicAlbum, rating: number) => void;
   applyArtistRating: (artist: SubsonicArtist, rating: number) => void;
   handleAction: (action: () => void | Promise<void>) => Promise<void>;
-  startRadio: (artistId: string, artistName: string, seedTrack?: Track) => void;
+  startRadio: (artistId: string, artistName: string, seedTrack?: Track, serverId?: string) => void;
   startInstantMix: (song: Track) => void;
-  downloadAlbum: (albumName: string, albumId: string) => Promise<void>;
+  downloadAlbum: (albumName: string, albumId: string, serverId?: string) => Promise<void>;
   copyShareLink: (kind: EntityShareKind, id: string, serverId?: string) => void;
   isStarred: (id: string, itemStarred?: string, serverId?: string) => boolean;
   /** When true, album/artist links switch to the queue server before routing. */

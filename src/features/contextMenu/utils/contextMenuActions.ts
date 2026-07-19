@@ -1,8 +1,12 @@
 import { join } from '@tauri-apps/api/path';
 import { downloadZip } from '@/lib/api/downloadZip';
-import { getSimilarSongs2, fetchSimilarTracksRouted, getTopSongs } from '@/lib/api/subsonicArtists';
+import {
+  fetchSimilarTracksRoutedForServer,
+  getSimilarSongs2ForServer,
+  getTopSongsForServer,
+} from '@/lib/api/subsonicArtists';
 import { filterSongsForLuckyMixRatings, getMixMinRatingsConfigFromAuth } from '@/features/playback/utils/mixRatingFilter';
-import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import type { Track } from '@/lib/media/trackTypes';
@@ -14,6 +18,9 @@ import { copyEntityShareLink } from '@/lib/share/copyEntityShareLink';
 import { sanitizeFilename, shuffleArray } from '@/features/contextMenu/utils/contextMenuHelpers';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { showToast } from '@/lib/dom/toast';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+
+let contextRadioGeneration = 0;
 
 export async function copyShareLink(
   kind: EntityShareKind,
@@ -31,16 +38,24 @@ export async function startRadio(
   artistName: string,
   playTrack: (track: Track, queue: Track[]) => void,
   seedTrack?: Track,
+  serverId?: string,
 ) {
+  const ownerServerId = seedTrack?.serverId ?? serverId ?? useAuthStore.getState().activeServerId;
+  if (!ownerServerId) return;
+  const generation = ++contextRadioGeneration;
   if (seedTrack) {
     const state = usePlayerStore.getState();
-    if (state.currentTrack?.id === seedTrack.id) {
+    if (state.currentTrack && ownedEntityKey(state.currentTrack) === ownedEntityKey(seedTrack)) {
       if (!state.isPlaying) state.resume();
     } else {
       playTrack(seedTrack, [seedTrack]);
     }
     try {
-      const [similar, top] = await Promise.all([getSimilarSongs2(artistId), getTopSongs(artistName)]);
+      const [similar, top] = await Promise.all([
+        getSimilarSongs2ForServer(ownerServerId, artistId),
+        getTopSongsForServer(ownerServerId, artistName),
+      ]);
+      if (generation !== contextRadioGeneration) return;
       const similarTracks = shuffleArray(
         similar.map(songToTrack).filter(t => t.id !== seedTrack.id).map(t => ({ ...t, radioAdded: true as const })),
       );
@@ -57,14 +72,17 @@ export async function startRadio(
   }
 
   // Artist radio without seed
-  const similarPromise = getSimilarSongs2(artistId).catch(() => [] as Awaited<ReturnType<typeof getSimilarSongs2>>);
+  const similarPromise = getSimilarSongs2ForServer(ownerServerId, artistId)
+    .catch(() => [] as Awaited<ReturnType<typeof getSimilarSongs2ForServer>>);
   try {
-    const top = await getTopSongs(artistName);
+    const top = await getTopSongsForServer(ownerServerId, artistName);
+    if (generation !== contextRadioGeneration) return;
     const topTracks = shuffleArray(
       top.map(t => ({ ...songToTrack(t), radioAdded: true as const })),
     );
     if (topTracks.length === 0) {
       const similar = await similarPromise;
+      if (generation !== contextRadioGeneration) return;
       const fallback = shuffleArray(
         similar.map(t => ({ ...songToTrack(t), radioAdded: true as const })),
       );
@@ -86,6 +104,7 @@ export async function startRadio(
       playTrack(topTracks[0], [topTracks[0]]);
     }
     similarPromise.then(similar => {
+      if (generation !== contextRadioGeneration) return;
       const similarTracks = shuffleArray(
         similar
           .map(t => ({ ...songToTrack(t), radioAdded: true as const }))
@@ -110,11 +129,13 @@ export async function startInstantMix(
   song: Track,
   t: (key: string) => string,
 ) {
+  contextRadioGeneration += 1;
   usePlayerStore.getState().reseedQueueForInstantMix(song);
-  const serverId = useAuthStore.getState().activeServerId;
+  const serverId = song.serverId ?? useAuthStore.getState().activeServerId;
+  if (!serverId) return;
   try {
-    const similar = await fetchSimilarTracksRouted(song.id, 50);
-    if (serverId) useAuthStore.getState().setAudiomuseNavidromeIssue(serverId, false);
+    const similar = await fetchSimilarTracksRoutedForServer(serverId, song.id, 50);
+    useAuthStore.getState().setAudiomuseNavidromeIssue(serverId, false);
     const mixCfg = getMixMinRatingsConfigFromAuth();
     const ratedFiltered = await filterSongsForLuckyMixRatings(
       similar.filter(s => s.id !== song.id),
@@ -129,12 +150,12 @@ export async function startInstantMix(
     }
   } catch (e) {
     console.error('Instant mix failed', e);
-    if (serverId) useAuthStore.getState().setAudiomuseNavidromeIssue(serverId, true);
+    useAuthStore.getState().setAudiomuseNavidromeIssue(serverId, true);
     showToast(t('contextMenu.instantMixFailed'), 5000, 'error');
   }
 }
 
-export async function downloadAlbum(albumName: string, albumId: string) {
+export async function downloadAlbum(albumName: string, albumId: string, serverId?: string) {
   const auth = useAuthStore.getState();
   const requestDownloadFolder = useDownloadModalStore.getState().requestFolder;
   const folder = auth.downloadFolder || await requestDownloadFolder();
@@ -142,7 +163,9 @@ export async function downloadAlbum(albumName: string, albumId: string) {
 
   const filename = `${sanitizeFilename(albumName)}.zip`;
   const destPath = await join(folder, filename);
-  const url = buildDownloadUrl(albumId);
+  const ownerServerId = serverId ?? auth.activeServerId;
+  if (!ownerServerId) return;
+  const url = buildDownloadUrlForServer(ownerServerId, albumId);
   const id = crypto.randomUUID();
 
   const { start, complete, fail } = useZipDownloadStore.getState();
