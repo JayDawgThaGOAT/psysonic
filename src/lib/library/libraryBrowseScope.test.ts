@@ -3,6 +3,7 @@ import { useAuthStore } from '@/store/authStore';
 import { resetAuthStore } from '@/test/helpers/storeReset';
 import {
   deriveEffectiveLibraryBrowseServerIds,
+  deriveLibraryBrowseIndexScopes,
   deriveLibraryBrowseScope,
   getLibraryBrowseScope,
 } from './libraryBrowseScope';
@@ -65,6 +66,9 @@ describe('getLibraryBrowseScope', () => {
 
     expect(deriveEffectiveLibraryBrowseServerIds(state, new Set(['primary'])))
       .toEqual(['secondary']);
+    expect(deriveLibraryBrowseIndexScopes(state, new Set(['primary']))).toEqual([
+      { serverId: 'secondary', libraryIds: [] },
+    ]);
     expect(deriveLibraryBrowseScope(state, new Set(['primary']))).toEqual({
       anchorServerId: 'secondary',
       pairs: [{ serverId: 'secondary', libraryId: 'secondary-music' }],

@@ -33,6 +33,12 @@ export interface LibraryBrowseScope {
   multiServer: boolean;
 }
 
+export interface LibraryBrowseIndexScope {
+  serverId: string;
+  /** Empty means every indexed library on this server. */
+  libraryIds: string[];
+}
+
 type LibraryBrowseServerOrderSource = Pick<
   LibraryBrowseScopeSource,
   'servers' | 'activeServerId' | 'libraryBrowseServerIds'
@@ -63,6 +69,16 @@ export function deriveEffectiveLibraryBrowseServerIds(
 ): string[] {
   return deriveLibraryBrowseServerIdsWithFallback(state)
     .filter(serverId => !unavailableServerIds.has(serverId));
+}
+
+export function deriveLibraryBrowseIndexScopes(
+  state: LibraryBrowseScopeSource,
+  unavailableServerIds: ReadonlySet<string> = getUnavailableServerIds(),
+): LibraryBrowseIndexScope[] {
+  return deriveEffectiveLibraryBrowseServerIds(state, unavailableServerIds).map(serverId => ({
+    serverId,
+    libraryIds: state.libraryBrowseSelectionByServer[serverId] ?? [],
+  }));
 }
 
 /** Ordered concrete source pairs used only by Library pages and search. */

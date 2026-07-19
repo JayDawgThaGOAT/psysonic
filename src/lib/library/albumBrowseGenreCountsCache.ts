@@ -19,5 +19,9 @@ export function fetchGenreAlbumCountsDeduped(args: {
 
   const promise = libraryGetGenreAlbumCounts(args);
   inflight.set(key, promise);
+  const clear = () => {
+    if (inflight.get(key) === promise) inflight.delete(key);
+  };
+  void promise.then(clear, clear);
   return promise;
 }

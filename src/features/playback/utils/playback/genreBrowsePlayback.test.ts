@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchGenreAlbumCount,
   fetchGenreCatalog,
+  fetchScopedGenreCatalog,
   fetchGenreTracksForPlayback,
   fetchLocalGenreTracksForPlayback,
   filterGenresWithContent,
@@ -193,6 +194,68 @@ describe('genreBrowsePlayback', () => {
       serverId: 'srv-1',
       libraryScopes: ['lib-a', 'lib-b'],
     });
+  });
+
+  it('aggregates selected server scopes with one local count query per server', async () => {
+    vi.mocked(libraryGetGenreAlbumCounts).mockImplementation(async args => {
+      const request = args as { serverId: string };
+      return request.serverId === 'srv-a'
+        ? [{ value: 'Rock', albumCount: 2, songCount: 5 }]
+        : [
+            { value: 'rock', albumCount: 3, songCount: 7 },
+            { value: 'Jazz', albumCount: 1, songCount: 2 },
+          ];
+    });
+
+    const scopes = [
+      { serverId: 'srv-a', libraryIds: ['lib-a'] },
+      { serverId: 'srv-b', libraryIds: [] },
+    ];
+    await expect(fetchScopedGenreCatalog(scopes)).resolves.toEqual([
+      { value: 'Rock', albumCount: 5, songCount: 12 },
+      { value: 'Jazz', albumCount: 1, songCount: 2 },
+    ]);
+    await fetchScopedGenreCatalog(scopes);
+
+    expect(libraryGetGenreAlbumCounts).toHaveBeenCalledTimes(2);
+    expect(libraryGetGenreAlbumCounts).toHaveBeenCalledWith({
+      serverId: 'srv-a',
+      libraryScope: 'lib-a',
+    });
+    expect(libraryGetGenreAlbumCounts).toHaveBeenCalledWith({ serverId: 'srv-b' });
+    expect(getGenres).not.toHaveBeenCalled();
+  });
+
+  it('retains successful local genre counts when another selected index fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(libraryGetGenreAlbumCounts).mockImplementation(async args => {
+      const request = args as { serverId: string };
+      if (request.serverId === 'srv-b') throw new Error('index unavailable');
+      return [{ value: 'Ambient', albumCount: 4, songCount: 9 }];
+    });
+
+    await expect(fetchScopedGenreCatalog([
+      { serverId: 'srv-a', libraryIds: [] },
+      { serverId: 'srv-b', libraryIds: [] },
+    ])).resolves.toEqual([
+      { value: 'Ambient', albumCount: 4, songCount: 9 },
+    ]);
+    expect(getGenres).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[genres] local index counts unavailable for selected servers',
+      { failedServerIds: ['srv-b'] },
+    );
+    warn.mockRestore();
+  });
+
+  it('rejects when every selected index is unavailable', async () => {
+    vi.mocked(libraryGetGenreAlbumCounts).mockRejectedValue(new Error('index unavailable'));
+
+    await expect(fetchScopedGenreCatalog([
+      { serverId: 'srv-a', libraryIds: [] },
+      { serverId: 'srv-b', libraryIds: [] },
+    ])).rejects.toThrow('genre_catalog_scope_unavailable');
+    expect(getGenres).not.toHaveBeenCalled();
   });
 
   it('drops empty genres from server fallback catalog', async () => {

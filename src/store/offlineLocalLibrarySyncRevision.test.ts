@@ -16,6 +16,7 @@ vi.mock('@/lib/api/library/events', () => ({
 }));
 
 import {
+  librarySyncRevision,
   offlineLocalLibrarySyncRevision,
   resetOfflineLocalLibrarySyncRevisionForTests,
 } from '@/store/offlineLocalLibrarySyncRevision';
@@ -41,6 +42,7 @@ describe('offlineLocalLibrarySyncRevision', () => {
     });
     expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(1);
     expect(offlineLocalLibrarySyncRevision('a.test')).toBe(1);
+    expect(librarySyncRevision()).toBe(1);
   });
 
   it('ignores failed sync-idle payloads', () => {
@@ -52,5 +54,6 @@ describe('offlineLocalLibrarySyncRevision', () => {
       error: 'fail',
     });
     expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
+    expect(librarySyncRevision()).toBe(0);
   });
 });

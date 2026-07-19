@@ -6,6 +6,7 @@ import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 const syncRevisionByScope = new Map<string, number>();
 const listeners = new Set<() => void>();
 let syncHookRegistered = false;
+let anySyncRevision = 0;
 
 function notifySyncRevisionListeners(): void {
   for (const listener of listeners) {
@@ -22,10 +23,30 @@ function scopeKeysForServer(serverId: string): string[] {
 }
 
 function bumpOfflineLocalLibrarySyncRevision(serverIdFromEvent: string): void {
+  anySyncRevision += 1;
   for (const key of scopeKeysForServer(serverIdFromEvent)) {
     syncRevisionByScope.set(key, (syncRevisionByScope.get(key) ?? 0) + 1);
   }
   notifySyncRevisionListeners();
+}
+
+/** Monotonic revision bumped after any successful library sync-idle event. */
+export function librarySyncRevision(): number {
+  ensureOfflineLocalLibrarySyncHook();
+  return anySyncRevision;
+}
+
+/** Reactive revision for views that aggregate more than one server index. */
+export function useLibrarySyncRevision(): number {
+  ensureOfflineLocalLibrarySyncHook();
+  return useSyncExternalStore(
+    onStoreChange => {
+      listeners.add(onStoreChange);
+      return () => listeners.delete(onStoreChange);
+    },
+    librarySyncRevision,
+    () => 0,
+  );
 }
 
 function ensureOfflineLocalLibrarySyncHook(): void {
@@ -67,6 +88,7 @@ export function useOfflineLocalLibrarySyncRevision(
 /** Test-only reset. */
 export function resetOfflineLocalLibrarySyncRevisionForTests(): void {
   syncRevisionByScope.clear();
+  anySyncRevision = 0;
   syncHookRegistered = false;
 }
 
