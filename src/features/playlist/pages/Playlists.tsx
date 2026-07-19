@@ -53,6 +53,7 @@ export default function Playlists() {
   const fetchPlaylists = usePlaylistStore((s) => s.fetchPlaylists);
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
+  const subsonicIdentityByServer = useAuthStore(s => s.subsonicServerIdentityByServer);
   const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
   const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const unavailableServerIds = useUnavailableServerIds();
@@ -64,6 +65,13 @@ export default function Playlists() {
   const serverLabelById = useMemo(() => new Map(
     servers.map(server => [server.id, serverListDisplayLabel(server, servers)]),
   ), [servers]);
+  const createServerOptions = useMemo(() => effectiveServerIds.map(serverId => ({
+    id: serverId,
+    label: serverLabelById.get(serverId) ?? serverId,
+  })), [effectiveServerIds, serverLabelById]);
+  const smartCreateServerOptions = useMemo(() => createServerOptions.filter(server => (
+    (subsonicIdentityByServer[server.id]?.type ?? '').toLowerCase() === 'navidrome'
+  )), [createServerOptions, subsonicIdentityByServer]);
   const folderCount = usePlaylistFolderStore(
     s => (activeServerId ? s.byServer[activeServerId]?.folders.length ?? 0 : 0),
   );
@@ -72,7 +80,6 @@ export default function Playlists() {
     && effectiveServerIds[0] === activeServerId
     && folderCount > 0
     && folderGroupView;
-  const subsonicIdentityByServer = useAuthStore(s => s.subsonicServerIdentityByServer);
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const playlistScopeVersion = musicLibraryFilterVersion + libraryBrowseScopeVersion;
   const offlineCtx = useOfflineBrowseContext();
@@ -367,11 +374,8 @@ export default function Playlists() {
           setCreatingSmartBusy(false);
           setRequestedCreateServerId(serverId);
         }}
-        createServerOptions={effectiveServerIds.map(serverId => ({
-          id: serverId,
-          label: serverLabelById.get(serverId) ?? serverId,
-        }))}
-        isNavidromeServer={isNavidromeServer}
+        createServerOptions={createServerOptions}
+        smartCreateServerOptions={smartCreateServerOptions}
         setEditingSmartId={setEditingSmartId}
         setSmartFilters={setSmartFilters}
         setGenreQuery={setGenreQuery}
@@ -394,6 +398,14 @@ export default function Playlists() {
           editingSmartId={editingSmartId}
           creatingSmartBusy={creatingSmartBusy}
           genresReady={smartGenresReady}
+          createServerId={smartEditorServerId}
+          setCreateServerId={serverId => {
+            smartOperationGenerationRef.current += 1;
+            smartEditorGenerationRef.current += 1;
+            setCreatingSmartBusy(false);
+            setRequestedCreateServerId(serverId);
+          }}
+          createServerOptions={smartCreateServerOptions}
           setCreatingSmart={setCreatingSmart}
           setEditingSmartId={setEditingSmartId}
           onSave={handleCreateSmart}

@@ -54,15 +54,20 @@ export default function InternetRadio() {
   const serverLabelById = useMemo(() => new Map(
     servers.map(server => [server.id, serverListDisplayLabel(server, servers)]),
   ), [servers]);
+  const manageableServerOptions = useMemo(() => effectiveServerIds
+    .filter(serverId => canManageNavidromeRadio(adminRoles[serverId] ?? 'checking'))
+    .map(serverId => ({
+      id: serverId,
+      label: serverLabelById.get(serverId) ?? serverId,
+    })), [adminRoles, effectiveServerIds, serverLabelById]);
 
   const [stations, setStations] = useState<InternetRadioStation[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [modalStation, setModalStation] = useState<
-    InternetRadioStation | { kind: 'new'; serverId: string } | null
+    InternetRadioStation | { kind: 'new' } | null
   >(null);
-  const [browseServerId, setBrowseServerId] = useState<string | null>(null);
-  const [requestedTargetServerId, setRequestedTargetServerId] = useState<string | null>(null);
+  const [directoryOpen, setDirectoryOpen] = useState(false);
   const loadGenerationRef = useRef(0);
   const mutationGenerationRef = useRef(0);
   const reloadGenerationByServerRef = useRef(new Map<string, number>());
@@ -77,14 +82,9 @@ export default function InternetRadio() {
   const [manualOrder, setManualOrder] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState<{ id: string; side: 'before' | 'after' } | null>(null);
 
-  const targetServerId = requestedTargetServerId && effectiveServerIds.includes(requestedTargetServerId)
-    ? requestedTargetServerId
-    : activeServerId && effectiveServerIds.includes(activeServerId)
+  const targetServerId = activeServerId && manageableServerOptions.some(server => server.id === activeServerId)
       ? activeServerId
-      : effectiveServerIds[0] ?? '';
-  const canManageTarget = Boolean(
-    targetServerId && canManageNavidromeRadio(adminRoles[targetServerId] ?? 'checking'),
-  );
+      : manageableServerOptions[0]?.id ?? '';
 
   useEffect(() => {
     const generation = ++loadGenerationRef.current;
@@ -232,6 +232,7 @@ export default function InternetRadio() {
   }, [sortedFilteredStations, activeLetter]);
 
   const handleSave = async (opts: {
+    serverId: string;
     name: string;
     streamUrl: string;
     homepageUrl: string;
@@ -239,7 +240,8 @@ export default function InternetRadio() {
     coverRemoved: boolean;
   }) => {
     if (modalStation && 'kind' in modalStation) {
-      const ownerServerId = modalStation.serverId;
+      const ownerServerId = opts.serverId;
+      if (!ownerServerId) return;
       beginMutation(ownerServerId);
       await createInternetRadioStationForServer(
         ownerServerId,
@@ -347,25 +349,11 @@ export default function InternetRadio() {
       <div className="playlists-header">
         <h1 className="page-title" style={{ marginBottom: 0 }}>{t('radio.title')}</h1>
         <div className="compact-action-bar" style={{ display: 'flex', gap: 8 }}>
-          {effectiveServerIds.length > 1 && (
-            <select
-              className="input"
-              value={targetServerId}
-              onChange={event => setRequestedTargetServerId(event.target.value)}
-              aria-label={t('settings.servers')}
-            >
-              {effectiveServerIds.map(serverId => (
-                <option key={serverId} value={serverId}>
-                  {serverLabelById.get(serverId) ?? serverId}
-                </option>
-              ))}
-            </select>
-          )}
-          {canManageTarget && (<>
-              <button className="btn btn-primary" onClick={() => setBrowseServerId(targetServerId)} aria-label={t('radio.browseDirectory')} data-tooltip={t('radio.browseDirectory')}>
+          {targetServerId && (<>
+              <button className="btn btn-primary" onClick={() => setDirectoryOpen(true)} aria-label={t('radio.browseDirectory')} data-tooltip={t('radio.browseDirectory')}>
                 <Search size={14} /> <span className="compact-btn-label">{t('radio.browseDirectory')}</span>
               </button>
-              <button className="btn btn-primary" onClick={() => setModalStation({ kind: 'new', serverId: targetServerId })} aria-label={t('radio.addStation')} data-tooltip={t('radio.addStation')}>
+              <button className="btn btn-primary" onClick={() => setModalStation({ kind: 'new' })} aria-label={t('radio.addStation')} data-tooltip={t('radio.addStation')}>
                 <Plus size={15} /> <span className="compact-btn-label">{t('radio.addStation')}</span>
               </button>
             </>)}
@@ -433,20 +421,23 @@ export default function InternetRadio() {
       {modalStation !== null && (
         <RadioEditModal
           station={'kind' in modalStation ? null : modalStation}
+          initialServerId={'kind' in modalStation ? targetServerId : modalStation.serverId ?? ''}
+          serverOptions={manageableServerOptions}
           onClose={() => setModalStation(null)}
           onSave={handleSave}
         />
       )}
 
       {/* ── Directory Modal ── */}
-      {browseServerId && (
+      {directoryOpen && (
         <RadioDirectoryModal
-          targetServerId={browseServerId}
-          onMutationStart={() => beginMutation(browseServerId)}
-          onClose={() => setBrowseServerId(null)}
-          onAdded={() => {
+          initialServerId={targetServerId}
+          serverOptions={manageableServerOptions}
+          onMutationStart={beginMutation}
+          onClose={() => setDirectoryOpen(false)}
+          onAdded={serverId => {
             completeMutation();
-            return reloadServer(browseServerId);
+            return reloadServer(serverId);
           }}
         />
       )}

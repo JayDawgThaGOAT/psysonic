@@ -1,4 +1,14 @@
 /* ─ Radio Browser Directory ─ */
+.radio-directory-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.45fr);
+  gap: var(--space-3);
+}
+
+.radio-directory-controls--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .radio-browser-result {
   display: flex;
   align-items: center;
@@ -53,3 +63,8 @@
   margin-top: 2px;
 }
 
+@media (max-width: 680px) {
+  .radio-directory-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

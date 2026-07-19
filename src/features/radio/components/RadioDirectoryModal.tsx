@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Cast, Check, Loader2, Plus, X } from 'lucide-react';
@@ -10,16 +10,19 @@ import {
   type InternetRadioStation, type RadioBrowserStation, RADIO_PAGE_SIZE,
 } from '@/lib/api/subsonicTypes';
 import { showToast } from '@/lib/dom/toast';
+import ServerSelect, { type ServerSelectOption } from '@/ui/ServerSelect';
 
 interface RadioDirectoryModalProps {
-  targetServerId: string;
-  onMutationStart: () => void;
+  initialServerId: string;
+  serverOptions: ServerSelectOption[];
+  onMutationStart: (serverId: string) => void;
   onClose: () => void;
-  onAdded: () => void;
+  onAdded: (serverId: string) => void | Promise<void>;
 }
 
 export default function RadioDirectoryModal({
-  targetServerId,
+  initialServerId,
+  serverOptions,
   onMutationStart,
   onClose,
   onAdded,
@@ -33,10 +36,15 @@ export default function RadioDirectoryModal({
   const [hasMore, setHasMore] = useState(true);
   const [addingId, setAddingId] = useState<string | null>(null);
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
+  const [requestedServerId, setRequestedServerId] = useState(initialServerId);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const queryRef = useRef(query);
+  const titleId = useId();
+  const targetServerId = serverOptions.some(server => server.id === requestedServerId)
+    ? requestedServerId
+    : serverOptions[0]?.id ?? '';
   useEffect(() => { queryRef.current = query; }, [query]);
 
   const fetchPage = useCallback(async (q: string, off: number, append: boolean) => {
@@ -92,20 +100,22 @@ export default function RadioDirectoryModal({
   }, [hasMore, loadingMore, offset, fetchPage]);
 
   const handleAdd = async (s: RadioBrowserStation) => {
-    if (addedIds.has(s.stationuuid) || addingId !== null) return;
+    const ownerServerId = targetServerId;
+    const addedKey = `${ownerServerId}:${s.stationuuid}`;
+    if (!ownerServerId || addedIds.has(addedKey) || addingId !== null) return;
     setAddingId(s.stationuuid);
     try {
-      onMutationStart();
-      await createInternetRadioStationForServer(targetServerId, s.name, s.url);
+      onMutationStart(ownerServerId);
+      await createInternetRadioStationForServer(ownerServerId, s.name, s.url);
       if (s.favicon) {
-        const list = await getInternetRadioStationsForServer(targetServerId)
+        const list = await getInternetRadioStationsForServer(ownerServerId)
           .catch(() => [] as InternetRadioStation[]);
         const created = list.find(r => r.name === s.name && r.streamUrl === s.url);
         if (created) {
           try {
             const [fileBytes, mimeType] = await fetchUrlBytes(s.favicon);
             await uploadRadioCoverArtBytesForServer(
-              targetServerId,
+              ownerServerId,
               created.id,
               fileBytes,
               mimeType,
@@ -113,8 +123,8 @@ export default function RadioDirectoryModal({
           } catch { /* favicon optional */ }
         }
       }
-      onAdded();
-      setAddedIds(prev => new Set(prev).add(s.stationuuid));
+      await onAdded(ownerServerId);
+      setAddedIds(prev => new Set(prev).add(addedKey));
       showToast(`${t('radio.stationAdded')}: ${s.name}`, 3000);
     } catch (err) {
       const msg = typeof err === 'string' ? err : (err instanceof Error ? err.message : '');
@@ -142,6 +152,9 @@ export default function RadioDirectoryModal({
         backdropFilter: 'blur(8px)',
       }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
     >
       {/* ── 2. Content Box ─────────────────────────────────────── */}
       <div
@@ -174,20 +187,30 @@ export default function RadioDirectoryModal({
             className="btn btn-ghost"
             style={{ position: 'absolute', top: 16, right: 16, color: 'var(--text-muted)' }}
             onClick={onClose}
+            aria-label={t('common.close')}
           >
             <X size={18} />
           </button>
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 14, color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
+          <h2 id={titleId} style={{ fontSize: 20, fontWeight: 700, marginBottom: 14, color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
             {t('radio.browseDirectory')}
           </h2>
-          <input
-            className="input"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder={t('radio.directoryPlaceholder')}
-            autoFocus
-            style={{ width: '100%' }}
-          />
+          <div className={`radio-directory-controls${serverOptions.length > 1 ? '' : ' radio-directory-controls--single'}`}>
+            <input
+              className="input"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder={t('radio.directoryPlaceholder')}
+              autoFocus
+              style={{ width: '100%' }}
+            />
+            <ServerSelect
+              value={targetServerId}
+              options={serverOptions}
+              onChange={setRequestedServerId}
+              disabled={addingId !== null}
+              style={{ width: '100%' }}
+            />
+          </div>
         </div>
 
         {/* ── 4. Body / Results ──────────────────────────────────── */}
@@ -201,7 +224,7 @@ export default function RadioDirectoryModal({
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 8 }}>
               {results.map(s => {
-                const isAdded = addedIds.has(s.stationuuid);
+                const isAdded = addedIds.has(`${targetServerId}:${s.stationuuid}`);
                 const isLoading = addingId === s.stationuuid;
                 const isDisabled = isAdded || addingId !== null;
                 return (

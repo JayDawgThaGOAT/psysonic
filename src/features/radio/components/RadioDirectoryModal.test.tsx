@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 
 const mocks = vi.hoisted(() => ({
@@ -55,13 +56,15 @@ describe('RadioDirectoryModal owner-scoped creation', () => {
     const onAdded = vi.fn();
     const view = renderWithProviders(
       <RadioDirectoryModal
-        targetServerId="srv-owner"
+        initialServerId="srv-owner"
+        serverOptions={[{ id: 'srv-owner', label: 'Owner' }]}
         onMutationStart={vi.fn()}
         onClose={vi.fn()}
         onAdded={onAdded}
       />,
     );
 
+    expect(view.queryByRole('button', { name: 'Servers' })).not.toBeInTheDocument();
     fireEvent.click(await view.findByText('Directory Station'));
 
     await waitFor(() => expect(mocks.uploadBytesForServer).toHaveBeenCalledWith(
@@ -77,5 +80,37 @@ describe('RadioDirectoryModal owner-scoped creation', () => {
       expect.anything(),
     );
     expect(onAdded).toHaveBeenCalledOnce();
+  });
+
+  it('adds to the server selected inside the directory modal', async () => {
+    const user = userEvent.setup();
+    const onMutationStart = vi.fn();
+    const onAdded = vi.fn();
+    const view = renderWithProviders(
+      <RadioDirectoryModal
+        initialServerId="srv-a"
+        serverOptions={[
+          { id: 'srv-a', label: 'Server A' },
+          { id: 'srv-b', label: 'Server B' },
+        ]}
+        onMutationStart={onMutationStart}
+        onClose={vi.fn()}
+        onAdded={onAdded}
+      />,
+    );
+
+    const serverSelect = view.getByRole('button', { name: 'Servers' });
+    expect(serverSelect).toHaveTextContent('Server A');
+    await user.click(serverSelect);
+    await user.click(view.getByRole('option', { name: 'Server B' }));
+    await user.click(await view.findByText('Directory Station'));
+
+    await waitFor(() => expect(mocks.createForServer).toHaveBeenCalledWith(
+      'srv-b',
+      'Directory Station',
+      'https://shared.test/live',
+    ));
+    expect(onMutationStart).toHaveBeenCalledWith('srv-b');
+    expect(onAdded).toHaveBeenCalledWith('srv-b');
   });
 });

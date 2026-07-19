@@ -8,6 +8,7 @@ import {
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
 import PlaylistsNewFolderButton from '@/features/playlist/components/PlaylistsNewFolderButton';
 import PlaylistsFolderViewToggle from '@/features/playlist/components/PlaylistsFolderViewToggle';
+import PlaylistCreateFields from '@/features/playlist/components/PlaylistCreateFields';
 
 interface Props {
   selectionMode: boolean;
@@ -26,7 +27,7 @@ interface Props {
   createServerId: string;
   setCreateServerId: (serverId: string) => void;
   createServerOptions: Array<{ id: string; label: string }>;
-  isNavidromeServer: boolean;
+  smartCreateServerOptions: Array<{ id: string; label: string }>;
   setEditingSmartId: React.Dispatch<React.SetStateAction<string | null>>;
   setSmartFilters: React.Dispatch<React.SetStateAction<SmartFilters>>;
   setGenreQuery: React.Dispatch<React.SetStateAction<string>>;
@@ -41,64 +42,39 @@ export default function PlaylistsHeader({
   creating, setCreating, setCreatingSmart,
   newName, setNewName, nameInputRef, handleCreate,
   createServerId, setCreateServerId, createServerOptions,
-  isNavidromeServer, setEditingSmartId, setSmartFilters, setGenreQuery, onEditorIntent,
+  smartCreateServerOptions, setEditingSmartId, setSmartFilters, setGenreQuery, onEditorIntent,
   actionPolicy,
   foldersEnabled = true,
 }: Props) {
   const { t } = useTranslation();
   const policy = actionPolicy ?? offlineActionPolicy('playlistsHeader', false);
+  const cancelCreate = () => {
+    setCreating(false);
+    setNewName('');
+  };
 
   return (
-    <div className="playlists-header">
-      <h1 className="page-title" style={{ marginBottom: 0 }}>
-        {selectionMode && selectedIds.size > 0
-          ? t('playlists.selectionCount', { count: selectedIds.size })
-          : t('playlists.title')}
-      </h1>
-      <div className="compact-action-bar" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-        {policy.canEditPlaylist && !(selectionMode && selectedIds.size > 0) && (<>
-            {createServerOptions.length > 1 && (
-              <select
-                className="input"
-                value={createServerId}
-                onChange={event => setCreateServerId(event.target.value)}
-                aria-label={t('settings.servers')}
-              >
-                {createServerOptions.map(server => (
-                  <option key={server.id} value={server.id}>{server.label}</option>
-                ))}
-              </select>
-            )}
-            {creating ? (
-              <>
-                <input
-                  ref={nameInputRef}
-                  className="input"
-                  style={{ width: 220 }}
-                  placeholder={t('playlists.createName')}
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleCreate();
-                    if (e.key === 'Escape') { setCreating(false); setNewName(''); }
-                  }}
-                />
-                <button className="btn btn-primary" onClick={handleCreate}>
-                  {t('playlists.create')}
-                </button>
-                <button className="btn btn-surface" onClick={() => { setCreating(false); setNewName(''); }}>
-                  {t('playlists.cancel')}
-                </button>
-              </>
-            ) : (
+    <div className="playlists-header-stack">
+      <div className="playlists-header">
+        <h1 className="page-title" style={{ marginBottom: 0 }}>
+          {selectionMode && selectedIds.size > 0
+            ? t('playlists.selectionCount', { count: selectedIds.size })
+            : t('playlists.title')}
+        </h1>
+        <div className="compact-action-bar" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
+          {policy.canEditPlaylist && !(selectionMode && selectedIds.size > 0) && (<>
+            {!creating && (
               <button className="btn btn-primary" onClick={() => { onEditorIntent(); setCreatingSmart(false); setCreating(true); }} aria-label={t('playlists.newPlaylist')} data-tooltip={t('playlists.newPlaylist')}>
                 <Plus size={15} /> <span className="compact-btn-label">{t('playlists.newPlaylist')}</span>
               </button>
             )}
-            {!creating && isNavidromeServer && (
+            {!creating && smartCreateServerOptions.length > 0 && (
               <button className="btn btn-surface" onClick={() => {
                 onEditorIntent();
                 setCreating(false);
+                if (!smartCreateServerOptions.some(server => server.id === createServerId)) {
+                  setCreateServerId(smartCreateServerOptions[0].id);
+                }
                 setEditingSmartId(null);
                 setSmartFilters(defaultSmartFilters);
                 setGenreQuery('');
@@ -108,39 +84,75 @@ export default function PlaylistsHeader({
               </button>
             )}
           </>
-        )}
-        {foldersEnabled && !(selectionMode && selectedIds.size > 0) && <PlaylistsFolderViewToggle />}
-        {foldersEnabled && !(selectionMode && selectedIds.size > 0) && <PlaylistsNewFolderButton />}
-        {selectionMode && selectedIds.size > 0 && (() => {
-          const deletableCount = selectedPlaylists.filter(isPlaylistDeletable).length;
-          return (
-            <button
-              className="btn btn-danger"
-              onClick={handleDeleteSelected}
-              disabled={deletableCount === 0}
-              aria-label={t('playlists.deleteSelected')}
-              data-tooltip={deletableCount === selectedIds.size
-                ? undefined
-                : t('playlists.deleteSelectedPartial', { n: deletableCount, total: selectedIds.size })}
-              data-tooltip-pos="bottom"
-            >
-              <Trash2 size={15} />
-              <span className="compact-btn-label">{t('playlists.deleteSelected')}</span>
-            </button>
-          );
-        })()}
-        <button
-          className={`btn btn-surface${selectionMode ? ' btn-sort-active' : ''}`}
-          onClick={toggleSelectionMode}
-          aria-label={selectionMode ? t('playlists.cancelSelect') : t('playlists.select')}
-          data-tooltip={selectionMode ? t('playlists.cancelSelect') : t('playlists.startSelect')}
-          data-tooltip-pos="bottom"
-          style={selectionMode ? { background: 'var(--accent)', color: 'var(--text-on-accent)' } : {}}
-        >
-          <CheckSquare2 size={15} />
-          <span className="compact-btn-label">{selectionMode ? t('playlists.cancelSelect') : t('playlists.select')}</span>
-        </button>
+          )}
+          {foldersEnabled && !(selectionMode && selectedIds.size > 0) && <PlaylistsFolderViewToggle />}
+          {foldersEnabled && !(selectionMode && selectedIds.size > 0) && <PlaylistsNewFolderButton />}
+          {selectionMode && selectedIds.size > 0 && (() => {
+            const deletableCount = selectedPlaylists.filter(isPlaylistDeletable).length;
+            return (
+              <button
+                className="btn btn-danger"
+                onClick={handleDeleteSelected}
+                disabled={deletableCount === 0}
+                aria-label={t('playlists.deleteSelected')}
+                data-tooltip={deletableCount === selectedIds.size
+                  ? undefined
+                  : t('playlists.deleteSelectedPartial', { n: deletableCount, total: selectedIds.size })}
+                data-tooltip-pos="bottom"
+              >
+                <Trash2 size={15} />
+                <span className="compact-btn-label">{t('playlists.deleteSelected')}</span>
+              </button>
+            );
+          })()}
+          <button
+            className={`btn btn-surface${selectionMode ? ' btn-sort-active' : ''}`}
+            onClick={toggleSelectionMode}
+            aria-label={selectionMode ? t('playlists.cancelSelect') : t('playlists.select')}
+            data-tooltip={selectionMode ? t('playlists.cancelSelect') : t('playlists.startSelect')}
+            data-tooltip-pos="bottom"
+            style={selectionMode ? { background: 'var(--accent)', color: 'var(--text-on-accent)' } : {}}
+          >
+            <CheckSquare2 size={15} />
+            <span className="compact-btn-label">{selectionMode ? t('playlists.cancelSelect') : t('playlists.select')}</span>
+          </button>
+        </div>
       </div>
+      {creating && (
+        <form
+          className="playlist-create-panel"
+          onSubmit={event => {
+            event.preventDefault();
+            void handleCreate();
+          }}
+        >
+          <div className="playlist-create-panel__heading">
+            <Plus size={16} />
+            <span>{t('playlists.newPlaylist')}</span>
+          </div>
+          <PlaylistCreateFields
+            name={newName}
+            nameLabel={t('queue.playlistName')}
+            namePlaceholder={t('playlists.createName')}
+            onNameChange={setNewName}
+            onNameKeyDown={event => {
+              if (event.key === 'Escape') cancelCreate();
+            }}
+            nameInputRef={nameInputRef}
+            serverId={createServerId}
+            onServerChange={setCreateServerId}
+            serverOptions={createServerOptions}
+          />
+          <div className="playlist-create-panel__actions">
+            <button type="button" className="btn btn-surface" onClick={cancelCreate}>
+              {t('playlists.cancel')}
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={!createServerId}>
+              {t('playlists.create')}
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

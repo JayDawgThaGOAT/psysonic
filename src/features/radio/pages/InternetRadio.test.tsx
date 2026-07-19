@@ -76,8 +76,11 @@ vi.mock('@/features/radio/components/RadioCard', () => ({
   ),
 }));
 vi.mock('@/features/radio/components/RadioEditModal', () => ({
-  default: ({ onSave }: {
+  default: ({ initialServerId, serverOptions, onSave }: {
+    initialServerId: string;
+    serverOptions: Array<{ id: string; label: string }>;
     onSave: (options: {
+      serverId: string;
       name: string;
       streamUrl: string;
       homepageUrl: string;
@@ -85,13 +88,19 @@ vi.mock('@/features/radio/components/RadioEditModal', () => ({
       coverRemoved: boolean;
     }) => Promise<void>;
   }) => (
-    <button onClick={() => void onSave({
-      name: 'Created',
-      streamUrl: 'https://created.test/live',
-      homepageUrl: '',
-      coverFile: null,
-      coverRemoved: false,
-    })}>save station</button>
+    <div>
+      <span data-testid="radio-modal-initial-server">{initialServerId}</span>
+      {serverOptions.map(server => (
+        <button key={server.id} onClick={() => void onSave({
+          serverId: server.id,
+          name: 'Created',
+          streamUrl: 'https://created.test/live',
+          homepageUrl: '',
+          coverFile: null,
+          coverRemoved: false,
+        })}>save station {server.id}</button>
+      ))}
+    </div>
   ),
 }));
 vi.mock('@/features/radio/components/RadioDirectoryModal', () => ({ default: () => null }));
@@ -160,14 +169,11 @@ describe('InternetRadio multi-server ownership', () => {
     const view = renderWithProviders(<InternetRadio />);
     await view.findByTestId('station-srv-a-shared');
 
-    fireEvent.change(view.getByRole('combobox', { name: 'Servers' }), {
-      target: { value: 'srv-b' },
-    });
+    expect(view.queryByRole('combobox', { name: 'Servers' })).not.toBeInTheDocument();
+    expect(view.queryByRole('button', { name: 'Servers' })).not.toBeInTheDocument();
     fireEvent.click(view.getByRole('button', { name: /add station/i }));
-    fireEvent.change(view.getByRole('combobox', { name: 'Servers' }), {
-      target: { value: 'srv-a' },
-    });
-    fireEvent.click(view.getByRole('button', { name: 'save station' }));
+    expect(view.getByTestId('radio-modal-initial-server')).toHaveTextContent('srv-a');
+    fireEvent.click(view.getByRole('button', { name: 'save station srv-b' }));
 
     await waitFor(() => expect(hoisted.createForServer).toHaveBeenCalledWith(
       'srv-b',
