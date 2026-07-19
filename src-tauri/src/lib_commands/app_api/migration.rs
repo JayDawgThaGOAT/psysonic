@@ -25,6 +25,7 @@ const LIBRARY_TABLES: &[ScopedTable] = &[
     ScopedTable { table: "library_tag_state", column: "server_id" },
     ScopedTable { table: "entity_user_rating", column: "server_id" },
     ScopedTable { table: "album_browse_projection", column: "server_id" },
+    ScopedTable { table: "composer_album_projection", column: "server_id" },
     ScopedTable { table: "canonical_enrichment_link", column: "owner_server_id" },
     ScopedTable { table: "track", column: "server_id" },
     ScopedTable { table: "album", column: "server_id" },
@@ -808,6 +809,7 @@ mod tests {
             include_str!("../../../crates/psysonic-library/migrations/021_scope_browse_tracks.sql"),
             include_str!("../../../crates/psysonic-library/migrations/022_artist_name_fold.sql"),
             include_str!("../../../crates/psysonic-library/migrations/023_starred_browse_indexes.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/024_composer_browse_projection.sql"),
         ] {
             conn.execute_batch(migration).expect("apply library migration");
         }
@@ -846,9 +848,14 @@ mod tests {
                VALUES ('legacy-a', 'hash', 1);
              INSERT INTO entity_user_rating(server_id, entity_kind, entity_id, rating, fetched_at)
                VALUES ('legacy-a', 'track', 'track-1', 5, 1);
-             INSERT INTO album_browse_projection(
+              INSERT INTO album_browse_projection(
                server_id, library_id, album_id, name, song_count, duration_sec, synced_at, representative_track_id
-             ) VALUES ('legacy-a', '', 'album-1', 'Album', 1, 1, 1, 'track-1');
+              ) VALUES ('legacy-a', '', 'album-1', 'Album', 1, 1, 1, 'track-1');
+              INSERT INTO composer_album_projection(
+                server_id, library_id, composer_id, composer_name, name_sort, identity_key,
+                album_id, synced_at, representative_track_id
+              ) VALUES ('legacy-a', '', 'composer-1', 'Composer', 'composer', 'composer',
+                        'album-1', 1, 'track-1');
              INSERT INTO canonical_enrichment_link(
                canonical_id, enrichment_kind, owner_server_id, owner_track_id, linked_at
              ) VALUES ('canonical-1', 'lyrics', 'legacy-a', 'track-1', 1);",

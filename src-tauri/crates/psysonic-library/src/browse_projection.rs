@@ -151,7 +151,7 @@ pub(crate) fn refresh_album_scopes(
         "SELECT name, artist FROM album_browse_projection \
          WHERE server_id = ?1 AND library_id = ?2 AND album_id = ?3",
     )?;
-    for (server_id, library_id, album_id) in scopes {
+    for (server_id, library_id, album_id) in &scopes {
         delete.execute(params![server_id, library_id, album_id])?;
         insert.execute(params![server_id, library_id, album_id])?;
         let source = identity_source
@@ -170,6 +170,7 @@ pub(crate) fn refresh_album_scopes(
             update_identity.execute(params![server_id, library_id, album_id, identity_key])?;
         }
     }
+    crate::composer_projection::refresh_album_scopes(tx, &scopes)?;
     Ok(())
 }
 
@@ -222,6 +223,7 @@ pub(crate) fn rebuild_server(tx: &Transaction<'_>, server_id: &str) -> rusqlite:
         .album_key;
         update.execute(params![server_id, library_id, album_id, identity_key])?;
     }
+    crate::composer_projection::rebuild_scope(tx, server_id, "")?;
     Ok(())
 }
 
@@ -241,7 +243,9 @@ pub(crate) fn rebuild_scope(
          WHERE server_id = ?1 AND library_id = ?2",
         "SELECT DISTINCT album_id FROM track \
          WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0 \
-           AND album_id IS NOT NULL AND album_id != ''",
+            AND album_id IS NOT NULL AND album_id != ''",
+        "SELECT DISTINCT album_id FROM composer_album_projection \
+         WHERE server_id = ?1 AND library_id = ?2",
     ] {
         let mut statement = tx.prepare(sql)?;
         let album_ids = statement
@@ -282,7 +286,7 @@ fn cursor_rowid(conn: &Connection) -> rusqlite::Result<i64> {
     .map(|cursor| cursor.unwrap_or(0))
 }
 
-pub fn inspect(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto, String> {
+fn inspect_album(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto, String> {
     store
         .with_read_conn(|conn| {
             let total: i64 =
@@ -328,6 +332,27 @@ pub fn inspect(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto, 
         .map_err(|error| error.to_string())
 }
 
+pub fn inspect(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto, String> {
+    let album = inspect_album(store)?;
+    let composer = crate::composer_projection::inspect(store)?;
+    let pending = [album.clone(), composer.clone()]
+        .into_iter()
+        .filter(|item| item.needed)
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return Ok(ScopeBrowseProjectionInspectDto {
+            needed: false,
+            total_tracks: album.total_tracks.max(composer.total_tracks),
+            done_tracks: album.done_tracks.max(composer.done_tracks),
+        });
+    }
+    Ok(ScopeBrowseProjectionInspectDto {
+        needed: true,
+        total_tracks: pending.iter().map(|item| item.total_tracks).max().unwrap_or(0),
+        done_tracks: pending.iter().map(|item| item.done_tracks).min().unwrap_or(0),
+    })
+}
+
 pub fn is_ready(store: &LibraryStore) -> Result<bool, String> {
     store
         .with_read_conn(|conn| {
@@ -354,11 +379,12 @@ pub fn is_ready(store: &LibraryStore) -> Result<bool, String> {
 }
 
 pub fn run_backfill(store: &LibraryStore, app: &AppHandle) -> Result<(), String> {
-    run_backfill_impl(store, Some(app))
+    run_backfill_impl(store, Some(app))?;
+    crate::composer_projection::run_backfill(store, Some(app))
 }
 
 fn run_backfill_impl(store: &LibraryStore, app: Option<&AppHandle>) -> Result<(), String> {
-    let inspect_result = inspect(store)?;
+    let inspect_result = inspect_album(store)?;
     if !inspect_result.needed {
         return Ok(());
     }

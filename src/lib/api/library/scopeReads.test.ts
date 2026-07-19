@@ -3,8 +3,10 @@ import { onInvoke } from '@/test/mocks/tauri';
 import {
   libraryScopeAlbumDetail,
   libraryScopeArtistDetail,
+  libraryScopeComposerDetail,
   libraryScopeListAlbums,
   libraryScopeListArtists,
+  libraryScopeListComposers,
   libraryScopeListMainstageAlbums,
   libraryScopeMostPlayed,
   libraryScopeSearchTracks,
@@ -76,6 +78,27 @@ describe('libraryScopeListArtists', () => {
         ],
       },
     });
+  });
+});
+
+describe('libraryScopeListComposers', () => {
+  it('maps scope owners in both directions', async () => {
+    let captured: unknown;
+    onInvoke('library_scope_list_composers', (args) => {
+      captured = args;
+      return [{ serverId: 's2.example', id: 'co-1', name: 'Composer', syncedAt: 0, rawJson: {} }];
+    });
+    const response = await libraryScopeListComposers('profile-s1', { scopes, limit: 100 });
+    expect(captured).toEqual({
+      request: {
+        scopes: [
+          { serverId: 's1.example', libraryId: 'lib-a' },
+          { serverId: 's1.example', libraryId: 'lib-b' },
+        ],
+        limit: 100,
+      },
+    });
+    expect(response[0]?.serverId).toBe('profile-s2');
   });
 });
 
@@ -275,5 +298,37 @@ describe('libraryScopeArtistDetail', () => {
     });
     expect(response.topTracksServerId).toBe('profile-s2');
     expect(response.topTracksFingerprint).toBe('tracks-v1');
+  });
+});
+
+describe('libraryScopeComposerDetail', () => {
+  it('maps the anchor, composer owner, and album owners', async () => {
+    let captured: unknown;
+    onInvoke('library_scope_composer_detail', (args) => {
+      captured = args;
+      return {
+        composer: {
+          serverId: 's2.example', id: 'co-1', name: 'Composer', syncedAt: 0, rawJson: {},
+        },
+        albums: [{ serverId: 's2.example', id: 'al-1', name: 'Work', syncedAt: 0, rawJson: {} }],
+      };
+    });
+    const response = await libraryScopeComposerDetail('profile-s1', {
+      scopes,
+      composerId: 'co-1',
+      serverId: 'profile-s2',
+    });
+    expect(captured).toEqual({
+      request: {
+        scopes: [
+          { serverId: 's1.example', libraryId: 'lib-a' },
+          { serverId: 's1.example', libraryId: 'lib-b' },
+        ],
+        composerId: 'co-1',
+        serverId: 's2.example',
+      },
+    });
+    expect(response.composer.serverId).toBe('profile-s2');
+    expect(response.albums[0]?.serverId).toBe('profile-s2');
   });
 });

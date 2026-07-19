@@ -21,6 +21,8 @@ vi.mock('@/store/authStore', () => ({
 
 import {
   ndClearTokenCache,
+  ndListAlbumsByArtistRoleForServer,
+  ndListArtistsByRoleForServer,
   ndListLosslessAlbumsPage,
   ndListLosslessAlbumsPageForServer,
 } from '@/lib/api/navidromeBrowse';
@@ -84,5 +86,29 @@ describe('explicit-server lossless album browsing', () => {
     await ndListLosslessAlbumsPage(request);
     expect(loginMock).toHaveBeenCalledTimes(2);
     expect(getServerByIdMock).toHaveBeenCalledWith('srv-a');
+  });
+
+  it('routes composer role reads through the requested server', async () => {
+    invokeMock
+      .mockResolvedValueOnce([{ id: 'composer-1', name: 'Composer', stats: { composer: { albumCount: 2 } } }])
+      .mockResolvedValueOnce([{ id: 'album-1', name: 'Work', albumArtist: 'Performer' }]);
+
+    const composers = await ndListArtistsByRoleForServer('srv-b', 'composer', 0, 100, 'name', 'ASC', 'lib-b');
+    const albums = await ndListAlbumsByArtistRoleForServer(
+      'srv-b', 'composer-1', 'composer', 0, 100, 'name', 'ASC', 'lib-b',
+    );
+
+    expect(composers[0]).toEqual(expect.objectContaining({ id: 'composer-1', serverId: 'srv-b', albumCount: 2 }));
+    expect(albums[0]).toEqual(expect.objectContaining({ id: 'album-1', serverId: 'srv-b' }));
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'nd_list_artists_by_role', expect.objectContaining({
+      serverUrl: 'https://srv-b.connect',
+      token: 'token:https://srv-b.connect',
+      libraryId: 'lib-b',
+    }));
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'nd_list_albums_by_artist_role', expect.objectContaining({
+      serverUrl: 'https://srv-b.connect',
+      artistId: 'composer-1',
+      libraryId: 'lib-b',
+    }));
   });
 });

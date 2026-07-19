@@ -968,6 +968,15 @@ pub struct LibraryScopeArtistDetailRequest {
     pub top_tracks_limit: Option<u32>,
 }
 
+/// Aggregated composer detail anchored to one concrete server composer id.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeComposerDetailRequest {
+    pub scopes: Vec<LibraryScopePair>,
+    pub composer_id: String,
+    pub server_id: String,
+}
+
 /// `library_scope_album_detail` response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -989,6 +998,14 @@ pub struct LibraryScopeArtistDetailResponse {
     /// Stable hash of the scoped artist tracks used to invalidate Top Songs
     /// rankings only when that catalog slice changes.
     pub top_tracks_fingerprint: Option<String>,
+}
+
+/// `library_scope_composer_detail` response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeComposerDetailResponse {
+    pub composer: LibraryArtistDto,
+    pub albums: Vec<LibraryAlbumDto>,
 }
 
 /// `library_search_cross_server` response (§5.5B / §5.9).

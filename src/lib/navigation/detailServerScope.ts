@@ -27,6 +27,17 @@ export function buildArtistDetailPath(
   return `/artist/${artistId}${query ? `?${query}` : ''}`;
 }
 
+/** Build a composer detail path while preserving query parameters and owning server. */
+export function buildComposerDetailPath(
+  composerId: string,
+  options: ArtistDetailPathOptions = {},
+): string {
+  const params = new URLSearchParams(options.search ?? '');
+  if (options.serverId) params.set('server', options.serverId);
+  const query = params.toString();
+  return `/composer/${composerId}${query ? `?${query}` : ''}`;
+}
+
 /** Resolve `?server=` on album/artist detail routes; falls back when absent or unknown. */
 export function readDetailServerId(
   searchParams: URLSearchParams,

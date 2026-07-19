@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 23;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 24;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -80,6 +80,9 @@ pub(crate) const MIGRATION_022_ARTIST_NAME_FOLD: &str =
 /// Version 23: partial index for the Favorites initial local snapshot.
 pub(crate) const MIGRATION_023_STARRED_BROWSE_INDEXES: &str =
     include_str!("../migrations/023_starred_browse_indexes.sql");
+/// Version 24: materialized composer credits by library and album.
+pub(crate) const MIGRATION_024_COMPOSER_BROWSE_PROJECTION: &str =
+    include_str!("../migrations/024_composer_browse_projection.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -97,6 +100,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (21, MIGRATION_021_SCOPE_BROWSE_TRACKS),
     (22, MIGRATION_022_ARTIST_NAME_FOLD),
     (23, MIGRATION_023_STARRED_BROWSE_INDEXES),
+    (24, MIGRATION_024_COMPOSER_BROWSE_PROJECTION),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -120,6 +124,10 @@ pub(crate) fn ensure_entity_user_rating_schema(conn: &Connection) -> rusqlite::R
 
 pub(crate) fn ensure_scope_browse_projection_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(MIGRATION_020_SCOPE_BROWSE_PROJECTION)
+}
+
+pub(crate) fn ensure_composer_browse_projection_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(MIGRATION_024_COMPOSER_BROWSE_PROJECTION)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1028,6 +1036,7 @@ fn prepare_write_connection_for_open(conn: &Connection) -> rusqlite::Result<()> 
     ensure_mainstage_feed_indexes(conn)?;
     ensure_entity_user_rating_schema(conn)?;
     ensure_scope_browse_projection_schema(conn)?;
+    ensure_composer_browse_projection_schema(conn)?;
     crate::bulk_ingest::ensure_track_secondary_indexes(conn)?;
     crate::track_fts::ensure_track_fts_triggers(conn)?;
     reconcile_ready_rows_with_ingest_cursors(conn)?;

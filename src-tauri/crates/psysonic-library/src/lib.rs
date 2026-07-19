@@ -20,6 +20,8 @@ pub mod browse_support;
 pub(crate) mod bulk_ingest;
 pub mod canonical;
 pub mod commands;
+pub mod composer_projection;
+pub mod composer_scope;
 pub mod cover_backfill;
 pub mod cover_resolve;
 pub mod cross_server;

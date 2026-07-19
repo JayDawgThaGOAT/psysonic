@@ -24,18 +24,19 @@ export default function ArtistContextItems(props: ContextMenuItemsProps) {
     <>
         {type === 'artist' && (() => {
           const artist = item as SubsonicArtist;
+          const isComposer = shareKindOverride === 'composer';
           const artistRatingDisabled = entityRatingSupport === 'track_only';
           return (
             <>
-              <div className="context-menu-item" onClick={() => handleAction(() => startRadio(
+              {!isComposer && <div className="context-menu-item" onClick={() => handleAction(() => startRadio(
                 artist.id,
                 artist.name,
                 undefined,
                 artist.serverId,
               ))}>
                 <Radio size={14} /> {t('contextMenu.startRadio')}
-              </div>
-              {offlinePolicy.canAddToPlaylist && (
+              </div>}
+              {!isComposer && offlinePolicy.canAddToPlaylist && (
                 <div
                   className={`context-menu-item context-menu-item--submenu ${playlistSubmenuOpen && playlistSongIds[0] === `artist:${artist.id}` ? 'active' : ''}`}
                   data-playlist-trigger-id={`artist:${artist.id}`}

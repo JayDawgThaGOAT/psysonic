@@ -98,6 +98,12 @@ export interface LibraryScopeArtistDetailRequest {
   topTracksLimit?: number;
 }
 
+export interface LibraryScopeComposerDetailRequest {
+  scopes: LibraryScopePair[];
+  composerId: string;
+  serverId: string;
+}
+
 export interface LibraryScopeAlbumDetailResponse {
   album: LibraryAlbumDto;
   tracks: LibraryTrackDto[];
@@ -109,6 +115,11 @@ export interface LibraryScopeArtistDetailResponse {
   tracks: LibraryTrackDto[];
   topTracksServerId?: string | null;
   topTracksFingerprint?: string | null;
+}
+
+export interface LibraryScopeComposerDetailResponse {
+  composer: LibraryArtistDto;
+  albums: LibraryAlbumDto[];
 }
 
 function mapScopePairServerId(pair: LibraryScopePair, profileServerId: string): LibraryScopePair {
@@ -232,6 +243,18 @@ export function libraryScopeListArtists(
   }).then(artists => mapArtistsServerId(artists, serverId));
 }
 
+export function libraryScopeListComposers(
+  serverId: string,
+  request: LibraryScopeListRequest,
+): Promise<LibraryArtistDto[]> {
+  return invoke<LibraryArtistDto[]>('library_scope_list_composers', {
+    request: {
+      ...request,
+      scopes: mapScopePairs(request.scopes, serverId),
+    },
+  }).then(artists => mapArtistsServerId(artists, serverId));
+}
+
 export function libraryScopeListMainstageAlbums(
   serverId: string,
   request: LibraryScopeMainstageAlbumsRequest,
@@ -306,5 +329,27 @@ export function libraryScopeArtistDetail(
       ? mapServerIdFromIndexKey(response.topTracksServerId, serverId)
       : null,
     topTracksFingerprint: response.topTracksFingerprint ?? null,
+  }));
+}
+
+export function libraryScopeComposerDetail(
+  serverId: string,
+  request: LibraryScopeComposerDetailRequest,
+): Promise<LibraryScopeComposerDetailResponse> {
+  const indexKey = serverIndexKeyForId(serverId);
+  const anchorIndexKey =
+    request.serverId === serverId ? indexKey : serverIndexKeyForId(request.serverId);
+  return invoke<LibraryScopeComposerDetailResponse>('library_scope_composer_detail', {
+    request: {
+      ...request,
+      serverId: anchorIndexKey,
+      scopes: mapScopePairs(request.scopes, serverId),
+    },
+  }).then(response => ({
+    composer: {
+      ...response.composer,
+      serverId: mapServerIdFromIndexKey(response.composer.serverId, serverId),
+    },
+    albums: mapAlbumsServerId(response.albums, serverId),
   }));
 }

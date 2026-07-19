@@ -14,6 +14,7 @@ import {
 } from '@/lib/navigation/advancedSearchScrollSnapshot';
 import {
   buildArtistDetailPath,
+  buildComposerDetailPath,
   type ArtistDetailPathOptions,
 } from '@/lib/navigation/detailServerScope';
 
@@ -203,13 +204,13 @@ export function navigateToComposerDetail(
   navigate: NavigateFunction,
   location: Pick<Location, 'pathname' | 'search' | 'hash' | 'state'>,
   composerId: string,
-  opts?: { search?: string },
+  opts?: ArtistDetailPathOptions,
 ): void {
   saveSearchLeaveIfNeeded(location);
   const returnTo = buildReturnTo(location);
-  const raw = opts?.search ?? '';
-  const qs = raw ? (raw.startsWith('?') ? raw : `?${raw}`) : '';
-  navigate(`/composer/${composerId}${qs}`, { state: { returnTo } satisfies AlbumDetailLocationState });
+  navigate(buildComposerDetailPath(composerId, opts), {
+    state: { returnTo } satisfies AlbumDetailLocationState,
+  });
 }
 
 /** Route any path; album detail links get a `returnTo` snapshot in location state. */

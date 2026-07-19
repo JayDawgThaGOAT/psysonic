@@ -9,7 +9,7 @@ import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { navigateToAlbumDetail } from '@/lib/navigation/albumDetailNavigation';
 import { findServerIdForShareUrl, type EntitySharePayloadV1 } from '@/lib/share/shareLink';
 import { showToast } from '@/lib/dom/toast';
-import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { buildArtistDetailPath, buildComposerDetailPath } from '@/lib/navigation/detailServerScope';
 
 const RESOLVE_QUEUE_CHUNK = 12;
 
@@ -165,7 +165,7 @@ export async function applySharePastePayload(
         showToast(t('sharePaste.composerUnavailable'), 5000, 'error');
         return;
       }
-      navigate(`/composer/${payload.id}`);
+      navigate(buildComposerDetailPath(payload.id, { serverId }));
       showToast(t('sharePaste.openedComposer'), 3000, 'info');
       return;
     }

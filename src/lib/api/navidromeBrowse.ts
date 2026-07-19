@@ -30,13 +30,8 @@ function asString(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : (typeof v === 'number' ? String(v) : fallback);
 }
 
-/** Active library scope for the current server, or null when "all libraries" is selected.
- *  Mirrors the Subsonic `musicFolderId` we pipe through `libraryFilterParams()` — Navidrome
- *  uses the same id space, so the same value is valid for the native API's `library_id` filter. */
-function currentLibraryId(): string | null {
-  const { activeServerId } = useAuthStore.getState();
-  if (!activeServerId) return null;
-  const selection = librarySelectionForServer(activeServerId);
+function currentLibraryIdForServer(serverId: string): string | null {
+  const selection = librarySelectionForServer(serverId);
   return selection.length === 1 ? selection[0] : null;
 }
 
@@ -203,30 +198,46 @@ export async function ndListArtistsByRole(
   sort: NdArtistSort = 'name',
   order: 'ASC' | 'DESC' = 'ASC',
 ): Promise<SubsonicArtist[]> {
-  const baseUrl = useAuthStore.getState().getBaseUrl();
-  if (!baseUrl) throw new Error('No server configured');
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) throw new Error('No server configured');
+  return ndListArtistsByRoleForServer(serverId, role, start, end, sort, order);
+}
 
-  const libraryId = currentLibraryId();
+export async function ndListArtistsByRoleForServer(
+  serverId: string,
+  role: NdArtistRole,
+  start: number,
+  end: number,
+  sort: NdArtistSort = 'name',
+  order: 'ASC' | 'DESC' = 'ASC',
+  libraryIdOverride?: string | null,
+): Promise<SubsonicArtist[]> {
+  const server = getServerById(serverId);
+  if (!server) throw new Error(`Unknown server: ${serverId}`);
+  const baseUrl = connectBaseUrlForServer(server);
+  const libraryId = libraryIdOverride === undefined
+    ? currentLibraryIdForServer(serverId)
+    : libraryIdOverride;
   const callOnce = async (token: string): Promise<unknown> =>
     invoke<unknown>('nd_list_artists_by_role', {
       serverUrl: baseUrl, token, role, sort, order, start, end, libraryId,
     });
 
-  let token = await getToken();
+  let token = await getTokenForServer(serverId);
   let raw: unknown;
   try {
     raw = await callOnce(token);
   } catch (err) {
     const msg = String(err);
     if (msg.includes('401') || msg.includes('403')) {
-      token = await getToken(true);
+      token = await getTokenForServer(serverId, true);
       raw = await callOnce(token);
     } else {
       throw err;
     }
   }
   if (!Array.isArray(raw)) return [];
-  return raw.map(a => mapNdArtist(a as Record<string, unknown>, role));
+  return raw.map(a => ({ ...mapNdArtist(a as Record<string, unknown>, role), serverId }));
 }
 
 /**
@@ -243,30 +254,47 @@ export async function ndListAlbumsByArtistRole(
   sort: 'name' | 'max_year' | 'recently_added' | 'play_count' = 'name',
   order: 'ASC' | 'DESC' = 'ASC',
 ): Promise<SubsonicAlbum[]> {
-  const baseUrl = useAuthStore.getState().getBaseUrl();
-  if (!baseUrl) throw new Error('No server configured');
+  const serverId = useAuthStore.getState().activeServerId;
+  if (!serverId) throw new Error('No server configured');
+  return ndListAlbumsByArtistRoleForServer(serverId, artistId, role, start, end, sort, order);
+}
 
-  const libraryId = currentLibraryId();
+export async function ndListAlbumsByArtistRoleForServer(
+  serverId: string,
+  artistId: string,
+  role: NdArtistRole,
+  start: number,
+  end: number,
+  sort: 'name' | 'max_year' | 'recently_added' | 'play_count' = 'name',
+  order: 'ASC' | 'DESC' = 'ASC',
+  libraryIdOverride?: string | null,
+): Promise<SubsonicAlbum[]> {
+  const server = getServerById(serverId);
+  if (!server) throw new Error(`Unknown server: ${serverId}`);
+  const baseUrl = connectBaseUrlForServer(server);
+  const libraryId = libraryIdOverride === undefined
+    ? currentLibraryIdForServer(serverId)
+    : libraryIdOverride;
   const callOnce = async (token: string): Promise<unknown> =>
     invoke<unknown>('nd_list_albums_by_artist_role', {
       serverUrl: baseUrl, token, artistId, role, sort, order, start, end, libraryId,
     });
 
-  let token = await getToken();
+  let token = await getTokenForServer(serverId);
   let raw: unknown;
   try {
     raw = await callOnce(token);
   } catch (err) {
     const msg = String(err);
     if (msg.includes('401') || msg.includes('403')) {
-      token = await getToken(true);
+      token = await getTokenForServer(serverId, true);
       raw = await callOnce(token);
     } else {
       throw err;
     }
   }
   if (!Array.isArray(raw)) return [];
-  return raw.map(a => mapNdAlbum(a as Record<string, unknown>));
+  return raw.map(a => ({ ...mapNdAlbum(a as Record<string, unknown>), serverId }));
 }
 
 export interface NdLosslessAlbumEntry {

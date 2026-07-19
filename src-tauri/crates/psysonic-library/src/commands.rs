@@ -26,7 +26,8 @@ use crate::dto::{
     LibraryMainstageAlbumsRequest, LibraryMainstageAlbumsResponse, LibraryMostPlayedRequest,
     LibraryMostPlayedResponse, LibraryScopeAlbumDetailRequest, LibraryScopeAlbumDetailResponse,
     LibraryScopeArtistDetailRequest, LibraryScopeArtistDetailResponse, LibraryScopeBrowseRequest,
-    LibraryScopeBrowseResponse, LibraryScopeListRequest, LibraryScopeSearchRequest,
+    LibraryScopeBrowseResponse, LibraryScopeComposerDetailRequest,
+    LibraryScopeComposerDetailResponse, LibraryScopeListRequest, LibraryScopeSearchRequest,
     LibraryStatisticsDto, LibraryStatisticsRequest, LibraryTrackDto, LibraryTracksEnvelope,
     OfflinePathDto, PlaySessionDayDetailDto, PlaySessionHeatmapDayDto, PlaySessionInputDto,
     PlaySessionRecentDayDto, PlaySessionRecentTrackDto, PlaySessionYearBoundsDto,
@@ -893,6 +894,16 @@ pub async fn library_scope_list_artists(
     library_spawn_blocking(move || scope_merge::list_artists(&store, &request)).await
 }
 
+// NOT specta-collected: returns LibraryArtistDto carrying raw_json: Value.
+#[tauri::command]
+pub async fn library_scope_list_composers(
+    runtime: State<'_, LibraryRuntime>,
+    request: LibraryScopeListRequest,
+) -> Result<Vec<crate::dto::LibraryArtistDto>, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::composer_scope::list_composers(&store, &request)).await
+}
+
 // NOT specta-collected: returns a DTO carrying `raw_json: Value` (LibraryTrack/Album/ArtistDto) — specta rc.25 can't export serde_json::Value. Stays hand-written on generate_handler!.
 #[tauri::command]
 pub async fn library_scope_search_tracks(
@@ -921,6 +932,16 @@ pub async fn library_scope_artist_detail(
 ) -> Result<LibraryScopeArtistDetailResponse, String> {
     let store = Arc::clone(&runtime.store);
     library_spawn_blocking(move || scope_merge::artist_detail(&store, &request)).await
+}
+
+// NOT specta-collected: response carries raw_json: Value.
+#[tauri::command]
+pub async fn library_scope_composer_detail(
+    runtime: State<'_, LibraryRuntime>,
+    request: LibraryScopeComposerDetailRequest,
+) -> Result<LibraryScopeComposerDetailResponse, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::composer_scope::composer_detail(&store, &request)).await
 }
 
 // NOT specta-collected: returns a DTO carrying `raw_json: Value` (LibraryTrack/Album/ArtistDto) — specta rc.25 can't export serde_json::Value. Stays hand-written on generate_handler!.
@@ -1847,6 +1868,10 @@ fn purge_server_data(
             )?;
             tx.execute(
                 "DELETE FROM album_browse_projection WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute(
+                "DELETE FROM composer_album_projection WHERE server_id = ?1",
                 params![server_id],
             )?;
             tx.execute(

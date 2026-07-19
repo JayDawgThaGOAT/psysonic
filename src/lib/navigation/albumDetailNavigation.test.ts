@@ -171,6 +171,19 @@ describe('albumDetailNavigation', () => {
     });
   });
 
+  it('navigates to the concrete composer owner', () => {
+    const navigate = vi.fn();
+    navigateToComposerDetail(
+      navigate,
+      { pathname: '/composers', search: '?letter=C', hash: '', state: null },
+      'comp-1',
+      { serverId: 'srv-b' },
+    );
+    expect(navigate).toHaveBeenCalledWith('/composer/comp-1?server=srv-b', {
+      state: { returnTo: '/composers?letter=C' },
+    });
+  });
+
   it('skips main scroll reset when All Albums browse restore is pending', () => {
     expect(shouldSkipMainScrollResetOnRouteChange('/albums', { albumBrowseRestore: true })).toBe(true);
     expect(shouldSkipMainScrollResetOnRouteChange('/new-releases', { albumBrowseRestore: true })).toBe(true);

@@ -4,6 +4,7 @@ import {
   appendServerQuery,
   buildAlbumDetailPath,
   buildArtistDetailPath,
+  buildComposerDetailPath,
   readDetailServerId,
 } from '@/lib/navigation/detailServerScope';
 import { serverIndexKeyFromUrl } from '@/lib/server/serverIndexKey';
@@ -48,6 +49,13 @@ describe('detailServerScope', () => {
       serverId: 'srv-b',
       search: 'lossless=1',
     })).toBe('/album/album-1?lossless=1&server=srv-b');
+  });
+
+  it('buildComposerDetailPath preserves the concrete owner', () => {
+    expect(buildComposerDetailPath('composer-1', {
+      serverId: 'srv-b',
+      search: 'tab=works',
+    })).toBe('/composer/composer-1?tab=works&server=srv-b');
   });
 
   it('buildArtistDetailPath preserves an existing server when no owner is supplied', () => {

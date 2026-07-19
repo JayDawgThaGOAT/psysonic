@@ -11,6 +11,7 @@ pub use attach::{
     remove_cluster_files_for_library, CLUSTER_DB_FILENAME, CLUSTER_SCHEMA,
 };
 pub use norm::NORM_VERSION;
+pub(crate) use norm::norm_part;
 pub use rebuild::{cluster_rebuild_needed, ensure_cluster_keys_built, rebuild_cluster_keys};
 pub(crate) use rebuild::{
     delete_cluster_keys_for_tracks, prune_cluster_keys_for_scope, refresh_library_ids_for_albums,

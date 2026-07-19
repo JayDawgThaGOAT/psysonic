@@ -16,6 +16,7 @@ import { serverIndexKeyFromUrl } from '@/lib/server/serverIndexKey';
 import { useShareSearchPreview } from '@/features/search/hooks/useShareSearchPreview';
 import { useNavidromePublicSharePreview } from '@/features/search/hooks/useNavidromePublicSharePreview';
 import { playNavidromePublicShare } from '@/features/share';
+import { buildComposerDetailPath } from '@/lib/navigation/detailServerScope';
 
 export function useShareSearch(query: string, onSuccess?: () => void) {
   const { t } = useTranslation();
@@ -91,9 +92,9 @@ export function useShareSearch(query: string, onSuccess?: () => void) {
   const openShareComposer = useCallback(() => {
     if (shareMatch?.type !== 'composer' || !preview.shareComposer) return;
     if (!activateShareSearchServer(shareMatch.payload.srv, t)) return;
-    navigate(`/composer/${preview.shareComposer.id}`);
+    navigate(buildComposerDetailPath(preview.shareComposer.id, { serverId: shareServerId }));
     onSuccess?.();
-  }, [shareMatch, preview.shareComposer, navigate, t, onSuccess]);
+  }, [shareMatch, preview.shareComposer, navigate, shareServerId, t, onSuccess]);
 
   const playNavidromePublic = useCallback(async () => {
     if (

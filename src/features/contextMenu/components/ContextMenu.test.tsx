@@ -199,6 +199,23 @@ describe('ContextMenu — type=artist', () => {
     expect(container.textContent).toMatch(/Start Radio/i);
     expect(container.textContent).toMatch(/share/i);
   });
+
+  it('hides album-artist radio and playlist actions for composer credits', () => {
+    usePlayerStore.getState().openContextMenu(
+      100,
+      100,
+      { id: 'co-1', name: 'Composer', albumCount: 3, serverId: 'srv-owner' },
+      'artist',
+      undefined,
+      undefined,
+      undefined,
+      'composer',
+    );
+    const { container } = renderWithProviders(<ContextMenu />);
+    expect(container.textContent).not.toMatch(/Start Radio/i);
+    expect(container.textContent).not.toMatch(/Add to Playlist/i);
+    expect(container.textContent).toMatch(/share/i);
+  });
 });
 
 describe('ContextMenu — type=queue-item', () => {
