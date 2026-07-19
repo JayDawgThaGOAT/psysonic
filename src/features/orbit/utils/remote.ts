@@ -1,4 +1,4 @@
-import { getPlaylist, getPlaylists, updatePlaylistMeta } from '@/lib/api/subsonicPlaylists';
+import { getPlaylistForServer, getPlaylistsForServer, updatePlaylistMeta } from '@/lib/api/subsonicPlaylists';
 import {
   orbitSessionPlaylistName,
   parseOrbitState,
@@ -8,9 +8,9 @@ import {
 import { serialiseOrbitStateForWire, serialiseOutboxMeta } from '@/features/orbit/utils/helpers';
 
 /** Pull + parse the canonical state from the session playlist. Null on miss or parse error. */
-export async function readOrbitState(sessionPlaylistId: string): Promise<OrbitState | null> {
+export async function readOrbitState(sessionPlaylistId: string, serverId: string): Promise<OrbitState | null> {
   try {
-    const { playlist } = await getPlaylist(sessionPlaylistId);
+    const { playlist } = await getPlaylistForServer(serverId, sessionPlaylistId);
     if (!playlist.comment) return null;
     let raw: unknown;
     try { raw = JSON.parse(playlist.comment); } catch { return null; }
@@ -30,10 +30,11 @@ export async function readOrbitState(sessionPlaylistId: string): Promise<OrbitSt
 export async function writeOrbitState(
   sessionPlaylistId: string,
   state: OrbitState,
+  serverId: string,
 ): Promise<void> {
   const comment = serialiseOrbitStateForWire(state);
   const name = orbitSessionPlaylistName(state.sid);
-  await updatePlaylistMeta(sessionPlaylistId, name, comment, /* public */ true);
+  await updatePlaylistMeta(sessionPlaylistId, name, comment, /* public */ true, serverId);
 }
 
 /**
@@ -44,9 +45,10 @@ export async function writeOrbitState(
 export async function writeOrbitHeartbeat(
   outboxPlaylistId: string,
   outboxName: string,
+  serverId: string,
 ): Promise<void> {
   const meta: OrbitOutboxMeta = { ts: Date.now() };
-  await updatePlaylistMeta(outboxPlaylistId, outboxName, serialiseOutboxMeta(meta), /* public */ true);
+  await updatePlaylistMeta(outboxPlaylistId, outboxName, serialiseOutboxMeta(meta), /* public */ true, serverId);
 }
 
 /**
@@ -54,10 +56,10 @@ export async function writeOrbitHeartbeat(
  * Scans the user's visible playlist list — Navidrome exposes public
  * playlists from other users, so a guest can find the host's session.
  */
-export async function findSessionPlaylistId(sid: string): Promise<string | null> {
+export async function findSessionPlaylistId(sid: string, serverId: string): Promise<string | null> {
   const target = orbitSessionPlaylistName(sid);
   try {
-    const all = await getPlaylists(true);
+    const all = await getPlaylistsForServer(serverId, true);
     const hit = all.find(p => p.name === target);
     return hit?.id ?? null;
   } catch { return null; }

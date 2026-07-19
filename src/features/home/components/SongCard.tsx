@@ -53,12 +53,12 @@ function SongCard({
   const navigateToAlbum = useNavigateToAlbum();
 
   const handlePlay = () => {
-    if (orbitActive) { addTrackToOrbit(song.id); return; }
+    if (orbitActive) { addTrackToOrbit(song.id, song.serverId); return; }
     enqueueAndPlay(song);
   };
 
   const handleEnqueue = () => {
-    if (orbitActive) { addTrackToOrbit(song.id); return; }
+    if (orbitActive) { addTrackToOrbit(song.id, song.serverId); return; }
     enqueue([songToTrack(song)]);
   };
 

@@ -1,4 +1,4 @@
-import { getPlaylist, getPlaylists, updatePlaylist } from '@/lib/api/subsonicPlaylists';
+import { getPlaylistForServer, getPlaylistsForServer, updatePlaylist } from '@/lib/api/subsonicPlaylists';
 import { type OrbitOutboxMeta } from '@/features/orbit/api/orbit';
 import { parseOutboxPlaylistName } from '@/features/orbit/utils/helpers';
 import { type OutboxSnapshot } from '@/features/orbit/utils/stateMath';
@@ -7,8 +7,12 @@ import { type OutboxSnapshot } from '@/features/orbit/utils/stateMath';
  * Host: list all guest outbox playlists for the current session.
  * Skips the host's own outbox — that's heartbeat-only, not a suggestion channel.
  */
-async function listGuestOutboxes(sid: string, hostUsername: string): Promise<Array<{ id: string; name: string; user: string }>> {
-  const all = await getPlaylists(true).catch(() => []);
+async function listGuestOutboxes(
+  sid: string,
+  hostUsername: string,
+  serverId: string,
+): Promise<Array<{ id: string; name: string; user: string }>> {
+  const all = await getPlaylistsForServer(serverId, true).catch(() => []);
   const result: Array<{ id: string; name: string; user: string }> = [];
   for (const p of all) {
     const user = parseOutboxPlaylistName(p.name, sid);
@@ -21,9 +25,12 @@ async function listGuestOutboxes(sid: string, hostUsername: string): Promise<Arr
 /**
  * Host: read one outbox's contents (suggested tracks + heartbeat ts).
  */
-async function readOutbox(playlistId: string): Promise<{ trackIds: string[]; lastHeartbeat: number }> {
+async function readOutbox(
+  playlistId: string,
+  serverId: string,
+): Promise<{ trackIds: string[]; lastHeartbeat: number }> {
   try {
-    const { playlist, songs } = await getPlaylist(playlistId);
+    const { playlist, songs } = await getPlaylistForServer(serverId, playlistId);
     let ts = 0;
     if (playlist.comment) {
       try {
@@ -51,15 +58,19 @@ async function readOutbox(playlistId: string): Promise<{ trackIds: string[]; las
  * Returns a list of snapshots, one per live guest outbox. Errors on
  * individual outboxes are swallowed — best-effort.
  */
-export async function sweepGuestOutboxes(sid: string, hostUsername: string): Promise<OutboxSnapshot[]> {
-  const outboxes = await listGuestOutboxes(sid, hostUsername);
+export async function sweepGuestOutboxes(
+  sid: string,
+  hostUsername: string,
+  serverId: string,
+): Promise<OutboxSnapshot[]> {
+  const outboxes = await listGuestOutboxes(sid, hostUsername, serverId);
   const snaps: OutboxSnapshot[] = [];
   for (const ob of outboxes) {
-    const { trackIds, lastHeartbeat } = await readOutbox(ob.id);
+    const { trackIds, lastHeartbeat } = await readOutbox(ob.id, serverId);
     snaps.push({ user: ob.user, outboxPlaylistId: ob.id, trackIds, lastHeartbeat });
     if (trackIds.length > 0) {
       // Clear the outbox tracks. Leaves the heartbeat comment untouched.
-      try { await updatePlaylist(ob.id, [], trackIds.length); } catch { /* best-effort */ }
+      try { await updatePlaylist(ob.id, [], trackIds.length, serverId); } catch { /* best-effort */ }
     }
   }
   return snaps;

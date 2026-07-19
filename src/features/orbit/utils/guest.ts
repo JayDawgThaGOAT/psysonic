@@ -1,9 +1,13 @@
-import { createPlaylist, deletePlaylist, getPlaylist, getPlaylists, addSongsToPlaylist } from '@/lib/api/subsonicPlaylists';
-import { getSong } from '@/lib/api/subsonicLibrary';
+import { createPlaylist, deletePlaylist, getPlaylistForServer, getPlaylistsForServer, addSongsToPlaylist } from '@/lib/api/subsonicPlaylists';
+import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { useAuthStore } from '@/store/authStore';
 import { usePlaylistMembershipStore } from '@/store/playlistMembershipStore';
-import { useOrbitStore } from '@/features/orbit/store/orbitStore';
+import {
+  orbitBindingIsCurrent,
+  orbitBindingRevisionIsCurrent,
+  useOrbitStore,
+} from '@/features/orbit/store/orbitStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import {
   orbitOutboxPlaylistName,
@@ -13,6 +17,7 @@ import {
 import { suggestionKey } from '@/features/orbit/utils/helpers';
 import { notePendingSuggestion } from '@/features/orbit/utils/pendingResend';
 import { findSessionPlaylistId, readOrbitState, writeOrbitHeartbeat } from '@/features/orbit/utils/remote';
+import { orbitActionServerMatches } from '@/features/orbit/utils/orbitServerScope';
 
 export class OrbitJoinError extends Error {
   constructor(
@@ -39,25 +44,32 @@ export class OrbitJoinError extends Error {
  * Throws `OrbitJoinError` on any gate failure; caller shows an error
  * modal and does nothing else.
  */
-export async function joinOrbitSession(sid: string): Promise<OrbitState> {
-  const server = useAuthStore.getState().getActiveServer();
+export async function joinOrbitSession(sid: string, requestedServerId?: string): Promise<OrbitState> {
+  const auth = useAuthStore.getState();
+  const server = requestedServerId
+    ? auth.servers.find(candidate => candidate.id === requestedServerId)
+    : auth.getActiveServer();
   const username = server?.username;
-  if (!username) throw new OrbitJoinError('no-user', 'No active Navidrome server / user');
+  if (!server || !username) throw new OrbitJoinError('no-user', 'No active Navidrome server / user');
+  const serverId = server.id;
 
   const store = useOrbitStore.getState();
   if (store.phase !== 'idle') {
     throw new OrbitJoinError('server-error', `Cannot join while phase is ${store.phase}`);
   }
+  const joinRevision = store.bindingRevision;
 
   store.setPhase('joining');
 
   let outboxPlaylistId: string | null = null;
   try {
     // 1) Locate the session playlist and read its state blob.
-    const sessionPlaylistId = await findSessionPlaylistId(sid);
+    const sessionPlaylistId = await findSessionPlaylistId(sid, serverId);
+    if (!orbitBindingRevisionIsCurrent(joinRevision)) throw new OrbitJoinError('server-error', 'Join superseded');
     if (!sessionPlaylistId) throw new OrbitJoinError('not-found', `Session ${sid} not found on server`);
 
-    const state = await readOrbitState(sessionPlaylistId);
+    const state = await readOrbitState(sessionPlaylistId, serverId);
+    if (!orbitBindingRevisionIsCurrent(joinRevision)) throw new OrbitJoinError('server-error', 'Join superseded');
     if (!state)         throw new OrbitJoinError('not-found', `Session ${sid} has no valid state`);
     if (state.ended)    throw new OrbitJoinError('ended',     `Session ${sid} has ended`);
 
@@ -81,25 +93,29 @@ export async function joinOrbitSession(sid: string): Promise<OrbitState> {
     // (null) and retry only on failure before falling back to create.
     const lookupOutbox = async () => {
       try {
-        return (await getPlaylists(true)).find(p => p.name === outboxName) ?? null;
+        return (await getPlaylistsForServer(serverId, true)).find(p => p.name === outboxName) ?? null;
       } catch {
         return undefined;
       }
     };
     let existing = await lookupOutbox();
     if (existing === undefined) existing = await lookupOutbox();
+    if (!orbitBindingRevisionIsCurrent(joinRevision)) throw new OrbitJoinError('server-error', 'Join superseded');
     if (existing) {
       outboxPlaylistId = existing.id;
     } else {
-      const outbox = await createPlaylist(outboxName);
+      const outbox = await createPlaylist(outboxName, undefined, serverId);
       outboxPlaylistId = outbox.id;
     }
-    await writeOrbitHeartbeat(outboxPlaylistId, outboxName);
+    await writeOrbitHeartbeat(outboxPlaylistId, outboxName, serverId);
+    if (!orbitBindingRevisionIsCurrent(joinRevision)) throw new OrbitJoinError('server-error', 'Join superseded');
 
     // 4) Bind the local store. The host's next poll will register us in
     //    `participants` — we don't self-mutate the canonical state.
     useOrbitStore.setState({
       role: 'guest',
+      serverId,
+      bindingRevision: joinRevision + 1,
       sessionId: sid,
       sessionPlaylistId,
       outboxPlaylistId,
@@ -112,8 +128,8 @@ export async function joinOrbitSession(sid: string): Promise<OrbitState> {
     return state;
   } catch (err) {
     // Best-effort cleanup.
-    if (outboxPlaylistId) { try { await deletePlaylist(outboxPlaylistId); } catch { /* ignore */ } }
-    useOrbitStore.getState().setPhase('idle');
+    if (outboxPlaylistId) { try { await deletePlaylist(outboxPlaylistId, serverId); } catch { /* ignore */ } }
+    if (orbitBindingRevisionIsCurrent(joinRevision)) useOrbitStore.getState().setPhase('idle');
     throw err;
   }
 }
@@ -126,14 +142,15 @@ export async function joinOrbitSession(sid: string): Promise<OrbitState> {
  * canonical session playlist — that's the host's property.
  */
 export async function leaveOrbitSession(): Promise<void> {
-  const { role, outboxPlaylistId } = useOrbitStore.getState();
+  const { role, serverId, bindingRevision, outboxPlaylistId } = useOrbitStore.getState();
   if (role !== 'guest') return;
+  if (!serverId) { useOrbitStore.getState().reset(); return; }
 
   if (outboxPlaylistId) {
-    try { await deletePlaylist(outboxPlaylistId); } catch { /* best-effort */ }
+    try { await deletePlaylist(outboxPlaylistId, serverId); } catch { /* best-effort */ }
   }
 
-  useOrbitStore.getState().reset();
+  if (orbitBindingRevisionIsCurrent(bindingRevision)) useOrbitStore.getState().reset();
 }
 
 /** Why a guest's suggestion would be blocked, in priority order. `null` means
@@ -146,9 +163,9 @@ export type OrbitSuggestGateReason = 'not-guest' | 'muted' | null;
  * {@link suggestOrbitTrack} as a defensive check.
  */
 export function evaluateOrbitSuggestGate(): { allowed: boolean; reason: OrbitSuggestGateReason } {
-  const { role, state } = useOrbitStore.getState();
-  if (role !== 'guest' || !state) return { allowed: false, reason: 'not-guest' };
-  const username = useAuthStore.getState().getActiveServer()?.username ?? '';
+  const { role, serverId, state } = useOrbitStore.getState();
+  if (role !== 'guest' || !serverId || !state) return { allowed: false, reason: 'not-guest' };
+  const username = useAuthStore.getState().servers.find(server => server.id === serverId)?.username ?? '';
   if (state.suggestionBlocked?.includes(username)) {
     return { allowed: false, reason: 'muted' };
   }
@@ -169,16 +186,36 @@ export class OrbitSuggestBlockedError extends Error {
  * consume it and publish the authoritative queue update in the state blob.
  * No state mutation here — the guest never touches canonical state.
  */
-export async function suggestOrbitTrack(trackId: string): Promise<void> {
+export async function suggestOrbitTrack(trackId: string, trackServerId?: string): Promise<void> {
   const gate = evaluateOrbitSuggestGate();
   if (!gate.allowed && gate.reason && gate.reason !== 'not-guest') {
     throw new OrbitSuggestBlockedError(gate.reason);
   }
-  const { role, outboxPlaylistId, sessionId } = useOrbitStore.getState();
+  const {
+    role,
+    serverId,
+    bindingRevision,
+    outboxPlaylistId,
+    sessionId,
+    sessionPlaylistId,
+  } = useOrbitStore.getState();
   if (role !== 'guest') throw new Error('Not joined to a session as a guest');
-  if (!outboxPlaylistId || !sessionId) throw new Error('No outbox bound');
+  if (!serverId || !outboxPlaylistId || !sessionId || !sessionPlaylistId) throw new Error('No outbox bound');
+  if (!orbitActionServerMatches(
+    serverId,
+    trackServerId,
+    useAuthStore.getState().activeServerId,
+  )) {
+    throw new Error('Track belongs to another server');
+  }
 
-  await ensureTrackInOutbox(outboxPlaylistId, trackId);
+  await ensureTrackInOutbox(outboxPlaylistId, trackId, serverId);
+  if (!orbitBindingIsCurrent({
+    bindingRevision,
+    role: 'guest',
+    serverId,
+    sessionPlaylistId,
+  })) return;
 
   // Record the suggestion locally so the UI can surface it as "waiting on
   // host" until the host's next sweep merges it into the shared queue.
@@ -194,12 +231,18 @@ export async function suggestOrbitTrack(trackId: string): Promise<void> {
  * current server list before append. A no-op when the track is already present
  * means the host already cleared + recorded it (lost-update re-send path).
  */
-export async function ensureTrackInOutbox(outboxPlaylistId: string, trackId: string): Promise<void> {
-  const { songs } = await getPlaylist(outboxPlaylistId);
+export async function ensureTrackInOutbox(
+  outboxPlaylistId: string,
+  trackId: string,
+  requestedServerId?: string,
+): Promise<void> {
+  const serverId = requestedServerId ?? useOrbitStore.getState().serverId;
+  if (!serverId) throw new Error('Orbit server unavailable');
+  const { songs } = await getPlaylistForServer(serverId, outboxPlaylistId);
   const ids = songs.map(s => s.id);
   if (ids.includes(trackId)) return;
-  await addSongsToPlaylist(outboxPlaylistId, [trackId]);
-  usePlaylistMembershipStore.getState().setPlaylistSongIds(outboxPlaylistId, [...ids, trackId]);
+  await addSongsToPlaylist(outboxPlaylistId, [trackId], serverId);
+  usePlaylistMembershipStore.getState().setPlaylistSongIds(outboxPlaylistId, [...ids, trackId], serverId);
 }
 
 /**
@@ -210,8 +253,16 @@ export async function ensureTrackInOutbox(outboxPlaylistId: string, trackId: str
 export async function approveOrbitSuggestion(q: OrbitQueueItem): Promise<void> {
   const store = useOrbitStore.getState();
   if (store.role !== 'host' || !store.state) return;
+  if (!store.serverId || !store.sessionPlaylistId) return;
+  const binding = {
+    bindingRevision: store.bindingRevision,
+    role: 'host' as const,
+    serverId: store.serverId,
+    sessionPlaylistId: store.sessionPlaylistId,
+  };
   try {
-    const song = await getSong(q.trackId);
+    const song = await getSongForServer(store.serverId, q.trackId);
+    if (!orbitBindingIsCurrent(binding)) return;
     if (!song) return;
     const track = songToTrack(song);
     usePlayerStore.getState().enqueue([track]);

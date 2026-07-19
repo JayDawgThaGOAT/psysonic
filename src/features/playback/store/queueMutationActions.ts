@@ -1,4 +1,4 @@
-import { orbitBulkGuard } from '@/store/orbitRuntime';
+import { orbitAllowsTrackServer, orbitBulkGuard, orbitSnapshot } from '@/store/orbitRuntime';
 import { useAuthStore } from '@/store/authStore';
 import { prefetchLoudnessForEnqueuedTracks } from '@/features/playback/store/loudnessPrefetch';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
@@ -131,6 +131,10 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
     },
 
     enqueue: (tracks, _orbitConfirmed = false, skipQueueUndo = false) => {
+      if (orbitSnapshot().role === 'host') {
+        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        if (tracks.length === 0) return;
+      }
       if (!_orbitConfirmed && tracks.length > 1) {
         void orbitBulkGuard(tracks.length).then(ok => {
           if (ok) get().enqueue(tracks, true, skipQueueUndo);
@@ -164,6 +168,10 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
     },
 
     enqueueRadio: (tracks, artistId, serverId) => {
+      if (orbitSnapshot().role === 'host') {
+        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        if (tracks.length === 0) return;
+      }
       if (artistId !== undefined) {
         const ownerServerId = serverId
           ?? tracks.find(track => track.serverId)?.serverId
@@ -221,6 +229,10 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
     },
 
     enqueueAt: (tracks, insertIndex, _orbitConfirmed = false) => {
+      if (orbitSnapshot().role === 'host') {
+        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        if (tracks.length === 0) return;
+      }
       if (!_orbitConfirmed && tracks.length > 1) {
         void orbitBulkGuard(tracks.length).then(ok => {
           if (ok) get().enqueueAt(tracks, insertIndex, true);
@@ -245,6 +257,9 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
     },
 
     playNext: (tracks) => {
+      if (orbitSnapshot().role === 'host') {
+        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+      }
       if (tracks.length === 0) return;
       ensureQueueServerPinned(tracks);
       const state = get();

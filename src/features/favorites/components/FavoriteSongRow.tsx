@@ -14,7 +14,7 @@ import { OptionalBrowseTrackRowCoverThumb } from '@/cover/TrackRowCoverThumb';
 
 export interface FavoriteSongRowCallbacks {
   activate: (song: SubsonicSong, index: number, e: React.MouseEvent) => void;
-  dblOrbit: (songId: string, e: React.MouseEvent) => void;
+  dblOrbit: (song: SubsonicSong, e: React.MouseEvent) => void;
   context: (song: SubsonicSong, e: React.MouseEvent) => void;
   mouseDownRow: (song: SubsonicSong, e: React.MouseEvent) => void;
   toggleSelect: (songId: string, index: number, shift: boolean) => void;
@@ -56,7 +56,7 @@ function FavoriteSongRow({
       style={gridStyle}
       role="row"
       onClick={e => cb.activate(song, i, e)}
-      onDoubleClick={orbitActive ? e => cb.dblOrbit(song.id, e) : undefined}
+      onDoubleClick={orbitActive ? e => cb.dblOrbit(song, e) : undefined}
       onContextMenu={e => cb.context(song, e)}
       onMouseDown={e => cb.mouseDownRow(song, e)}
     >

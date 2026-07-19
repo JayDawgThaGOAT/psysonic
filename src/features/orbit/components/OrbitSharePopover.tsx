@@ -20,14 +20,13 @@ interface Props {
 export default function OrbitSharePopover({ anchorRef, onClose }: Props) {
   const { t } = useTranslation();
   const sessionId = useOrbitStore(s => s.sessionId);
+  const serverId = useOrbitStore(s => s.serverId);
+  const server = useAuthStore(s => s.servers.find(candidate => candidate.id === serverId));
   const popRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
 
-  const shareLink = sessionId
-    ? (() => {
-        const active = useAuthStore.getState().getActiveServer();
-        return buildOrbitShareLink(active ? serverShareBaseUrl(active) : '', sessionId);
-      })()
+  const shareLink = sessionId && server
+    ? buildOrbitShareLink(serverShareBaseUrl(server), sessionId)
     : null;
 
   useEffect(() => {

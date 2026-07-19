@@ -61,7 +61,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                     {...(muted ? { 'data-tooltip': t('orbit.suggestBlockedMuted') } : {})}
                     onClick={() => handleAction(() => {
                       if (muted) { showToast(t('orbit.suggestBlockedMuted'), 3500, 'error'); return; }
-                      suggestOrbitTrack(song.id)
+                      suggestOrbitTrack(song.id, song.serverId)
                         .then(() => showToast(t('orbit.ctxSuggestedToast'), 2200, 'info'))
                         .catch(err => {
                           if (err instanceof OrbitSuggestBlockedError && err.reason === 'muted') {
@@ -78,7 +78,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
               })()}
               {orbitRole === 'host' && (
                 <div className="context-menu-item" onClick={() => handleAction(() => {
-                  hostEnqueueToOrbit(song.id)
+                  hostEnqueueToOrbit(song.id, song.serverId)
                     .then(() => showToast(t('orbit.ctxAddedHostToast'), 2200, 'info'))
                     .catch(() => showToast(t('orbit.ctxAddHostFailed'), 3000, 'error'));
                 })}>
@@ -221,7 +221,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
                     {...(muted ? { 'data-tooltip': t('orbit.suggestBlockedMuted') } : {})}
                     onClick={() => handleAction(() => {
                       if (muted) { showToast(t('orbit.suggestBlockedMuted'), 3500, 'error'); return; }
-                      suggestOrbitTrack(song.id)
+                      suggestOrbitTrack(song.id, song.serverId)
                         .then(() => showToast(t('orbit.ctxSuggestedToast'), 2200, 'info'))
                         .catch(err => {
                           if (err instanceof OrbitSuggestBlockedError && err.reason === 'muted') {
@@ -238,7 +238,7 @@ export default function SongContextItems(props: ContextMenuItemsProps) {
               })()}
               {orbitRole === 'host' && (
                 <div className="context-menu-item" onClick={() => handleAction(() => {
-                  hostEnqueueToOrbit(song.id)
+                  hostEnqueueToOrbit(song.id, song.serverId)
                     .then(() => showToast(t('orbit.ctxAddedHostToast'), 2200, 'info'))
                     .catch(() => showToast(t('orbit.ctxAddHostFailed'), 3000, 'error'));
                 })}>

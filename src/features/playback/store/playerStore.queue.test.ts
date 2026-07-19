@@ -29,6 +29,7 @@ vi.mock('@/lib/api/subsonic', async () => {
 vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/store/orbitRuntime')>()),
   orbitBulkGuard: vi.fn(async () => true),
+  orbitAllowsTrackServer: vi.fn(() => true),
 }));
 
 import { usePlayerStore } from '@/features/playback/store/playerStore';

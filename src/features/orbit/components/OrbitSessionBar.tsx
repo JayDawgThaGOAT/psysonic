@@ -1,4 +1,4 @@
-import { getSong } from '@/lib/api/subsonicLibrary';
+import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { useEffect, useRef, useState } from 'react';
 import { X, RefreshCw, Shuffle, Settings2, Share2, HelpCircle, Activity } from 'lucide-react';
@@ -11,6 +11,7 @@ import {
   leaveOrbitSession,
   computeOrbitDriftMs,
   effectiveShuffleIntervalMs,
+  orbitServerMatches,
 } from '@/features/orbit/utils/orbit';
 import { estimateLivePosition } from '@/features/orbit/api/orbit';
 import OrbitParticipantsPopover from '@/features/orbit/components/OrbitParticipantsPopover';
@@ -45,6 +46,7 @@ export default function OrbitSessionBar() {
   const state              = useOrbitStore(s => s.state);
   const role               = useOrbitStore(s => s.role);
   const phase              = useOrbitStore(s => s.phase);
+  const serverId           = useOrbitStore(s => s.serverId);
   const errorMessage       = useOrbitStore(s => s.errorMessage);
   const [nowMs, setNowMs]  = useState(() => Date.now());
   const [peopleOpen, setPeopleOpen] = useState(false);
@@ -104,7 +106,10 @@ export default function OrbitSessionBar() {
     }
     const player = usePlayerStore.getState();
     const localPositionMs = Math.round((player.currentTime ?? 0) * 1000);
-    const driftMs = player.currentTrack?.id === state.currentTrack.trackId
+    const sameOrbitTrack = player.currentTrack?.id === state.currentTrack.trackId
+      && !!serverId
+      && orbitServerMatches(serverId, player.currentTrack.serverId ?? player.queueServerId);
+    const driftMs = sameOrbitTrack
       ? computeOrbitDriftMs(state, localPositionMs, nowMs)
       : null;
     const absDrift = driftMs == null ? Infinity : Math.abs(driftMs);
@@ -134,7 +139,7 @@ export default function OrbitSessionBar() {
         overSinceRef.current = null;
       }
     }
-  }, [role, state, nowMs, showCatchUp, SHOW_THRESHOLD_MS]);
+  }, [role, serverId, state, nowMs, showCatchUp, SHOW_THRESHOLD_MS]);
 
   // Bar is visible while active, ended (pre-ack), or explicitly kicked / soft-removed.
   const shouldShowBar = !!state && (
@@ -171,18 +176,23 @@ export default function OrbitSessionBar() {
   };
 
   const onCatchUp = async () => {
-    if (!state.currentTrack) return;
+    if (!serverId || !state.currentTrack) return;
     const trackId = state.currentTrack.trackId;
     const targetMs = estimateLivePosition(state, Date.now());
     const targetSec = Math.max(0, targetMs / 1000);
     const hostPlaying = state.isPlaying;
     try {
-      const song = await getSong(trackId);
+      const song = await getSongForServer(serverId, trackId);
       if (!song) return;
       const track = songToTrack(song);
       const player = usePlayerStore.getState();
       const fraction = targetSec / Math.max(1, track.duration);
-      if (player.currentTrack?.id === trackId) {
+      const hasOrbitTrack = () => {
+        const p = usePlayerStore.getState();
+        return p.currentTrack?.id === trackId
+          && orbitServerMatches(serverId, p.currentTrack.serverId ?? p.queueServerId);
+      };
+      if (hasOrbitTrack()) {
         // `player.seek` debounces the underlying `audio_seek` invoke via
         // `setTimeout(0)`, while `pause`/`resume` fire their invokes
         // synchronously. Calling them back-to-back races on the Tauri
@@ -196,7 +206,7 @@ export default function OrbitSessionBar() {
         if (hostPlaying !== player.isPlaying) {
           window.setTimeout(() => {
             const p = usePlayerStore.getState();
-            if (p.currentTrack?.id !== trackId) return;
+            if (!hasOrbitTrack()) return;
             if (hostPlaying && !p.isPlaying) p.resume();
             else if (!hostPlaying && p.isPlaying) p.pause();
           }, 200);
@@ -212,7 +222,7 @@ export default function OrbitSessionBar() {
         const deadline = Date.now() + 4000;
         const poll = () => {
           const p = usePlayerStore.getState();
-          if (p.currentTrack?.id !== trackId) return; // user changed tracks
+          if (!hasOrbitTrack()) return; // user changed tracks
           if (p.isPlaying || Date.now() >= deadline) {
             p.seek(fraction);
             if (!hostPlaying && p.isPlaying) p.pause();

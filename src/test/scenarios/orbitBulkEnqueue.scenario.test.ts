@@ -12,13 +12,16 @@ import { resetAllStores } from '@/test/helpers/storeReset';
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 let bulkGuard: Mock<(count: number) => Promise<boolean>>;
+let allowsTrackServer: Mock<(serverId?: string) => boolean>;
 
 beforeEach(() => {
   resetAllStores();
   bulkGuard = vi.fn<(count: number) => Promise<boolean>>(async () => true);
+  allowsTrackServer = vi.fn<(serverId?: string) => boolean>(() => true);
   registerOrbitRuntime({
-    getSnapshot: () => ({ role: 'host', phase: 'active', state: null }),
+    getSnapshot: () => ({ role: 'host', phase: 'active', state: null, serverId: 'srv-owner' }),
     bulkGuard,
+    allowsTrackServer,
   });
 });
 
@@ -37,6 +40,42 @@ describe('orbit session × bulk enqueue', () => {
     await flush();
     expect(bulkGuard).toHaveBeenCalledWith(2);
     expect(usePlayerStore.getState().queueItems).toHaveLength(0);
+  });
+
+  it('host queue mutations discard tracks owned by another server', async () => {
+    allowsTrackServer.mockImplementation(serverId => serverId === 'srv-owner');
+    const [owner, foreign] = makeTracks(2);
+    owner.serverId = 'srv-owner';
+    foreign.serverId = 'srv-foreign';
+
+    usePlayerStore.getState().enqueue([owner, foreign]);
+    await flush();
+
+    expect(usePlayerStore.getState().queueItems).toEqual([
+      expect.objectContaining({ trackId: owner.id, serverId: 'srv-owner' }),
+    ]);
+  });
+
+  it('host play ignores a foreign-server replacement', () => {
+    allowsTrackServer.mockImplementation(serverId => serverId === 'srv-owner');
+    const [foreign] = makeTracks(1);
+    foreign.serverId = 'srv-foreign';
+
+    usePlayerStore.getState().playTrack(foreign, [foreign]);
+
+    expect(usePlayerStore.getState().currentTrack).toBeNull();
+    expect(usePlayerStore.getState().queueItems).toEqual([]);
+  });
+
+  it('host Play Next ignores a foreign owner without rebinding the queue', () => {
+    allowsTrackServer.mockImplementation(serverId => serverId === 'srv-owner');
+    const [foreign] = makeTracks(1);
+    foreign.serverId = 'srv-foreign';
+
+    usePlayerStore.getState().playNext([foreign]);
+
+    expect(usePlayerStore.getState().queueServerId).toBeNull();
+    expect(usePlayerStore.getState().queueItems).toEqual([]);
   });
 
   it('single track bypasses the guard and enqueues directly', async () => {

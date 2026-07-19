@@ -37,7 +37,7 @@ export default function OrbitStartModal({ onClose }: Props) {
   const [hasCopied, setHasCopied] = useState(false);
   const [clearQueue, setClearQueue] = useState(false);
 
-  const server     = useAuthStore.getState().getActiveServer();
+  const [server]   = useState(() => useAuthStore.getState().getActiveServer());
   // Orbit links go to remote guests — use the share URL (public by default
   // when both are set; LAN only if shareUsesLocalUrl is on). The LAN warning
   // then correctly reads the address the guest will actually see.
@@ -47,8 +47,6 @@ export default function OrbitStartModal({ onClose }: Props) {
 
   const shareLink = useMemo(
     () => buildOrbitShareLink(serverBase, sid),
-    // React Compiler rule: manual memoization is intentional and must be preserved.
-    // eslint-disable-next-line react-hooks/preserve-manual-memoization
     [serverBase, sid],
   );
 
@@ -83,7 +81,7 @@ export default function OrbitStartModal({ onClose }: Props) {
     setBusy(true);
     try {
       if (clearQueue) usePlayerStore.getState().clearQueue();
-      await startOrbitSession({ name: trimmed, maxUsers, sid });
+      await startOrbitSession({ name: trimmed, maxUsers, sid, serverId: server?.id });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : t('orbit.errStartFailed'));

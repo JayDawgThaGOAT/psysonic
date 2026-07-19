@@ -49,6 +49,7 @@ export default function OrbitJoinModal({ onClose }: Props) {
 
     setBusy(true);
     try {
+      let targetServerId = active?.id ?? '';
       // Auto-switch to the link's server if the user has an account for it.
       // Multiple candidates → picker modal. switch tears down any lingering
       // orbit session.
@@ -68,14 +69,17 @@ export default function OrbitJoinModal({ onClose }: Props) {
           setError(t('orbit.toastSwitchFailed', { url: wantUrl }));
           return;
         }
+        targetServerId = target.id;
       }
 
-      const playlistId = await findSessionPlaylistId(parsed.sid);
+      if (!targetServerId) { setError(t('orbit.joinErrNoUser')); return; }
+
+      const playlistId = await findSessionPlaylistId(parsed.sid, targetServerId);
       if (!playlistId) { setError(t('orbit.joinErrNotFound')); return; }
-      const state = await readOrbitState(playlistId);
+      const state = await readOrbitState(playlistId, targetServerId);
       if (!state)      { setError(t('orbit.joinErrNotFound')); return; }
       if (state.ended) { setError(t('orbit.joinErrEnded')); return; }
-      await joinOrbitSession(parsed.sid);
+      await joinOrbitSession(parsed.sid, targetServerId);
       showToast(t('orbit.toastJoined'), 2200, 'info');
       onClose();
     } catch (e) {

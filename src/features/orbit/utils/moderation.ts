@@ -1,5 +1,5 @@
-import { deletePlaylist, getPlaylists } from '@/lib/api/subsonicPlaylists';
-import { useOrbitStore } from '@/features/orbit/store/orbitStore';
+import { deletePlaylist, getPlaylistsForServer } from '@/lib/api/subsonicPlaylists';
+import { orbitBindingIsCurrent, useOrbitStore } from '@/features/orbit/store/orbitStore';
 import { orbitOutboxPlaylistName, type OrbitState } from '@/features/orbit/api/orbit';
 import { writeOrbitState } from '@/features/orbit/utils/remote';
 
@@ -20,7 +20,14 @@ export async function kickOrbitParticipant(username: string): Promise<void> {
   const state = store.state;
   const sessionPlaylistId = store.sessionPlaylistId;
   const sid = store.sessionId;
-  if (!state || !sessionPlaylistId || !sid) return;
+  const serverId = store.serverId;
+  if (!state || !serverId || !sessionPlaylistId || !sid) return;
+  const binding = {
+    bindingRevision: store.bindingRevision,
+    role: 'host' as const,
+    serverId,
+    sessionPlaylistId,
+  };
   if (username === state.host) return;         // host can't self-kick
   if (state.kicked.includes(username)) return; // already kicked
 
@@ -28,23 +35,26 @@ export async function kickOrbitParticipant(username: string): Promise<void> {
   // carrying outbox ids in the state blob just for this operation.
   const outboxName = orbitOutboxPlaylistName(sid, username);
   try {
-    const all = await getPlaylists(true);
+    const all = await getPlaylistsForServer(serverId, true);
     const hit = all.find(p => p.name === outboxName);
-    if (hit) await deletePlaylist(hit.id);
+    if (hit) await deletePlaylist(hit.id, serverId);
   } catch { /* best-effort */ }
+  if (!orbitBindingIsCurrent(binding)) return;
 
   // 2) Update state: append kick, drop from participants. Also strip any
   // pending soft-`removed` marker for the same user — the permanent ban
   // supersedes it.
+  const currentState = useOrbitStore.getState().state;
+  if (!currentState) return;
   const nextState: OrbitState = {
-    ...state,
-    kicked: [...state.kicked, username],
-    participants: state.participants.filter(p => p.user !== username),
-    removed: (state.removed ?? []).filter(r => r.user !== username),
+    ...currentState,
+    kicked: [...currentState.kicked, username],
+    participants: currentState.participants.filter(p => p.user !== username),
+    removed: (currentState.removed ?? []).filter(r => r.user !== username),
   };
   useOrbitStore.getState().setState(nextState);
   try {
-    await writeOrbitState(sessionPlaylistId, nextState);
+    await writeOrbitState(sessionPlaylistId, nextState, serverId);
   } catch { /* best-effort; next host tick will retry via its normal push */ }
 }
 
@@ -67,7 +77,14 @@ export async function removeOrbitParticipant(username: string): Promise<void> {
   const state = store.state;
   const sessionPlaylistId = store.sessionPlaylistId;
   const sid = store.sessionId;
-  if (!state || !sessionPlaylistId || !sid) return;
+  const serverId = store.serverId;
+  if (!state || !serverId || !sessionPlaylistId || !sid) return;
+  const binding = {
+    bindingRevision: store.bindingRevision,
+    role: 'host' as const,
+    serverId,
+    sessionPlaylistId,
+  };
   if (username === state.host) return;
   if (state.kicked.includes(username)) return;
 
@@ -75,25 +92,28 @@ export async function removeOrbitParticipant(username: string): Promise<void> {
   // playlist (they'll create a new one on rejoin via joinOrbitSession).
   const outboxName = orbitOutboxPlaylistName(sid, username);
   try {
-    const all = await getPlaylists(true);
+    const all = await getPlaylistsForServer(serverId, true);
     const hit = all.find(p => p.name === outboxName);
-    if (hit) await deletePlaylist(hit.id);
+    if (hit) await deletePlaylist(hit.id, serverId);
   } catch { /* best-effort */ }
+  if (!orbitBindingIsCurrent(binding)) return;
 
   // 2) Update state: drop from participants, append fresh `removed` marker.
   // Filter any prior marker for the same user so we always carry the latest ts.
   const now = Date.now();
+  const currentState = useOrbitStore.getState().state;
+  if (!currentState) return;
   const nextState: OrbitState = {
-    ...state,
-    participants: state.participants.filter(p => p.user !== username),
+    ...currentState,
+    participants: currentState.participants.filter(p => p.user !== username),
     removed: [
-      ...(state.removed ?? []).filter(r => r.user !== username),
+      ...(currentState.removed ?? []).filter(r => r.user !== username),
       { user: username, at: now },
     ],
   };
   useOrbitStore.getState().setState(nextState);
   try {
-    await writeOrbitState(sessionPlaylistId, nextState);
+    await writeOrbitState(sessionPlaylistId, nextState, serverId);
   } catch { /* best-effort */ }
 }
 
@@ -115,7 +135,8 @@ export async function setOrbitSuggestionBlocked(username: string, blocked: boole
   if (store.role !== 'host') return;
   const state = store.state;
   const sessionPlaylistId = store.sessionPlaylistId;
-  if (!state || !sessionPlaylistId) return;
+  const serverId = store.serverId;
+  if (!state || !serverId || !sessionPlaylistId) return;
   if (username === state.host) return;
 
   const current = state.suggestionBlocked ?? [];
@@ -127,6 +148,6 @@ export async function setOrbitSuggestionBlocked(username: string, blocked: boole
     : current.filter(u => u !== username);
   const nextState: OrbitState = { ...state, suggestionBlocked: nextList };
   useOrbitStore.getState().setState(nextState);
-  try { await writeOrbitState(sessionPlaylistId, nextState); }
+  try { await writeOrbitState(sessionPlaylistId, nextState, serverId); }
   catch { /* best-effort; next host tick will re-push state */ }
 }

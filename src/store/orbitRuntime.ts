@@ -15,13 +15,15 @@ export interface OrbitSnapshot {
   role: OrbitRole | null;
   phase: OrbitPhase;
   state: OrbitState | null;
+  serverId: string | null;
 }
 
-const NEUTRAL: OrbitSnapshot = { role: null, phase: 'idle', state: null };
+const NEUTRAL: OrbitSnapshot = { role: null, phase: 'idle', state: null, serverId: null };
 
 export interface OrbitRuntime {
   getSnapshot(): OrbitSnapshot;
   bulkGuard(count: number): Promise<boolean>;
+  allowsTrackServer(serverId?: string): boolean;
 }
 
 let runtime: OrbitRuntime | null = null;
@@ -47,6 +49,11 @@ export function orbitSnapshot(): OrbitSnapshot {
  */
 export function orbitBulkGuard(count: number): Promise<boolean> {
   return runtime ? runtime.bulkGuard(count) : Promise.resolve(true);
+}
+
+/** Host queue mutations may only carry tracks owned by the bound Orbit server. */
+export function orbitAllowsTrackServer(serverId?: string): boolean {
+  return runtime?.allowsTrackServer(serverId) ?? true;
 }
 
 // Pure derivations mirrored from the orbit feature (sessionActive.ts /

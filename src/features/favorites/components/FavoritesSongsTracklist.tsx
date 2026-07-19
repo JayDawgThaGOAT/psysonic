@@ -90,11 +90,11 @@ export default function FavoritesSongsTracklist({
       else if (L.orbitActive) L.queueHint();
        else L.playTrack(L.visibleTracks[index], L.visibleTracks, true, false, index);
     },
-    dblOrbit: (songId, e) => {
+    dblOrbit: (song, e) => {
       if ((e.target as HTMLElement).closest('button, a, input')) return;
       const L = latest.current;
       if (e.ctrlKey || e.metaKey || L.inSelectMode) return;
-      L.addTrackToOrbit(songId);
+      L.addTrackToOrbit(song.id, song.serverId);
     },
     context: (song, e) => {
       e.preventDefault();

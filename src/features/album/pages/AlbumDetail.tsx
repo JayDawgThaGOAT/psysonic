@@ -218,7 +218,7 @@ const handleShuffleAll = () => {
      playTrack(track, tracks);
    };
 
-   const handleDoubleClickSong = (song: SubsonicSong) => addTrackToOrbit(song.id);
+   const handleDoubleClickSong = (song: SubsonicSong) => addTrackToOrbit(song.id, song.serverId);
 
   const handleRate = (songId: string, rating: number) => {
     setRatings(r => ({ ...r, [songId]: rating }));

@@ -21,7 +21,7 @@ import { showToast } from '@/lib/dom/toast';
  *                       Safe to call on every single-click; 220 ms debounce
  *                       suppresses the pileup that browsers emit before a
  *                       dblclick fires.
- *   - `addTrackToOrbit(songId)` — cancel any pending hint and add just that
+ *   - `addTrackToOrbit(songId, serverId)` — cancel any pending hint and add just that
  *                       one track: suggestOrbitTrack for guests,
  *                       hostEnqueueToOrbit for the host.
  *
@@ -42,7 +42,7 @@ export function useOrbitSongRowBehavior() {
     }, 220);
   }, [t]);
 
-  const addTrackToOrbit = useCallback((songId: string) => {
+  const addTrackToOrbit = useCallback((songId: string, serverId?: string) => {
     if (clickTimerRef.current !== null) {
       clearTimeout(clickTimerRef.current);
       clickTimerRef.current = null;
@@ -53,7 +53,7 @@ export function useOrbitSongRowBehavior() {
         showToast(t('orbit.suggestBlockedMuted'), 3500, 'error');
         return;
       }
-      suggestOrbitTrack(songId)
+      suggestOrbitTrack(songId, serverId)
         .then(() => showToast(t('orbit.ctxSuggestedToast'), 2200, 'info'))
         .catch(err => {
           if (err instanceof OrbitSuggestBlockedError && err.reason === 'muted') {
@@ -63,7 +63,7 @@ export function useOrbitSongRowBehavior() {
           }
         });
     } else if (orbitRole === 'host') {
-      hostEnqueueToOrbit(songId)
+      hostEnqueueToOrbit(songId, serverId)
         .then(() => showToast(t('orbit.ctxAddedHostToast'), 2200, 'info'))
         .catch(() => showToast(t('orbit.ctxAddHostFailed'), 3000, 'error'));
     }

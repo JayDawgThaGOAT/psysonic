@@ -2,6 +2,8 @@ import { useOrbitStore } from '@/features/orbit/store/orbitStore';
 import { useConfirmModalStore } from '@/store/confirmModalStore';
 import i18n from '@/lib/i18n';
 import { registerOrbitRuntime } from '@/store/orbitRuntime';
+import { orbitActionServerMatches } from '@/features/orbit/utils/orbitServerScope';
+import { useAuthStore } from '@/store/authStore';
 
 /**
  * Ask the user before dropping many tracks into the shared Orbit queue.
@@ -32,7 +34,17 @@ export async function orbitBulkGuard(count: number): Promise<boolean> {
 registerOrbitRuntime({
   getSnapshot: () => {
     const o = useOrbitStore.getState();
-    return { role: o.role, phase: o.phase, state: o.state };
+    return { role: o.role, phase: o.phase, state: o.state, serverId: o.serverId };
   },
   bulkGuard: orbitBulkGuard,
+  allowsTrackServer: (serverId) => {
+    const orbit = useOrbitStore.getState();
+    if (orbit.role !== 'host' || orbit.phase !== 'active') return true;
+    if (!orbit.serverId) return false;
+    return orbitActionServerMatches(
+      orbit.serverId,
+      serverId,
+      useAuthStore.getState().activeServerId,
+    );
+  },
 });

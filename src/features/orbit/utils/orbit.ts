@@ -86,3 +86,4 @@ export {
 } from './pendingResend';
 export { sweepGuestOutboxes } from './sweep';
 export { cleanupOrphanedOrbitPlaylists } from './cleanup';
+export { orbitActionServerMatches, orbitServerMatches } from './orbitServerScope';

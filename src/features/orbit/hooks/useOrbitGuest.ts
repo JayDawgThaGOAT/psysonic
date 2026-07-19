@@ -1,4 +1,4 @@
-import { getSong } from '@/lib/api/subsonicLibrary';
+import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { useEffect, useRef } from 'react';
 import { useOrbitStore } from '@/features/orbit/store/orbitStore';
@@ -13,6 +13,7 @@ import {
   planPendingResends,
   forgetPendingSuggestion,
   resetPendingResendState,
+  orbitServerMatches,
 } from '@/features/orbit/utils/orbit';
 import { showToast } from '@/lib/dom/toast';
 import i18n from '@/lib/i18n';
@@ -49,12 +50,13 @@ const HOST_TIMEOUT_MS = 5 * 60_000;
 export function useOrbitGuest(): void {
   const role              = useOrbitStore(s => s.role);
   const phase             = useOrbitStore(s => s.phase);
+  const serverId          = useOrbitStore(s => s.serverId);
   const sessionPlaylistId = useOrbitStore(s => s.sessionPlaylistId);
   const outboxPlaylistId  = useOrbitStore(s => s.outboxPlaylistId);
   const sessionId         = useOrbitStore(s => s.sessionId);
-  const myName            = useAuthStore(s => s.getActiveServer()?.username);
+  const myName            = useAuthStore(s => s.servers.find(server => server.id === serverId)?.username);
 
-  const active = role === 'guest' && phase === 'active' && !!sessionPlaylistId;
+  const active = role === 'guest' && phase === 'active' && !!serverId && !!sessionPlaylistId;
 
   /**
    * Last host playback state we *applied* to the local player. Compared
@@ -68,13 +70,19 @@ export function useOrbitGuest(): void {
 
   // ── State read + end/kick detection + auto-sync to host ──────────────
   useEffect(() => {
-    if (!active || !sessionPlaylistId) return;
+    if (!active || !serverId || !sessionPlaylistId) return;
 
     let cancelled = false;
     lastAppliedRef.current = null;
     // Snapshot the user's own transition prefs once, before the first tick
     // adopts the host's — restored on leave by this effect's cleanup.
     saveGuestTransitionsOnce();
+    const playerHasOrbitTrack = (trackId: string | null): boolean => {
+      if (!trackId) return false;
+      const p = usePlayerStore.getState();
+      return p.currentTrack?.id === trackId
+        && orbitServerMatches(serverId, p.currentTrack.serverId ?? p.queueServerId);
+    };
 
     /**
      * Load `trackId` into the local player and seek to the host's live
@@ -89,7 +97,7 @@ export function useOrbitGuest(): void {
      */
     const syncToHost = async (trackId: string, hostState: OrbitState): Promise<boolean> => {
       try {
-        const song = await getSong(trackId);
+        const song = await getSongForServer(serverId, trackId);
         if (!song || cancelled) return false;
         const track = songToTrack(song);
         // Clamp fraction to [0, 0.99] — if the host's positionAt is unusually
@@ -102,7 +110,7 @@ export function useOrbitGuest(): void {
         };
         const applyMirror = (): boolean => {
           const p = usePlayerStore.getState();
-          if (cancelled || p.currentTrack?.id !== trackId) return false;
+          if (cancelled || !playerHasOrbitTrack(trackId)) return false;
           p.seek(calcFraction());
           // Defer the play-state mirror so the seek's `audio_seek` invoke
           // arrives at the engine before pause/resume. `player.seek` is
@@ -113,7 +121,7 @@ export function useOrbitGuest(): void {
           if (hostState.isPlaying !== p.isPlaying) {
             window.setTimeout(() => {
               const fresh = usePlayerStore.getState();
-              if (cancelled || fresh.currentTrack?.id !== trackId) return;
+              if (cancelled || !playerHasOrbitTrack(trackId)) return;
               if (hostState.isPlaying && !fresh.isPlaying) fresh.resume();
               else if (!hostState.isPlaying && fresh.isPlaying) fresh.pause();
             }, 200);
@@ -122,7 +130,7 @@ export function useOrbitGuest(): void {
         };
 
         const player = usePlayerStore.getState();
-        const sameTrack = player.currentTrack?.id === trackId;
+        const sameTrack = playerHasOrbitTrack(trackId);
         // Take the cheap path only when the engine is actually in the
         // state the host expects. If the track is loaded but the engine
         // never reported `isPlaying === true` (slow cold-start, audio-
@@ -156,7 +164,7 @@ export function useOrbitGuest(): void {
           const poll = () => {
             if (cancelled) { resolve(false); return; }
             const p = usePlayerStore.getState();
-            const trackReady = p.currentTrack?.id === trackId;
+            const trackReady = playerHasOrbitTrack(trackId);
             // Wait for the engine to *actually* be playing, not just for
             // `isPlaying = true` (which `playTrack` flips synchronously
             // before the audio engine has produced a single sample).
@@ -181,7 +189,7 @@ export function useOrbitGuest(): void {
     };
 
     const pull = async () => {
-      const state = await readOrbitState(sessionPlaylistId);
+      const state = await readOrbitState(sessionPlaylistId, serverId);
       if (cancelled) return;
 
       if (!state) {
@@ -238,7 +246,7 @@ export function useOrbitGuest(): void {
           const recorded = new Set(state.queue.map(q => q.trackId));
           const plan = planPendingResends(stillPending, recorded);
           for (const trackId of plan.resend) {
-            void ensureTrackInOutbox(outboxPlaylistId, trackId).catch(() => {});
+            void ensureTrackInOutbox(outboxPlaylistId, trackId, serverId).catch(() => {});
           }
           if (plan.giveUp.length > 0) {
             useOrbitStore.getState().reconcilePendingSuggestions(new Set(plan.giveUp));
@@ -257,7 +265,7 @@ export function useOrbitGuest(): void {
 
       // Kicked / soft-removed: transition into the error phase with a
       // matching errorMessage so the UI can pick the right copy.
-      const me = useAuthStore.getState().getActiveServer()?.username;
+      const me = useAuthStore.getState().servers.find(server => server.id === serverId)?.username;
       if (me && state.kicked.includes(me)) {
         useOrbitStore.getState().setError('kicked');
         return;
@@ -313,7 +321,7 @@ export function useOrbitGuest(): void {
         && !player.isPlaying
         && hostPlaying
         && last.trackId === hostTrackId
-        && last.trackId === player.currentTrack?.id
+        && playerHasOrbitTrack(last.trackId)
       ) {
         pushOrbitEvent('engine-recovery', 'engine fell back to paused while host plays — re-syncing');
         lastAppliedRef.current = null;
@@ -346,7 +354,7 @@ export function useOrbitGuest(): void {
         // `currentTime` somewhere mid-track. The 0-position discriminator
         // separates them.
         const naturalEnd = !player.isPlaying
-          && player.currentTrack?.id === currentLast.trackId
+          && playerHasOrbitTrack(currentLast.trackId)
           && (player.currentTime ?? 0) < 0.5;
         const diverged = !naturalEnd && player.isPlaying !== currentLast.isPlaying;
         if (diverged) {
@@ -406,9 +414,9 @@ export function useOrbitGuest(): void {
     // intentionally (re)started only on session activation / playlist change, not
     // when the outbox id updates mid-session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, sessionPlaylistId]);
+  }, [active, serverId, sessionPlaylistId]);
 
   // Outbox heartbeat — shared with the host hook; the guest's outbox is keyed
   // by its own active-server username.
-  useOrbitOutboxHeartbeat(active, outboxPlaylistId, sessionId, myName);
+  useOrbitOutboxHeartbeat(active, serverId, outboxPlaylistId, sessionId, myName);
 }

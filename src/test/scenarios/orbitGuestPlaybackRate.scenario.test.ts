@@ -13,7 +13,11 @@ import { invokeMock, onInvoke } from '@/test/mocks/tauri';
 // usePlaybackRateOrbitSync hook fires on every orbit role/phase change.
 
 function registerSnapshot(snap: OrbitSnapshot): void {
-  registerOrbitRuntime({ getSnapshot: () => snap, bulkGuard: async () => true });
+  registerOrbitRuntime({
+    getSnapshot: () => snap,
+    bulkGuard: async () => true,
+    allowsTrackServer: () => true,
+  });
 }
 
 function lastRateCall(): { enabled: boolean; speed: number } | undefined {
@@ -39,7 +43,7 @@ describe('orbit guest × local playback rate', () => {
     { role: 'guest', phase: 'joining' },
     { role: 'host', phase: 'active' },
   ])('$role in $phase session → local rate suppressed at the engine', ({ role, phase }) => {
-    registerSnapshot({ role, phase, state: null });
+    registerSnapshot({ role, phase, state: null, serverId: 'srv-owner' });
     usePlaybackRateStore.getState().syncToRust();
     expect(lastRateCall()?.enabled).toBe(false);
     // The stored preference is untouched — suppression is engine-only.
@@ -48,19 +52,19 @@ describe('orbit guest × local playback rate', () => {
   });
 
   it('no session → local rate applies unchanged', () => {
-    registerSnapshot({ role: null, phase: 'idle', state: null });
+    registerSnapshot({ role: null, phase: 'idle', state: null, serverId: null });
     usePlaybackRateStore.getState().syncToRust();
     expect(lastRateCall()?.enabled).toBe(true);
     expect(lastRateCall()?.speed).toBe(1.25);
   });
 
   it('leaving a session re-applies the local rate', () => {
-    registerSnapshot({ role: 'guest', phase: 'active', state: null });
+    registerSnapshot({ role: 'guest', phase: 'active', state: null, serverId: 'srv-owner' });
     usePlaybackRateStore.getState().syncToRust();
     expect(lastRateCall()?.enabled).toBe(false);
 
     // Orbit ends → the hook re-syncs and the local rate comes back.
-    registerSnapshot({ role: null, phase: 'idle', state: null });
+    registerSnapshot({ role: null, phase: 'idle', state: null, serverId: null });
     usePlaybackRateStore.getState().syncToRust();
     expect(lastRateCall()?.enabled).toBe(true);
   });

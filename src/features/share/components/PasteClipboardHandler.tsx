@@ -48,7 +48,12 @@ export default function PasteClipboardHandler() {
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const busy = useRef(false);
-  const [orbitConfirm, setOrbitConfirm] = useState<{ sid: string; host: string; name: string } | null>(null);
+  const [orbitConfirm, setOrbitConfirm] = useState<{
+    sid: string;
+    serverId: string;
+    host: string;
+    name: string;
+  } | null>(null);
   const [orbitInvalid, setOrbitInvalid] = useState(false);
   const [queuePaste, setQueuePaste] = useState<QueuePastePayload | null>(null);
   const [navidromePaste, setNavidromePaste] = useState<NavidromePublicShareRef | null>(null);
@@ -77,10 +82,10 @@ export default function PasteClipboardHandler() {
     showToast(i18nKey ? t(i18nKey) : (fallback ?? t('orbit.toastJoinFail')), 4000, 'error');
   };
 
-  const runOrbitJoin = (sid: string) => {
+  const runOrbitJoin = (sid: string, serverId: string) => {
     if (busy.current) return;
     busy.current = true;
-    joinOrbitSession(sid)
+    joinOrbitSession(sid, serverId)
       .then(() => showToast(t('orbit.toastJoined'), 2500, 'info'))
       .catch(err => {
         if (err instanceof OrbitJoinError) handleJoinError(err.reason, err.message);
@@ -122,6 +127,7 @@ export default function PasteClipboardHandler() {
           // accounts for the same URL → picker lets the user choose. The
           // switch itself tears down any lingering orbit session (see
           // switchActiveServer) so the join below starts clean.
+          let targetServerId = active?.id ?? '';
           if (activeUrl !== wantUrl) {
             const candidates = useAuthStore.getState().servers
               .filter(s => s.url.replace(/\/+$/, '') === wantUrl);
@@ -138,17 +144,20 @@ export default function PasteClipboardHandler() {
               showToast(t('orbit.toastSwitchFailed', { url: wantUrl }), 5000, 'error');
               return;
             }
+            targetServerId = target.id;
           }
+
+          if (!targetServerId) { handleJoinError('no-user'); return; }
 
           // Preview the session state so the confirm dialog can show the
           // host and session name. Failures surface the same error toasts
           // the join would, without ever showing the confirm.
-          const playlistId = await findSessionPlaylistId(orbit.sid);
+          const playlistId = await findSessionPlaylistId(orbit.sid, targetServerId);
           if (!playlistId) { handleJoinError('not-found'); return; }
-          const state = await readOrbitState(playlistId);
+          const state = await readOrbitState(playlistId, targetServerId);
           if (!state)      { handleJoinError('not-found'); return; }
           if (state.ended) { handleJoinError('ended');     return; }
-          setOrbitConfirm({ sid: orbit.sid, host: state.host, name: state.name });
+          setOrbitConfirm({ sid: orbit.sid, serverId: targetServerId, host: state.host, name: state.name });
         })()
           .catch(() => handleJoinError(null))
           .finally(() => { busy.current = false; });
@@ -297,8 +306,9 @@ export default function PasteClipboardHandler() {
         cancelLabel={t('orbit.confirmCancel')}
         onConfirm={() => {
           const sid = orbitConfirm?.sid;
+          const serverId = orbitConfirm?.serverId;
           setOrbitConfirm(null);
-          if (sid) runOrbitJoin(sid);
+          if (sid && serverId) runOrbitJoin(sid, serverId);
         }}
         onCancel={() => setOrbitConfirm(null)}
       />

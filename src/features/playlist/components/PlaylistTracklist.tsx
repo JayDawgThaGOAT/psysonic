@@ -136,11 +136,11 @@ export default function PlaylistTracklist({
       else if (L.orbitActive) L.queueHint();
       else L.playTrack(L.displayedTracks[index], L.displayedTracks);
     },
-    dblOrbit: (songId, e) => {
+    dblOrbit: (song, e) => {
       if ((e.target as HTMLElement).closest('button, a, input')) return;
       const L = latest.current;
       if (e.ctrlKey || e.metaKey || L.selectedIds.size > 0) return;
-      L.addTrackToOrbit(songId);
+      L.addTrackToOrbit(song.id, song.serverId);
     },
     context: (song, rIdx, e) => {
       e.preventDefault();

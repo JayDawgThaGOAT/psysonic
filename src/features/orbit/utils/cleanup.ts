@@ -1,8 +1,9 @@
-import { deletePlaylist, getPlaylists } from '@/lib/api/subsonicPlaylists';
+import { deletePlaylist, getPlaylistsForServer } from '@/lib/api/subsonicPlaylists';
 import { useAuthStore } from '@/store/authStore';
 import { useOrbitStore } from '@/features/orbit/store/orbitStore';
 import { ORBIT_PLAYLIST_PREFIX, parseOrbitState } from '@/features/orbit/api/orbit';
 import { ORBIT_ORPHAN_TTL_MS } from '@/features/orbit/utils/constants';
+import { orbitServerMatches } from '@/features/orbit/utils/orbitServerScope';
 
 /**
  * App-start sweep: delete our own __psyorbit_* playlists that no longer
@@ -17,13 +18,20 @@ import { ORBIT_ORPHAN_TTL_MS } from '@/features/orbit/utils/constants';
  * of playlists actually deleted, for logging.
  */
 export async function cleanupOrphanedOrbitPlaylists(): Promise<number> {
-  const username = useAuthStore.getState().getActiveServer()?.username;
-  if (!username) return 0;
+  const server = useAuthStore.getState().getActiveServer();
+  const username = server?.username;
+  if (!server || !username) return 0;
+  const serverId = server.id;
 
-  const all = await getPlaylists(true).catch(() => [] as Awaited<ReturnType<typeof getPlaylists>>);
+  const all = await getPlaylistsForServer(serverId, true).catch(
+    () => [] as Awaited<ReturnType<typeof getPlaylistsForServer>>,
+  );
   const now = Date.now();
   const TTL = ORBIT_ORPHAN_TTL_MS;
-  const currentSid = useOrbitStore.getState().sessionId;
+  const orbit = useOrbitStore.getState();
+  const currentSid = orbit.serverId && orbitServerMatches(serverId, orbit.serverId)
+    ? orbit.sessionId
+    : null;
 
   // The trailing `__` is part of *both* the session name (`__psyorbit_<sid>__`)
   // and the outbox name (`__psyorbit_<sid>_from_<user>__`), so it must sit
@@ -41,7 +49,7 @@ export async function cleanupOrphanedOrbitPlaylists(): Promise<number> {
     const match = p.name.match(nameRe);
     // Not one we recognise — assume corrupt, prune.
     if (!match) {
-      try { await deletePlaylist(p.id); deleted++; } catch { /* best-effort */ }
+      try { await deletePlaylist(p.id, serverId); deleted++; } catch { /* best-effort */ }
       continue;
     }
     const sid = match[1];
@@ -75,7 +83,7 @@ export async function cleanupOrphanedOrbitPlaylists(): Promise<number> {
 
     const stale = timestamp === 0 || (now - timestamp > TTL);
     if (ended || stale) {
-      try { await deletePlaylist(p.id); deleted++; } catch { /* best-effort */ }
+      try { await deletePlaylist(p.id, serverId); deleted++; } catch { /* best-effort */ }
     }
   }
   return deleted;

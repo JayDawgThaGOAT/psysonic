@@ -76,7 +76,7 @@ export default function ArtistDetailTopTracks({
                }}
                onDoubleClick={orbitActive ? e => {
                  if ((e.target as HTMLElement).closest('button, a, input')) return;
-                 addTrackToOrbit(song.id);
+                  addTrackToOrbit(song.id, song.serverId);
                } : undefined}
                onContextMenu={(e) => {
                  e.preventDefault();

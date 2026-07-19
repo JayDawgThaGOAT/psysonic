@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { audioSeek } from '@/lib/api/audio';
 import { getMusicNetworkRuntimeOrNull } from '@/music-network';
 import { setDeferHotCachePrefetch } from '@/lib/cache/hotCacheGate';
-import { orbitBulkGuard, orbitSnapshot } from '@/store/orbitRuntime';
+import { orbitAllowsTrackServer, orbitBulkGuard, orbitSnapshot } from '@/store/orbitRuntime';
 import {
   queueItemRefMatchesTrack,
   queueItemIdentityKey,
@@ -128,6 +128,11 @@ export function runPlayTrack(
   _orbitConfirmed: boolean,
   targetQueueIndex: number | undefined,
 ): void {
+  if (orbitSnapshot().role === 'host') {
+    if (!orbitAllowsTrackServer(track.serverId)) return;
+    if (queue?.some(queueTrack => !orbitAllowsTrackServer(queueTrack.serverId))) return;
+  }
+
   // Orbit bulk-gate: only gate when the `queue` argument *replaces*
   // the current queue (Play All / Play Album / Play Playlist / Hero
   // play buttons). Navigation calls — queue-row click, next(),
