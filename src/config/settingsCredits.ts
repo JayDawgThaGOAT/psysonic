@@ -208,7 +208,7 @@ const CONTRIBUTOR_ENTRIES = [
       'Playlist and radio custom covers — preserve Navidrome pl-/ra-* getCoverArt ids (fixes blank uploaded covers; PR #1295)',
       'Playlist cards — Play next and Add to queue from the right-click menu, matching album cards (PR #1307)',
       'Playlists browse — scoped header search by playlist name (PR #1308)',
-      'Multi-server library scope — unified cross-server browse, source ownership, playback fallback, and incremental identity maintenance (PR #1326)',
+      'True simultaneous multi-server support — unified catalogue, mixed-server playback, owner-safe actions, source fallback, and incremental indexing (PR #1326)',
     ],
   },
   {

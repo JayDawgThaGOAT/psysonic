@@ -13,30 +13,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Added
 
-### Multi-server library — browse selected servers as one catalogue
+### True simultaneous multi-server support — use every server as one music library
 
 **By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
 
-* The library scope now combines selected libraries across configured servers for Home, albums, artists, composers, genres, favourites, playlists, search, statistics and detail pages, while de-duplicating shared music by scope priority.
-* Actions preserve the concrete owning server even when identical track, album or artist IDs exist elsewhere. Source pickers expose equivalent copies, and playback can offer another selected source when the first one fails.
+* Select music folders from several configured servers in the same priority-ordered library scope. Psysonic browses them simultaneously without making you switch the active server before every search, album, artist or playback action.
+* **Home, Albums, Artists, Composers, Genres, Favourites, Playlists, Folder Browser, Search, Most Played, Statistics, album details and artist details** aggregate the selected servers into one catalogue. Shared music is de-duplicated by scope priority instead of appearing once per server.
+* De-duplication no longer discards physical ownership: each logical track, album and artist retains every concrete server source. Psysonic can therefore show one clean catalogue while still knowing exactly which server must handle playback, artwork, metadata and mutations.
+
+### Mixed-server playback — one queue can play tracks from different servers
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* A single queue can contain tracks owned by different servers. Each item resolves its stream, cover, lyrics, ReplayGain data and analysis against its own server instead of whichever server is currently active.
+* Server play queues are pulled, updated and reconciled per owner, so mixed queues survive restart without one server replacing another server's tracks. Gapless, crossfade, infinite queue, shuffle, history and queue restore keep the same ownership.
+* When one copy cannot play, a new source chooser can offer equivalent copies from the selected servers rather than failing the whole action. Album, artist and track source controls also let you choose a specific physical copy when that distinction matters.
+
+### Server-aware destinations and actions
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Playlist creation, smart-playlist editing, radio actions and other destination-sensitive flows select the target server explicitly instead of silently using the active server.
+* Context menus, ratings, favourites, sharing, offline pins, device sync and Orbit carry the item's owner through the complete action. The same numeric Subsonic ID may now safely exist on several servers at once.
 
 ## Changed
 
-### Large libraries — incremental browse and identity maintenance
+### Library index — designed for several live servers at once
 
 **By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
 
-* Scoped browse projections, identity matching and sync recovery now update incrementally instead of repeatedly rebuilding the whole catalogue, keeping startup and foreground refreshes responsive on large multi-server libraries.
-* Home feeds, text search, detail reads, most-played results and statistics use indexed local scope queries where available, with network fallback retained for servers that are not indexed yet.
+* The local SQLite library now keeps server ownership, music-folder scope and cross-server identity as separate indexed concepts. Scoped browse projections power combined catalogues without scanning or merging every server response in the UI.
+* Home feeds, text search, genre counts, details, Most Played and Statistics use indexed multi-server reads when local data is ready, while retaining network fallbacks for a server that has not completed its index yet.
+* Identity matching and browse projections update incrementally after each server sync. A durable invalidation journal resumes unfinished work after restart instead of forcing repeated full-catalogue rebuilds on startup.
+
+### Sync and reachability — one unavailable server no longer blocks the others
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Psysonic tracks readiness, sync progress and reachability independently for every configured server. Available servers remain browsable while another selected server is offline, still indexing or recovering from an interrupted sync.
+* Full and delta sync preserve source ownership through remaps, deletions and tombstones; no-op syncs avoid unnecessary catalogue refreshes, and stale multi-server state is repaired automatically.
 
 ## Fixed
 
-### Multi-server ownership — mutations and playback stay on the correct server
+### Cross-server ownership — IDs no longer collide or drift to the active server
 
 **By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
 
-* Queue restore and top-up, Orbit sessions, ratings, favourites, playlists, device sync, offline pins, covers, lyrics, radio, sharing and context-menu actions no longer drift to the active server when an item belongs to another selected server.
-* Sync interruptions and unavailable servers no longer leave stale scope state blocking browse refreshes; pending identity work resumes safely after restart.
+* Album and artist navigation, covers, lyrics, ratings, favourites, playlists, radio, sharing, offline browse, device sync and context-menu actions no longer jump to the wrong server when two servers reuse the same entity ID.
+* Orbit host/guest state, queue suggestions and cleanup stay bound to the session server; switching the visible library or active server cannot redirect an existing session.
+* Composer, genre, favourite, playlist and folder views preserve the selected multi-server scope through filtering, sorting, selection and playback instead of collapsing back to a single server.
 
 ### Startup — keep the loading splash until initial content is ready
 
