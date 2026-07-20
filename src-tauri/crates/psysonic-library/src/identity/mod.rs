@@ -1,6 +1,7 @@
 //! Precomputed identity keys for multi-library dedup (spec §3.1).
 
 mod attach;
+mod invalidation;
 mod keys;
 mod norm;
 mod rebuild;
@@ -12,7 +13,11 @@ pub use attach::{
 };
 pub use norm::NORM_VERSION;
 pub(crate) use norm::norm_part;
-pub use rebuild::{cluster_rebuild_needed, ensure_cluster_keys_built, rebuild_cluster_keys};
+pub(crate) use invalidation::{record_album_scopes, record_artists, record_tracks};
+pub use rebuild::{
+    cluster_rebuild_needed, ensure_cluster_keys_built, ensure_pending_cluster_keys,
+    rebuild_cluster_keys,
+};
 pub(crate) use rebuild::{
     concrete_physical_album_key, delete_cluster_keys_for_tracks, mark_cluster_keys_dirty,
     prune_cluster_keys_for_scope, refresh_library_ids_for_albums,

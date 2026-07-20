@@ -1,6 +1,5 @@
 //! Batch rebuild of `cluster.track_cluster_key` from live `track` rows.
 
-use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
@@ -21,6 +20,11 @@ ON CONFLICT(server_id, track_id) DO UPDATE SET
   album_key    = excluded.album_key,
   artist_key   = excluded.artist_key,
   duration_sec = excluded.duration_sec
+WHERE track_cluster_key.library_id IS NOT excluded.library_id
+   OR track_cluster_key.cluster_key IS NOT excluded.cluster_key
+   OR track_cluster_key.album_key IS NOT excluded.album_key
+   OR track_cluster_key.artist_key IS NOT excluded.artist_key
+   OR track_cluster_key.duration_sec IS NOT excluded.duration_sec
 ";
 
 const DIRTY_META_PREFIX: &str = "dirty_server:";
@@ -33,17 +37,7 @@ pub(crate) fn mark_cluster_keys_dirty<'a>(
     tx: &Transaction<'_>,
     server_ids: impl IntoIterator<Item = &'a str>,
 ) -> rusqlite::Result<()> {
-    let mut seen = HashSet::new();
-    let mut statement = tx.prepare_cached(
-        "INSERT INTO cluster.cluster_meta(key, value) VALUES (?1, '1') \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )?;
-    for server_id in server_ids {
-        if seen.insert(server_id) {
-            statement.execute(params![dirty_meta_key(server_id)])?;
-        }
-    }
-    Ok(())
+    super::invalidation::record_servers(tx, server_ids)
 }
 
 pub(crate) fn delete_cluster_keys_for_tracks(
@@ -178,6 +172,290 @@ pub(crate) fn concrete_physical_album_key(server_id: &str, album_id: &str) -> St
     format!("physical:{}:{server_id}:{album_id}", server_id.len())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingRebuild<'a> {
+    All,
+    ServerFull(&'a str),
+    ServerIncremental(&'a str),
+}
+
+impl<'a> PendingRebuild<'a> {
+    fn server_id(self) -> Option<&'a str> {
+        match self {
+            Self::All => None,
+            Self::ServerFull(server_id) | Self::ServerIncremental(server_id) => Some(server_id),
+        }
+    }
+}
+
+fn pending_rebuild<'a>(
+    conn: &Connection,
+    server_id: &'a str,
+) -> rusqlite::Result<Option<PendingRebuild<'a>>> {
+    if cluster_rebuild_needed(conn)? {
+        return Ok(Some(PendingRebuild::All));
+    }
+    let legacy_dirty: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM cluster.cluster_meta WHERE key = ?1)",
+        params![dirty_meta_key(server_id)],
+        |row| row.get(0),
+    )?;
+    if legacy_dirty || super::invalidation::has_server_invalidation(conn, server_id)? {
+        return Ok(Some(PendingRebuild::ServerFull(server_id)));
+    }
+    if super::invalidation::has_any(conn, server_id)? {
+        return Ok(Some(PendingRebuild::ServerIncremental(server_id)));
+    }
+    Ok(None)
+}
+
+fn upsert_source_track(
+    source: SourceTrackRow,
+    upsert: &mut rusqlite::Statement<'_>,
+) -> rusqlite::Result<()> {
+    let (
+        server_id,
+        library_id,
+        track_id,
+        artist,
+        canonical_artist,
+        title,
+        album_artist,
+        album,
+        album_id,
+        canonical_album_artist,
+        canonical_album,
+        duration_sec,
+    ) = source;
+    let mut keys = build_track_cluster_keys(
+        artist.as_deref(),
+        &title,
+        &album,
+        album_artist.as_deref(),
+    );
+    keys.artist_key = canonical_artist
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .or(artist.as_deref())
+        .and_then(norm_part);
+    if let Some(album_id) = album_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        keys.album_key = canonical_album_artist
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .and_then(|name| {
+                build_album_key(Some(name), canonical_album.as_deref().unwrap_or(&album))
+            })
+            .or_else(|| Some(concrete_physical_album_key(&server_id, album_id)));
+    }
+    upsert.execute(params![
+        server_id,
+        library_id,
+        track_id,
+        keys.cluster_key,
+        keys.album_key,
+        keys.artist_key,
+        duration_sec,
+    ])?;
+    Ok(())
+}
+
+fn rebuild_cluster_keys_on_conn(
+    conn: &mut Connection,
+    server_id: Option<&str>,
+) -> rusqlite::Result<u64> {
+    let tx = conn.transaction()?;
+    let album_server_filter = if server_id.is_some() {
+        " AND source.server_id = ?1"
+    } else {
+        ""
+    };
+    let track_server_filter = if server_id.is_some() {
+        " AND t.server_id = ?1"
+    } else {
+        ""
+    };
+    let select = format!(
+        "WITH physical_album AS MATERIALIZED ( \
+           SELECT source.server_id, source.album_id, \
+                  CASE WHEN COUNT(*) = COUNT(ar_source.id) \
+                         AND COUNT(DISTINCT source.artist_id) = 1 \
+                       THEN MAX(ar_source.name) END AS canonical_album_artist, \
+                  MAX(source.album) AS canonical_album \
+           FROM track source \
+           LEFT JOIN artist ar_source \
+             ON ar_source.server_id = source.server_id AND ar_source.id = source.artist_id \
+           WHERE source.deleted = 0 \
+             AND source.album_id IS NOT NULL AND source.album_id != ''{album_server_filter} \
+           GROUP BY source.server_id, source.album_id \
+         ) \
+         SELECT t.server_id, COALESCE(t.library_id, ''), t.id, t.artist, ar.name, t.title, \
+                t.album_artist, t.album, t.album_id, physical_album.canonical_album_artist, \
+                physical_album.canonical_album, t.duration_sec \
+         FROM track t \
+         LEFT JOIN artist ar ON ar.server_id = t.server_id AND ar.id = t.artist_id \
+         LEFT JOIN physical_album \
+           ON physical_album.server_id = t.server_id AND physical_album.album_id = t.album_id \
+         WHERE t.deleted = 0{track_server_filter}"
+    );
+    // Stream rows straight from the `track` SELECT into the sidecar UPSERT
+    // (both statements borrow the same tx; the SELECT reads `track`, the
+    // UPSERT writes the attached `cluster` table, so they don't contend).
+    // Avoids materializing the whole track table (~60–70 MB on 212k rows)
+    // before writing.
+    let filter_params: Vec<&str> = server_id.into_iter().collect();
+    let mut stmt = tx.prepare(&select)?;
+    let mut upsert = tx.prepare_cached(UPSERT_CLUSTER_KEY_SQL)?;
+    let mut upserted = 0u64;
+    let mut rows = stmt.query(rusqlite::params_from_iter(filter_params.iter()))?;
+    while let Some(row) = rows.next()? {
+        upsert_source_track(map_source_track_row(row)?, &mut upsert)?;
+        upserted = upserted.saturating_add(1);
+    }
+    drop(rows);
+    drop(stmt);
+    drop(upsert);
+    // Prune keys whose track no longer exists (soft-deleted via tombstone, or
+    // dropped when a server mints a fresh id on rename). The UPSERT above only
+    // refreshes live rows; without this, orphaned keys accumulate forever and
+    // are only reclaimed when the whole sidecar is dropped (swap/restore/import).
+    // Reads join `cluster.track_cluster_key` against `track WHERE deleted = 0`,
+    // so these rows are inert — this is bloat cleanup, scoped to the rebuilt
+    // server(s) so a single-server rebuild never touches other servers' keys.
+    if let Some(sid) = server_id {
+        tx.execute(
+            "DELETE FROM cluster.track_cluster_key \
+             WHERE server_id = ?1 \
+               AND track_id NOT IN (\
+                 SELECT id FROM track WHERE deleted = 0 AND server_id = ?1\
+               )",
+            params![sid],
+        )?;
+    } else {
+        tx.execute(
+            "DELETE FROM cluster.track_cluster_key \
+             WHERE (server_id, track_id) NOT IN (\
+               SELECT server_id, id FROM track WHERE deleted = 0\
+             )",
+            [],
+        )?;
+    }
+    crate::browse_projection::reconcile_identity_keys(&tx, server_id)?;
+    match server_id {
+        Some(server_id) => {
+            tx.execute(
+                "DELETE FROM cluster.cluster_meta WHERE key = ?1",
+                params![dirty_meta_key(server_id)],
+            )?;
+        }
+        None => {
+            tx.execute(
+                "DELETE FROM cluster.cluster_meta WHERE key LIKE ?1",
+                params![format!("{DIRTY_META_PREFIX}%")],
+            )?;
+        }
+    }
+    super::invalidation::clear(&tx, server_id)?;
+    set_cluster_meta(&tx)?;
+    tx.commit()?;
+    Ok(upserted)
+}
+
+fn apply_identity_invalidations_on_conn(
+    conn: &mut Connection,
+    server_id: &str,
+) -> rusqlite::Result<u64> {
+    let tx = conn.transaction()?;
+    let select = "WITH invalidated_artist AS MATERIALIZED ( \
+                    SELECT entity_id FROM identity_invalidation \
+                    WHERE server_id = ?1 AND kind = 'artist' \
+                  ), \
+                  invalidated_album AS MATERIALIZED ( \
+                    SELECT entity_id FROM identity_invalidation \
+                    WHERE server_id = ?1 AND kind = 'album' \
+                    UNION \
+                    SELECT DISTINCT t.album_id FROM invalidated_artist ia \
+                    CROSS JOIN track t INDEXED BY idx_track_artist \
+                    WHERE t.server_id = ?1 AND t.artist_id = ia.entity_id AND t.deleted = 0 \
+                      AND t.album_id IS NOT NULL AND t.album_id != '' \
+                  ), \
+                  candidate_track AS MATERIALIZED ( \
+                    SELECT entity_id FROM identity_invalidation \
+                    WHERE server_id = ?1 AND kind = 'track' \
+                    UNION \
+                    SELECT t.id FROM invalidated_album ia \
+                    CROSS JOIN track t INDEXED BY idx_track_album \
+                    WHERE t.server_id = ?1 AND t.album_id = ia.entity_id AND t.deleted = 0 \
+                    UNION \
+                    SELECT t.id FROM invalidated_artist ia \
+                    CROSS JOIN track t INDEXED BY idx_track_artist \
+                    WHERE t.server_id = ?1 AND t.artist_id = ia.entity_id AND t.deleted = 0 \
+                  ), \
+                  physical_album AS MATERIALIZED ( \
+                    SELECT source.server_id, source.album_id, \
+                           CASE WHEN COUNT(*) = COUNT(ar_source.id) \
+                                  AND COUNT(DISTINCT source.artist_id) = 1 \
+                                THEN MAX(ar_source.name) END AS canonical_album_artist, \
+                           MAX(source.album) AS canonical_album \
+                    FROM invalidated_album ia \
+                    CROSS JOIN track source INDEXED BY idx_track_album \
+                    LEFT JOIN artist ar_source \
+                      ON ar_source.server_id = source.server_id \
+                     AND ar_source.id = source.artist_id \
+                    WHERE source.server_id = ?1 AND source.album_id = ia.entity_id \
+                      AND source.deleted = 0 \
+                    GROUP BY source.server_id, source.album_id \
+                  ) \
+                  SELECT t.server_id, COALESCE(t.library_id, ''), t.id, t.artist, ar.name, \
+                         t.title, t.album_artist, t.album, t.album_id, \
+                         physical_album.canonical_album_artist, physical_album.canonical_album, \
+                         t.duration_sec \
+                  FROM candidate_track candidate \
+                  CROSS JOIN track t INDEXED BY sqlite_autoindex_track_1 \
+                  LEFT JOIN artist ar \
+                    ON ar.server_id = t.server_id AND ar.id = t.artist_id \
+                  LEFT JOIN physical_album \
+                    ON physical_album.server_id = t.server_id \
+                   AND physical_album.album_id = t.album_id \
+                  WHERE t.server_id = ?1 AND t.id = candidate.entity_id AND t.deleted = 0";
+    let mut statement = tx.prepare(select)?;
+    let mut upsert = tx.prepare_cached(UPSERT_CLUSTER_KEY_SQL)?;
+    let mut rows = statement.query(params![server_id])?;
+    let mut refreshed = 0u64;
+    while let Some(row) = rows.next()? {
+        upsert_source_track(map_source_track_row(row)?, &mut upsert)?;
+        refreshed = refreshed.saturating_add(1);
+    }
+    drop(rows);
+    drop(statement);
+    drop(upsert);
+
+    tx.execute(
+        "DELETE FROM cluster.track_cluster_key AS ck \
+         WHERE ck.server_id = ?1 \
+           AND ck.track_id IN ( \
+             SELECT entity_id FROM identity_invalidation \
+             WHERE server_id = ?1 AND kind = 'track' \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM track t \
+             WHERE t.server_id = ck.server_id AND t.id = ck.track_id AND t.deleted = 0 \
+           )",
+        params![server_id],
+    )?;
+    set_cluster_meta(&tx)?;
+    tx.commit()?;
+
+    // A crash after the sidecar commit leaves the durable main-DB journal in
+    // place, so the same idempotent key writes repeat on the next ensure. Keep
+    // main projection writes + acknowledgement in their own atomic transaction
+    // instead of paying a cross-database FULL-sync commit for every delta.
+    let tx = conn.transaction()?;
+    crate::browse_projection::reconcile_invalidated_identity_keys(&tx, server_id)?;
+    super::invalidation::clear(&tx, Some(server_id))?;
+    tx.commit()?;
+    Ok(refreshed)
+}
+
 /// Rebuild identity keys for one server or all servers. Returns rows upserted.
 pub fn rebuild_cluster_keys(store: &LibraryStore, server_id: Option<&str>) -> Result<u64, String> {
     store.with_conn_mut("identity.rebuild_cluster_keys", |conn| {
@@ -189,142 +467,7 @@ pub fn rebuild_cluster_keys(store: &LibraryStore, server_id: Option<&str>) -> Re
         } else {
             server_id
         };
-        let tx = conn.transaction()?;
-        let album_server_filter = if server_id.is_some() {
-            " AND source.server_id = ?1"
-        } else {
-            ""
-        };
-        let track_server_filter = if server_id.is_some() {
-            " AND t.server_id = ?1"
-        } else {
-            ""
-        };
-        let select = format!(
-            "WITH physical_album AS MATERIALIZED ( \
-               SELECT source.server_id, source.album_id, \
-                      CASE WHEN COUNT(*) = COUNT(ar_source.id) \
-                             AND COUNT(DISTINCT source.artist_id) = 1 \
-                           THEN MAX(ar_source.name) END AS canonical_album_artist, \
-                      MAX(source.album) AS canonical_album \
-               FROM track source \
-               LEFT JOIN artist ar_source \
-                 ON ar_source.server_id = source.server_id AND ar_source.id = source.artist_id \
-               WHERE source.deleted = 0 \
-                 AND source.album_id IS NOT NULL AND source.album_id != ''{album_server_filter} \
-               GROUP BY source.server_id, source.album_id \
-             ) \
-             SELECT t.server_id, COALESCE(t.library_id, ''), t.id, t.artist, ar.name, t.title, \
-                    t.album_artist, t.album, t.album_id, physical_album.canonical_album_artist, \
-                    physical_album.canonical_album, t.duration_sec \
-             FROM track t \
-             LEFT JOIN artist ar ON ar.server_id = t.server_id AND ar.id = t.artist_id \
-             LEFT JOIN physical_album \
-               ON physical_album.server_id = t.server_id AND physical_album.album_id = t.album_id \
-             WHERE t.deleted = 0{track_server_filter}"
-        );
-        // Stream rows straight from the `track` SELECT into the sidecar UPSERT
-        // (both statements borrow the same tx; the SELECT reads `track`, the
-        // UPSERT writes the attached `cluster` table, so they don't contend).
-        // Avoids materializing the whole track table (~60–70 MB on 212k rows)
-        // before writing.
-        let filter_params: Vec<&str> = server_id.into_iter().collect();
-        let mut stmt = tx.prepare(&select)?;
-        let mut upsert = tx.prepare_cached(UPSERT_CLUSTER_KEY_SQL)?;
-        let mut upserted = 0u64;
-        let mut rows = stmt.query(rusqlite::params_from_iter(filter_params.iter()))?;
-        while let Some(row) = rows.next()? {
-            let (
-                server_id,
-                library_id,
-                track_id,
-                artist,
-                canonical_artist,
-                title,
-                album_artist,
-                album,
-                album_id,
-                canonical_album_artist,
-                canonical_album,
-                duration_sec,
-            ) = map_source_track_row(row)?;
-            let mut keys = build_track_cluster_keys(
-                artist.as_deref(),
-                &title,
-                &album,
-                album_artist.as_deref(),
-            );
-            keys.artist_key = canonical_artist
-                .as_deref()
-                .filter(|name| !name.trim().is_empty())
-                .or(artist.as_deref())
-                .and_then(norm_part);
-            if let Some(album_id) = album_id.as_deref().filter(|id| !id.trim().is_empty()) {
-                keys.album_key = canonical_album_artist
-                    .as_deref()
-                    .filter(|name| !name.trim().is_empty())
-                    .and_then(|name| {
-                        build_album_key(Some(name), canonical_album.as_deref().unwrap_or(&album))
-                    })
-                    .or_else(|| Some(concrete_physical_album_key(&server_id, album_id)));
-            }
-            upsert.execute(params![
-                server_id,
-                library_id,
-                track_id,
-                keys.cluster_key,
-                keys.album_key,
-                keys.artist_key,
-                duration_sec,
-            ])?;
-            upserted = upserted.saturating_add(1);
-        }
-        drop(rows);
-        drop(stmt);
-        drop(upsert);
-        // Prune keys whose track no longer exists (soft-deleted via tombstone, or
-        // dropped when a server mints a fresh id on rename). The UPSERT above only
-        // refreshes live rows; without this, orphaned keys accumulate forever and
-        // are only reclaimed when the whole sidecar is dropped (swap/restore/import).
-        // Reads join `cluster.track_cluster_key` against `track WHERE deleted = 0`,
-        // so these rows are inert — this is bloat cleanup, scoped to the rebuilt
-        // server(s) so a single-server rebuild never touches other servers' keys.
-        if let Some(sid) = server_id {
-            tx.execute(
-                "DELETE FROM cluster.track_cluster_key \
-                 WHERE server_id = ?1 \
-                   AND track_id NOT IN (\
-                     SELECT id FROM track WHERE deleted = 0 AND server_id = ?1\
-                   )",
-                params![sid],
-            )?;
-        } else {
-            tx.execute(
-                "DELETE FROM cluster.track_cluster_key \
-                 WHERE (server_id, track_id) NOT IN (\
-                   SELECT server_id, id FROM track WHERE deleted = 0\
-                 )",
-                [],
-            )?;
-        }
-        crate::browse_projection::reconcile_identity_keys(&tx, server_id)?;
-        match server_id {
-            Some(server_id) => {
-                tx.execute(
-                    "DELETE FROM cluster.cluster_meta WHERE key = ?1",
-                    params![dirty_meta_key(server_id)],
-                )?;
-            }
-            None => {
-                tx.execute(
-                    "DELETE FROM cluster.cluster_meta WHERE key LIKE ?1",
-                    params![format!("{DIRTY_META_PREFIX}%")],
-                )?;
-            }
-        }
-        set_cluster_meta(&tx)?;
-        tx.commit()?;
-        Ok(upserted)
+        rebuild_cluster_keys_on_conn(conn, server_id)
     })
 }
 
@@ -333,45 +476,46 @@ pub fn rebuild_cluster_keys(store: &LibraryStore, server_id: Option<&str>) -> Re
 ///   changed) — then **all** servers are rebuilt, because [`rebuild_cluster_keys`]
 ///   stamps a single global `norm_version`; a per-server rebuild would flip the
 ///   gate and strand every other server's stale keys; or
-/// - this server has live tracks missing sidecar keys (fresh or partially synced index).
-pub fn ensure_cluster_keys_built(store: &LibraryStore, server_id: &str) -> Result<(), String> {
-    let rebuild_all = store
-        .with_read_conn(cluster_rebuild_needed)
-        .map_err(|e| e.to_string())?;
-    if rebuild_all {
-        rebuild_cluster_keys(store, None)?;
-        return Ok(());
-    }
-    let needs_rebuild = store
-        .with_read_conn(|conn| {
-            let track_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM track WHERE server_id = ?1 AND deleted = 0",
-                [server_id],
-                |r| r.get(0),
-            )?;
-            if track_count == 0 {
-                return Ok(false);
+/// - durable invalidations are pending for this server. Initial/resync ingestion
+///   records a server invalidation; ordinary mutations record exact entities.
+pub fn ensure_cluster_keys_built(store: &LibraryStore, server_id: &str) -> Result<u64, String> {
+    store.with_conn_mut("identity.ensure_cluster_keys_built", |conn| {
+        let Some(pending) = pending_rebuild(conn, server_id)? else {
+            return Ok(0);
+        };
+        match pending {
+            PendingRebuild::All | PendingRebuild::ServerFull(_) => {
+                rebuild_cluster_keys_on_conn(conn, pending.server_id())
             }
-            let needs_rebuild: bool = conn.query_row(
-                "SELECT EXISTS( \
-                   SELECT 1 FROM track t \
-                   LEFT JOIN cluster.track_cluster_key ck \
-                     ON ck.server_id = t.server_id AND ck.track_id = t.id \
-                   WHERE t.server_id = ?1 AND t.deleted = 0 AND ck.track_id IS NULL \
-                   LIMIT 1 \
-                 ) OR EXISTS( \
-                   SELECT 1 FROM cluster.cluster_meta WHERE key = ?2 \
-                 )",
-                params![server_id, dirty_meta_key(server_id)],
-                |r| r.get(0),
+            PendingRebuild::ServerIncremental(server_id) => {
+                apply_identity_invalidations_on_conn(conn, server_id)
+            }
+        }
+    })
+}
+
+/// Drain persisted invalidations at process start. This runs off the Tauri main
+/// thread; normal healthy starts perform only one distinct-server query plus
+/// O(1) journal checks per server.
+pub fn ensure_pending_cluster_keys(store: &LibraryStore) -> Result<u64, String> {
+    let server_ids = store
+        .with_read_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT server_id FROM track WHERE deleted = 0 \
+                 UNION SELECT server_id FROM identity_invalidation \
+                 ORDER BY server_id",
             )?;
-            Ok(needs_rebuild)
+            let server_ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(server_ids)
         })
-        .map_err(|e| e.to_string())?;
-    if needs_rebuild {
-        rebuild_cluster_keys(store, Some(server_id))?;
+        .map_err(|error| error.to_string())?;
+    let mut refreshed = 0u64;
+    for server_id in server_ids {
+        refreshed = refreshed.saturating_add(ensure_cluster_keys_built(store, &server_id)?);
     }
-    Ok(())
+    Ok(refreshed)
 }
 
 fn map_source_track_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SourceTrackRow> {
@@ -412,8 +556,10 @@ pub(crate) fn read_cluster_row(
 mod tests {
     use super::*;
     use crate::identity::norm::{norm_part, NORM_VERSION};
+    use crate::repos::artist::ArtistRepository;
     use crate::repos::track::{TrackRepository, TrackRow};
     use crate::store::LibraryStore;
+    use psysonic_integration::subsonic::{ArtistIndex, ArtistRef, IndexBucket};
 
     #[allow(clippy::too_many_arguments)]
     fn track_row(
@@ -945,6 +1091,327 @@ mod tests {
             build_track_cluster_keys(Some("B"), "Updated", "Al", None).cluster_key
         );
         assert!(!store.with_read_conn(cluster_rebuild_needed).unwrap());
+    }
+
+    #[test]
+    fn concurrent_ensures_rebuild_a_dirty_server_once() {
+        use std::sync::{Arc, Barrier};
+
+        let store = Arc::new(LibraryStore::open_in_memory());
+        let rows = (0..2_000)
+            .map(|index| {
+                track_row(
+                    "s1",
+                    &format!("t{index}"),
+                    &format!("Title {index}"),
+                    Some("Artist"),
+                    &format!("Album {}", index / 10),
+                    None,
+                    180,
+                    "lib",
+                )
+            })
+            .collect::<Vec<_>>();
+        TrackRepository::new(&store).upsert_batch(&rows).unwrap();
+        rebuild_cluster_keys(&store, None).unwrap();
+
+        let mut changed = rows[0].clone();
+        changed.title = "Updated title".into();
+        TrackRepository::new(&store)
+            .upsert_batch(&[changed])
+            .unwrap();
+
+        let worker_count = 6;
+        let barrier = Arc::new(Barrier::new(worker_count));
+        let workers = (0..worker_count)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    ensure_cluster_keys_built(&store, "s1").unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let rebuilt = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(rebuilt.iter().filter(|count| **count > 0).count(), 1);
+        assert_eq!(rebuilt.into_iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn repeated_forced_rebuild_skips_unchanged_derived_rows() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[track_row(
+                "s1",
+                "t1",
+                "Title",
+                Some("Artist"),
+                "Album",
+                None,
+                180,
+                "lib",
+            )])
+            .unwrap();
+        rebuild_cluster_keys(&store, None).unwrap();
+
+        let changed = store
+            .with_conn_mut("test.rebuild_noop_writes", |conn| {
+                let before = conn.total_changes();
+                assert_eq!(rebuild_cluster_keys_on_conn(conn, Some("s1"))?, 1);
+                Ok(conn.total_changes().saturating_sub(before))
+            })
+            .unwrap();
+
+        assert!(
+            changed <= 2,
+            "only the two cluster_meta stamps may change, got {changed} writes"
+        );
+    }
+
+    #[test]
+    fn incremental_track_change_refreshes_the_physical_album_closure_once() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.seed_artist", |conn| {
+                conn.execute(
+                    "INSERT INTO artist(server_id, id, name, synced_at) \
+                     VALUES ('s1', 'artist-1', 'Canonical Artist', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let first = physical_album_track_row(
+            "s1", "t1", "First", "Alias", "artist-1", "Album", "album-1", "Alias", "lib",
+        );
+        let second = physical_album_track_row(
+            "s1", "t2", "Second", "Alias", "artist-1", "Album", "album-1", "Alias", "lib",
+        );
+        TrackRepository::new(&store)
+            .upsert_batch(&[first.clone(), second])
+            .unwrap();
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+        let before = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s1", "t1"))
+            .unwrap()
+            .unwrap();
+
+        let mut changed = first;
+        changed.title = "Updated".into();
+        TrackRepository::new(&store)
+            .upsert_batch(&[changed])
+            .unwrap();
+        assert_eq!(ensure_cluster_keys_built(&store, "s1").unwrap(), 2);
+
+        let after = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s1", "t1"))
+            .unwrap()
+            .unwrap();
+        let pending: i64 = store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM identity_invalidation WHERE server_id = 's1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_ne!(before.0, after.0);
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn incremental_tombstone_recomputes_remaining_album_identity() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.seed_artists", |conn| {
+                conn.execute_batch(
+                    "INSERT INTO artist(server_id, id, name, synced_at) VALUES \
+                       ('s1', 'artist-1', 'Artist One', 1), \
+                       ('s1', 'artist-2', 'Artist Two', 1);",
+                )
+            })
+            .unwrap();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                physical_album_track_row(
+                    "s1", "t1", "First", "Artist One", "artist-1", "Album", "album-1",
+                    "Artist One", "lib",
+                ),
+                physical_album_track_row(
+                    "s1", "t2", "Second", "Artist Two", "artist-2", "Album", "album-1",
+                    "Artist Two", "lib",
+                ),
+            ])
+            .unwrap();
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+        let fallback = concrete_physical_album_key("s1", "album-1");
+        assert_eq!(
+            store
+                .with_read_conn(|conn| read_cluster_row(conn, "s1", "t1"))
+                .unwrap()
+                .unwrap()
+                .1
+                .as_deref(),
+            Some(fallback.as_str())
+        );
+
+        TrackRepository::new(&store)
+            .apply_tombstone_results("s1", "", &[], &["t2".into()])
+            .unwrap();
+        assert_eq!(ensure_cluster_keys_built(&store, "s1").unwrap(), 1);
+
+        let expected = build_album_key(Some("Artist One"), "Album").unwrap();
+        let remaining = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s1", "t1"))
+            .unwrap()
+            .unwrap();
+        let (deleted_key_count, projection_identity): (i64, String) = store
+            .with_read_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM cluster.track_cluster_key \
+                         WHERE server_id = 's1' AND track_id = 't2'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT identity_key FROM album_browse_projection \
+                         WHERE server_id = 's1' AND library_id = 'lib' AND album_id = 'album-1'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(remaining.1.as_deref(), Some(expected.as_str()));
+        assert_eq!(deleted_key_count, 0);
+        assert_eq!(projection_identity, expected);
+    }
+
+    #[test]
+    fn incremental_artist_rename_updates_tracks_and_album_projection() {
+        let store = LibraryStore::open_in_memory();
+        let artist_index = |name: &str| ArtistIndex {
+            last_modified_ms: Some(1),
+            ignored_articles: None,
+            index: vec![IndexBucket {
+                name: "A".into(),
+                artist: vec![ArtistRef {
+                    id: "artist-1".into(),
+                    name: name.into(),
+                    album_count: Some(1),
+                    cover_art: None,
+                }],
+            }],
+        };
+        ArtistRepository::new(&store)
+            .upsert_index("s1", &artist_index("Old Name"), 1)
+            .unwrap();
+        TrackRepository::new(&store)
+            .upsert_batch(&[physical_album_track_row(
+                "s1", "t1", "Track", "Alias", "artist-1", "Album", "album-1", "Alias", "lib",
+            )])
+            .unwrap();
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+
+        ArtistRepository::new(&store)
+            .upsert_index("s1", &artist_index("New Name"), 2)
+            .unwrap();
+        assert_eq!(ensure_cluster_keys_built(&store, "s1").unwrap(), 1);
+
+        let row = store
+            .with_read_conn(|conn| read_cluster_row(conn, "s1", "t1"))
+            .unwrap()
+            .unwrap();
+        let expected_album = build_album_key(Some("New Name"), "Album").unwrap();
+        let projection_identity: String = store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT identity_key FROM album_browse_projection \
+                     WHERE server_id = 's1' AND library_id = 'lib' AND album_id = 'album-1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(row.2.as_deref(), norm_part("New Name").as_deref());
+        assert_eq!(row.1.as_deref(), Some(expected_album.as_str()));
+        assert_eq!(projection_identity, expected_album);
+    }
+
+    #[test]
+    fn incremental_track_remap_prunes_old_identity_and_album_scope() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.seed_artist", |conn| {
+                conn.execute(
+                    "INSERT INTO artist(server_id, id, name, synced_at) \
+                     VALUES ('s1', 'artist-1', 'Artist', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let mut old = physical_album_track_row(
+            "s1", "old", "Track", "Artist", "artist-1", "Old Album", "old-album", "Artist",
+            "lib",
+        );
+        old.content_hash = Some("stable-hash".into());
+        TrackRepository::new(&store)
+            .upsert_batch(&[old])
+            .unwrap();
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+
+        let mut replacement = physical_album_track_row(
+            "s1", "new", "Track", "Artist", "artist-1", "New Album", "new-album", "Artist",
+            "lib",
+        );
+        replacement.content_hash = Some("stable-hash".into());
+        let remap = TrackRepository::new(&store)
+            .upsert_batch_with_remap(&[replacement], true)
+            .unwrap();
+        assert_eq!(remap.remapped.len(), 1);
+        assert_eq!(ensure_cluster_keys_built(&store, "s1").unwrap(), 1);
+
+        let (old_key_count, new_key_count, old_album_count, new_album_count): (i64, i64, i64, i64) =
+            store
+                .with_read_conn(|conn| {
+                    Ok((
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM cluster.track_cluster_key \
+                             WHERE server_id = 's1' AND track_id = 'old'",
+                            [],
+                            |row| row.get(0),
+                        )?,
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM cluster.track_cluster_key \
+                             WHERE server_id = 's1' AND track_id = 'new'",
+                            [],
+                            |row| row.get(0),
+                        )?,
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM album_browse_projection \
+                             WHERE server_id = 's1' AND album_id = 'old-album'",
+                            [],
+                            |row| row.get(0),
+                        )?,
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM album_browse_projection \
+                             WHERE server_id = 's1' AND album_id = 'new-album'",
+                            [],
+                            |row| row.get(0),
+                        )?,
+                    ))
+                })
+                .unwrap();
+        assert_eq!((old_key_count, new_key_count), (0, 1));
+        assert_eq!((old_album_count, new_album_count), (0, 1));
     }
 
     #[test]

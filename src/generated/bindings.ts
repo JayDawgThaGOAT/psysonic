@@ -52,7 +52,7 @@ export const commands = {
 	libraryGetOfflinePath: (serverId: string, trackId: string) => typedError<OfflinePathDto, string>(__TAURI_INVOKE("library_get_offline_path", { serverId, trackId })),
 	libraryGenreTagsInspect: () => typedError<GenreTagsInspectDto, string>(__TAURI_INVOKE("library_genre_tags_inspect")),
 	libraryGenreTagsRun: () => typedError<null, string>(__TAURI_INVOKE("library_genre_tags_run")),
-	/**  Rebuild precomputed cluster identity keys (`library-cluster.db` attach). */
+	/**  Ensure precomputed cluster identity keys are current without blocking Tauri's main thread. */
 	libraryClusterRebuild: (serverId: string | null) => typedError<number, string>(__TAURI_INVOKE("library_cluster_rebuild", { serverId })),
 	libraryResolveEntitySources: (request: LibraryResolveEntitySourcesRequest) => typedError<LibraryEntitySourceDto[], string>(__TAURI_INVOKE("library_resolve_entity_sources", { request })),
 	librarySyncBindSession: (serverId: string, baseUrl: string, username: string, password: string, libraryScope: string | null) => typedError<null, string>(__TAURI_INVOKE("library_sync_bind_session", { serverId, baseUrl, username, password, libraryScope })),

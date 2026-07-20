@@ -810,18 +810,22 @@ pub async fn library_genre_tags_run(
     .await
 }
 
-/// Rebuild precomputed cluster identity keys (`library-cluster.db` attach).
+/// Ensure precomputed cluster identity keys are current without blocking Tauri's main thread.
 #[tauri::command]
 #[specta::specta]
-pub fn library_cluster_rebuild(
+pub async fn library_cluster_rebuild(
     runtime: State<'_, LibraryRuntime>,
     server_id: Option<String>,
 ) -> Result<u64, String> {
     let server_id = server_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    crate::identity::rebuild_cluster_keys(&runtime.store, server_id)
+        .map(|server_id| server_id.trim().to_string())
+        .filter(|server_id| !server_id.is_empty());
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || match server_id.as_deref() {
+        Some(server_id) => crate::identity::ensure_cluster_keys_built(&store, server_id),
+        None => crate::identity::rebuild_cluster_keys(&store, None),
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1499,6 +1503,26 @@ async fn library_sync_start_inner(
             )
             .with_job_id(&job_id_for_emit),
         };
+        if outcome.ok {
+            let identity_store = app_for_emit
+                .try_state::<LibraryRuntime>()
+                .map(|runtime| Arc::clone(&runtime.store));
+            if let Some(store) = identity_store {
+                let identity_server_id = server_id_for_emit.clone();
+                if let Err(error) = library_spawn_blocking(move || {
+                    crate::identity::ensure_cluster_keys_built(&store, &identity_server_id)
+                        .map(|_| ())
+                })
+                .await
+                {
+                    crate::app_eprintln!(
+                        "[library-cluster] foreground maintenance failed server_id={}: {}",
+                        server_id_for_emit,
+                        error
+                    );
+                }
+            }
+        }
         if let Some(runtime) = app_for_emit.try_state::<LibraryRuntime>() {
             let _ = runtime.store.checkpoint_wal("sync.checkpoint");
         }
@@ -1895,6 +1919,18 @@ fn purge_server_data(
             )?;
             tx.execute(
                 "DELETE FROM library_tag_state WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute(
+                "DELETE FROM cluster.track_cluster_key WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute(
+                "DELETE FROM cluster.cluster_meta WHERE key = ?1",
+                params![format!("dirty_server:{server_id}")],
+            )?;
+            tx.execute(
+                "DELETE FROM identity_invalidation WHERE server_id = ?1",
                 params![server_id],
             )?;
             tx.execute("DELETE FROM track WHERE server_id = ?1", params![server_id])?;

@@ -287,6 +287,7 @@ impl<'a> TrackRepository<'a> {
                 };
                 crate::browse_projection::rebuild_scope(&tx, server_id, library_scope)?;
                 crate::identity::prune_cluster_keys_for_scope(&tx, server_id, library_scope)?;
+                crate::identity::mark_cluster_keys_dirty(&tx, [server_id])?;
                 tx.commit()?;
                 Ok(changed)
             })?;
@@ -350,6 +351,11 @@ impl<'a> TrackRepository<'a> {
                     )?;
                 }
                 crate::identity::delete_cluster_keys_for_tracks(&tx, server_id, deleted_ids)?;
+                crate::identity::record_tracks(
+                    &tx,
+                    deleted_ids.iter().map(|track_id| (server_id, track_id.as_str())),
+                )?;
+                crate::identity::record_album_scopes(&tx, &affected)?;
                 crate::browse_projection::refresh_album_scopes(&tx, affected)?;
                 tx.commit()
             })
@@ -668,7 +674,7 @@ impl<'a> TrackRepository<'a> {
         self.store
             .with_conn_mut("track.upsert_batch_remap", |conn| {
                 let tx = conn.transaction()?;
-                let affected_album_scopes =
+                let mut affected_album_scopes =
                     crate::browse_projection::collect_affected_album_scopes(&tx, rows)?;
                 let mut remapped: Vec<RemapEntry> = Vec::new();
                 let mut upsert = tx.prepare_cached(UPSERT_SQL)?;
@@ -735,6 +741,13 @@ impl<'a> TrackRepository<'a> {
                     sync_track_genre_row(&tx, r)?;
 
                     if let Some(old_id) = detected_old {
+                        affected_album_scopes.extend(
+                            crate::browse_projection::collect_album_scopes_for_track_ids(
+                                &tx,
+                                &r.server_id,
+                                std::slice::from_ref(&old_id),
+                            )?,
+                        );
                         remap_existing_to_new(
                             &tx,
                             &r.server_id,
@@ -766,10 +779,25 @@ impl<'a> TrackRepository<'a> {
 
                 drop(upsert);
                 drop(remap_lookup);
-                crate::identity::mark_cluster_keys_dirty(
+                crate::identity::record_tracks(
                     &tx,
-                    rows.iter().map(|row| row.server_id.as_str()),
+                    rows.iter()
+                        .filter(|row| {
+                            row.deleted
+                                || row
+                                    .album_id
+                                    .as_deref()
+                                    .is_none_or(|album_id| album_id.trim().is_empty())
+                        })
+                        .map(|row| (row.server_id.as_str(), row.id.as_str())),
                 )?;
+                crate::identity::record_tracks(
+                    &tx,
+                    remapped
+                        .iter()
+                        .map(|entry| (entry.server_id.as_str(), entry.old_id.as_str())),
+                )?;
+                crate::identity::record_album_scopes(&tx, &affected_album_scopes)?;
                 crate::browse_projection::refresh_album_scopes(&tx, affected_album_scopes)?;
 
                 tx.commit()?;

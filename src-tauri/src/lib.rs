@@ -4,6 +4,7 @@
 pub mod cli;
 mod cover_cache;
 mod lib_commands;
+mod library_identity_maintenance;
 pub(crate) mod library_analysis_backfill;
 pub mod theme_animation;
 pub(crate) mod theme_import;
@@ -504,6 +505,7 @@ pub fn run() {
                     .map_err(|e| format!("library store init failed: {e}"))?;
                 let runtime = psysonic_library::LibraryRuntime::new(std::sync::Arc::new(store));
                 app.manage(runtime);
+                library_identity_maintenance::setup_library_sync_idle_listener(app.handle());
 
                 let app_for_sched = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -605,6 +607,28 @@ pub fn run() {
                                     .await
                                 {
                                     Ok(report) => {
+                                        let identity_store = Arc::clone(&runtime.store);
+                                        let identity_server_id = session.server_id.clone();
+                                        match tokio::task::spawn_blocking(move || {
+                                            psysonic_library::identity::ensure_cluster_keys_built(
+                                                &identity_store,
+                                                &identity_server_id,
+                                            )
+                                        })
+                                        .await
+                                        {
+                                            Ok(Ok(_)) => {}
+                                            Ok(Err(error)) => crate::app_eprintln!(
+                                                "[library-cluster] background maintenance failed server_id={}: {}",
+                                                session.server_id,
+                                                error
+                                            ),
+                                            Err(error) => crate::app_eprintln!(
+                                                "[library-cluster] background maintenance task failed server_id={}: {}",
+                                                session.server_id,
+                                                error
+                                            ),
+                                        }
                                         if let Some(payload) = scheduler_idle_payload(
                                             &report,
                                             &session.server_id,

@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 24;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 25;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -83,6 +83,9 @@ pub(crate) const MIGRATION_023_STARRED_BROWSE_INDEXES: &str =
 /// Version 24: materialized composer credits by library and album.
 pub(crate) const MIGRATION_024_COMPOSER_BROWSE_PROJECTION: &str =
     include_str!("../migrations/024_composer_browse_projection.sql");
+/// Version 25: durable invalidation journal for incremental identity maintenance.
+pub(crate) const MIGRATION_025_IDENTITY_INVALIDATION: &str =
+    include_str!("../migrations/025_identity_invalidation.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -101,6 +104,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (22, MIGRATION_022_ARTIST_NAME_FOLD),
     (23, MIGRATION_023_STARRED_BROWSE_INDEXES),
     (24, MIGRATION_024_COMPOSER_BROWSE_PROJECTION),
+    (25, MIGRATION_025_IDENTITY_INVALIDATION),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so

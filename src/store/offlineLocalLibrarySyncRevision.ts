@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { subscribeLibrarySyncIdle } from '@/lib/api/library/events';
+import { rebuildClusterForIndexKey } from '@/lib/library/clusterRebuildOnSync';
 import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 
@@ -79,7 +80,10 @@ function ensureOfflineLocalLibrarySyncHook(): void {
   if (typeof subscribeLibrarySyncIdle !== 'function') return;
   void subscribeLibrarySyncIdle(payload => {
     if (payload.ok) {
-      bumpOfflineLocalLibrarySyncRevision(payload.serverId);
+      const indexKey = resolveIndexKey(payload.serverId);
+      void rebuildClusterForIndexKey(indexKey).then(ready => {
+        if (ready) bumpOfflineLocalLibrarySyncRevision(payload.serverId);
+      });
     }
   });
 }

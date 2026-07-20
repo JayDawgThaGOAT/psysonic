@@ -214,28 +214,93 @@ pub(crate) fn reconcile_identity_keys(
         ""
     };
     let sql = format!(
-        "UPDATE album_browse_projection AS ap \
-         SET identity_key = COALESCE(( \
-           SELECT CASE \
-             WHEN COUNT(*) > 0 \
-              AND COUNT(*) = COUNT(ck.album_key) \
-              AND COUNT(DISTINCT ck.album_key) = 1 \
-             THEN MAX(ck.album_key) \
-           END \
-           FROM track t \
-           LEFT JOIN cluster.track_cluster_key ck \
-             ON ck.server_id = t.server_id AND ck.track_id = t.id \
-           WHERE t.server_id = ap.server_id AND t.album_id = ap.album_id AND t.deleted = 0 \
-         ), 'physical:' || length(ap.server_id) || ':' || ap.server_id || ':' || ap.album_id) \
-         WHERE EXISTS ( \
-           SELECT 1 FROM track t \
-           WHERE t.server_id = ap.server_id AND t.album_id = ap.album_id AND t.deleted = 0 \
-         ){server_filter}"
+        "WITH resolved AS MATERIALIZED ( \
+           SELECT ap.server_id, ap.library_id, ap.album_id, \
+                  COALESCE(( \
+                    SELECT CASE \
+                      WHEN COUNT(*) > 0 \
+                       AND COUNT(*) = COUNT(ck.album_key) \
+                       AND COUNT(DISTINCT ck.album_key) = 1 \
+                      THEN MAX(ck.album_key) \
+                    END \
+                    FROM track t \
+                    LEFT JOIN cluster.track_cluster_key ck \
+                      ON ck.server_id = t.server_id AND ck.track_id = t.id \
+                    WHERE t.server_id = ap.server_id \
+                      AND t.album_id = ap.album_id AND t.deleted = 0 \
+                  ), 'physical:' || length(ap.server_id) || ':' || ap.server_id || ':' || ap.album_id) \
+                    AS identity_key \
+           FROM album_browse_projection ap \
+           WHERE EXISTS ( \
+             SELECT 1 FROM track t \
+             WHERE t.server_id = ap.server_id AND t.album_id = ap.album_id AND t.deleted = 0 \
+           ){server_filter} \
+         ) \
+         UPDATE album_browse_projection AS ap \
+         SET identity_key = resolved.identity_key \
+         FROM resolved \
+         WHERE ap.server_id = resolved.server_id \
+           AND ap.library_id = resolved.library_id \
+           AND ap.album_id = resolved.album_id \
+           AND ap.identity_key IS NOT resolved.identity_key"
     );
     match server_id {
         Some(server_id) => tx.execute(&sql, params![server_id])?,
         None => tx.execute(&sql, [])?,
     };
+    Ok(())
+}
+
+/// Refresh only physical albums named by the durable identity invalidation journal.
+/// Artist invalidations expand to every physical album that currently references
+/// that artist because canonical album identity depends on unanimous artist ids.
+pub(crate) fn reconcile_invalidated_identity_keys(
+    tx: &Transaction<'_>,
+    server_id: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "WITH invalidated_artist AS MATERIALIZED ( \
+           SELECT entity_id FROM identity_invalidation \
+           WHERE server_id = ?1 AND kind = 'artist' \
+         ), \
+         invalidated_album AS MATERIALIZED ( \
+           SELECT entity_id FROM identity_invalidation \
+           WHERE server_id = ?1 AND kind = 'album' \
+           UNION \
+           SELECT DISTINCT t.album_id FROM track t \
+           JOIN invalidated_artist ia ON ia.entity_id = t.artist_id \
+           WHERE t.server_id = ?1 AND t.deleted = 0 \
+             AND t.album_id IS NOT NULL AND t.album_id != '' \
+         ), \
+         resolved AS MATERIALIZED ( \
+           SELECT ap.server_id, ap.library_id, ap.album_id, \
+                  COALESCE(( \
+                    SELECT CASE \
+                      WHEN COUNT(*) > 0 \
+                       AND COUNT(*) = COUNT(ck.album_key) \
+                       AND COUNT(DISTINCT ck.album_key) = 1 \
+                      THEN MAX(ck.album_key) \
+                    END \
+                    FROM track t \
+                    LEFT JOIN cluster.track_cluster_key ck \
+                      ON ck.server_id = t.server_id AND ck.track_id = t.id \
+                    WHERE t.server_id = ap.server_id \
+                      AND t.album_id = ap.album_id AND t.deleted = 0 \
+                  ), 'physical:' || length(ap.server_id) || ':' || ap.server_id || ':' || ap.album_id) \
+                    AS identity_key \
+           FROM album_browse_projection ap \
+           JOIN invalidated_album ia ON ia.entity_id = ap.album_id \
+           WHERE ap.server_id = ?1 \
+         ) \
+         UPDATE album_browse_projection AS ap \
+         SET identity_key = resolved.identity_key \
+         FROM resolved \
+         WHERE ap.server_id = resolved.server_id \
+           AND ap.library_id = resolved.library_id \
+           AND ap.album_id = resolved.album_id \
+           AND ap.identity_key IS NOT resolved.identity_key",
+        params![server_id],
+    )?;
     Ok(())
 }
 

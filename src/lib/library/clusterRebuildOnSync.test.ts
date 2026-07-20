@@ -84,7 +84,8 @@ describe('initClusterRebuildOnSync', () => {
     expect(rebuildMock).toHaveBeenCalledOnce();
 
     release();
-    await vi.waitFor(() => expect(rebuildMock.mock.calls).toHaveLength(1));
+    await Promise.resolve();
+    await Promise.resolve();
 
     idleHandler!(idlePayload());
     await vi.waitFor(() => expect(rebuildMock).toHaveBeenCalledTimes(2));
