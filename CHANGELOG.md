@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 
 
+## [1.51.0]
+
+## Added
+
+### Multi-server library — browse selected servers as one catalogue
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* The library scope now combines selected libraries across configured servers for Home, albums, artists, composers, genres, favourites, playlists, search, statistics and detail pages, while de-duplicating shared music by scope priority.
+* Actions preserve the concrete owning server even when identical track, album or artist IDs exist elsewhere. Source pickers expose equivalent copies, and playback can offer another selected source when the first one fails.
+
+## Changed
+
+### Large libraries — incremental browse and identity maintenance
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Scoped browse projections, identity matching and sync recovery now update incrementally instead of repeatedly rebuilding the whole catalogue, keeping startup and foreground refreshes responsive on large multi-server libraries.
+* Home feeds, text search, detail reads, most-played results and statistics use indexed local scope queries where available, with network fallback retained for servers that are not indexed yet.
+
+## Fixed
+
+### Multi-server ownership — mutations and playback stay on the correct server
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Queue restore and top-up, Orbit sessions, ratings, favourites, playlists, device sync, offline pins, covers, lyrics, radio, sharing and context-menu actions no longer drift to the active server when an item belongs to another selected server.
+* Sync interruptions and unavailable servers no longer leave stale scope state blocking browse refreshes; pending identity work resumes safely after restart.
+
+### Startup — keep the loading splash until initial content is ready
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Cold starts no longer reveal a blank or partially committed app shell between the splash and the first route content; the handoff is atomic after the initial screen is ready.
+
+
 ## [1.50.0]
 
 ## Added
