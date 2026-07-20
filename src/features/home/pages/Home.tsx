@@ -66,6 +66,7 @@ import {
   reportCachedHomeDiagnostics,
   type MainstageEnabledSections,
 } from '@/features/home/pages/homeDiagnosticHelpers';
+import { scheduleStartupSplashDismiss } from '@/app/startupSplash';
 
 /** Match Random Albums overshoot when mix filter uses album/artist axes so hero + discover row can still fill. */
 const HOME_RANDOM_FETCH = 100;
@@ -175,6 +176,12 @@ export default function Home() {
   const displayedSnapshotRef = useRef<HomeFeedSnapshot | null>(initialFeed);
   const feedLoadVersionRef = useRef(0);
   const appliedSyncRevisionRef = useRef(librarySyncRevision);
+
+  useEffect(() => {
+    const canLoadFeed = serverIds.length > 0 && !!scopeKey && !!anchorServerId;
+    if (loading && canLoadFeed) return;
+    scheduleStartupSplashDismiss();
+  }, [anchorServerId, loading, scopeKey, serverIds.length]);
 
   const applyFeedSnapshot = (snap: HomeFeedSnapshot) => {
     displayedSnapshotRef.current = snap;
@@ -305,8 +312,9 @@ export default function Home() {
       });
     };
     const patchChronologicalFeeds = (chronological: ReturnType<typeof startFreshHomeFeed>['chronological']) => {
+      const pending: Promise<void>[] = [];
       if (chronological.recent) {
-        void chronological.recent.then(result => {
+        pending.push(chronological.recent.then(result => {
             if (mainstageDiagnosticsEnabled && result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recent', {
             status: result.status,
             durationMs: result.durationMs,
@@ -314,10 +322,10 @@ export default function Home() {
             detail: result.status === 'error' ? result.detail : undefined,
           });
           applyChronologicalResult('recent', result);
-        });
+        }));
       }
       if (chronological.recentlyPlayed) {
-        void chronological.recentlyPlayed.then(result => {
+        pending.push(chronological.recentlyPlayed.then(result => {
             if (mainstageDiagnosticsEnabled && result.status !== 'success' && isCurrentLoad()) finishDiagnostic('recentlyPlayed', {
             status: result.status,
             durationMs: result.durationMs,
@@ -325,8 +333,9 @@ export default function Home() {
             detail: result.status === 'error' ? result.detail : undefined,
           });
           applyChronologicalResult('recentlyPlayed', result);
-        });
+        }));
       }
+      return Promise.all(pending).then(() => undefined);
     };
 
     const cached = readHomeFeedCache(scopeKey, scopeVersion)
@@ -363,7 +372,7 @@ export default function Home() {
             if (isHomeFeedSnapshotEmpty(fresh)) return;
             writeHomeFeedCache(fresh);
             applyFeedSnapshot(fresh);
-            patchChronologicalFeeds(freshLoad.chronological);
+            void patchChronologicalFeeds(freshLoad.chronological);
             void warmHomeMainstageCovers(homeSnapshotForEnabledCoverWarm(
               fresh,
               getEffectiveEnabledSections(),
@@ -399,7 +408,7 @@ export default function Home() {
         if (offlineBrowseActive && isHomeFeedSnapshotEmpty(snap)) return;
         writeHomeFeedCache(snap);
         applyFeedSnapshot(snap);
-        patchChronologicalFeeds(freshLoad.chronological);
+        await patchChronologicalFeeds(freshLoad.chronological);
         if (!cancelled) setLoading(false);
         const effectiveEnabled = getEffectiveEnabledSections();
         void warmHomeMainstageCovers(homeSnapshotForEnabledCoverWarm(snap, effectiveEnabled));

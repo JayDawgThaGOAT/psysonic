@@ -13,6 +13,9 @@
         min-height: 100%;
         background: var(--startup-splash-bg, #1e1e2e);
       }
+      #root.app-root--startup-pending {
+        visibility: hidden;
+      }
       #app-startup-splash {
         --splash-bg: var(--startup-splash-bg, #1e1e2e);
         --splash-text: var(--startup-splash-text, #cdd6f4);
@@ -32,12 +35,6 @@
         background: var(--splash-bg);
         color: var(--splash-text);
         font-family: system-ui, -apple-system, sans-serif;
-        opacity: 1;
-        transition: opacity 0.28s ease;
-      }
-      #app-startup-splash.app-startup-splash--hide {
-        opacity: 0;
-        pointer-events: none;
       }
       #app-startup-splash .app-startup-splash__logo {
         height: 72px;
@@ -89,7 +86,7 @@
       </div>
       <span class="app-startup-splash__label">Loading</span>
     </div>
-    <div id="root"></div>
+    <div id="root" class="app-root--startup-pending"></div>
     <script src="/startup-splash-reveal.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>

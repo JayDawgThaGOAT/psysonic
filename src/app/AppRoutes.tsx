@@ -1,5 +1,5 @@
-import { lazy } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { lazy, useEffect } from 'react';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { lazyLoadAlbumsPage } from '@/features/album/utils/albumBrowseRoutePrefetch';
 import { lazyLoadArtistsPage } from '@/features/artist/utils/artistBrowseRoutePrefetch';
 import MobilePlayerView from '@/features/nowPlaying/components/MobilePlayerView';
@@ -8,6 +8,7 @@ import { useSidebarStore } from '@/features/sidebar';
 import { useAuthStore } from '../store/authStore';
 import { useLuckyMixAvailable } from '@/features/randomMix';
 import { resolveStartRoute } from '@/features/sidebar';
+import { scheduleStartupSplashDismiss } from './startupSplash';
 
 // Route-level lazy loading: keeps the non-page graph (shell, player, stores) in
 // the entry chunk; each page is fetched when its route is first visited.
@@ -67,6 +68,12 @@ function MainstageRoute() {
  */
 export default function AppRoutes() {
   const isMobile = useIsMobile();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (location.pathname !== '/') scheduleStartupSplashDismiss();
+  }, [location.pathname]);
+
   return (
     <Routes>
       <Route path="/" element={<MainstageRoute />} />

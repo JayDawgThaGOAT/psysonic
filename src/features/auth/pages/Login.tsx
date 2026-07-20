@@ -21,6 +21,7 @@ import {
   type ServerMagicPayload,
 } from '@/lib/server/serverMagicString';
 import { shortHostFromServerUrl, serverListDisplayLabel } from '@/lib/server/serverDisplayName';
+import { scheduleStartupSplashDismiss } from '@/app/startupSplash';
 
 const PsysonicLogo = () => (
   <img src="/logo-psysonic.png" width="64" height="64" alt="Psysonic" style={{ borderRadius: 18 }} />
@@ -53,6 +54,10 @@ export default function Login() {
   const [blockPasswordReveal, setBlockPasswordReveal] = useState(false);
   const [status, setStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
+
+  useEffect(() => {
+    scheduleStartupSplashDismiss();
+  }, []);
 
   useEffect(() => {
     const inv = (location.state as { openAddServerInvite?: ServerMagicPayload } | null)?.openAddServerInvite;
