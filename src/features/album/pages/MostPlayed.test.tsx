@@ -167,7 +167,9 @@ describe('MostPlayed owner-scoped artwork and actions', () => {
         serverScope: expectedScope,
       }),
     }));
-    expect(mocks.wakeMissingMetadata).toHaveBeenCalledWith(ownerServer.id);
+    await waitFor(() => {
+      expect(mocks.wakeMissingMetadata).toHaveBeenCalledWith(ownerServer.id);
+    });
     expect(mocks.useAlbumCoverRef).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
