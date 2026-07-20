@@ -17,7 +17,6 @@ import { initHotCachePrefetch } from '../hotCachePrefetch';
 import { initLocalPlaybackInvalidation } from '../localPlaybackInvalidation';
 import { initFavoritesOfflineSync } from '@/features/offline/utils/favoritesOfflineSync';
 import { initPinnedOfflineSync } from '@/features/offline/utils/pinnedOfflineSync';
-import { initClusterRebuildOnSync } from '@/lib/library/clusterRebuildOnSync';
 import {
   initResumeIncompleteOfflinePins,
   scheduleResumeIncompleteOfflinePins,
@@ -130,13 +129,11 @@ export default function MainApp() {
     const stopInvalidation = initLocalPlaybackInvalidation();
     const stopFavoritesSync = initFavoritesOfflineSync();
     const stopPinnedOfflineSync = initPinnedOfflineSync();
-    const stopClusterRebuild = initClusterRebuildOnSync();
     const stopOfflineResume = initResumeIncompleteOfflinePins();
     return () => {
       stopInvalidation();
       stopFavoritesSync();
       stopPinnedOfflineSync();
-      stopClusterRebuild();
       stopOfflineResume();
     };
   }, [migrationReady, serverIdsKey]);

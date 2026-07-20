@@ -675,7 +675,7 @@ pub fn run() {
                     .map_err(|e| format!("library store init failed: {e}"))?;
                 let runtime = psysonic_library::LibraryRuntime::new(std::sync::Arc::new(store));
                 app.manage(runtime);
-                library_identity_maintenance::setup_library_sync_idle_listener(app.handle());
+                library_identity_maintenance::setup_library_identity_maintenance(app.handle());
 
                 let app_for_sched = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -779,31 +779,44 @@ pub fn run() {
                                     Ok(report) => {
                                         let identity_store = Arc::clone(&runtime.store);
                                         let identity_server_id = session.server_id.clone();
-                                        match tokio::task::spawn_blocking(move || {
-                                            psysonic_library::identity::ensure_cluster_keys_built(
-                                                &identity_store,
-                                                &identity_server_id,
-                                            )
-                                        })
+                                        let identity_error = match tokio::task::spawn_blocking(
+                                            move || {
+                                                psysonic_library::identity::ensure_cluster_keys_built(
+                                                    &identity_store,
+                                                    &identity_server_id,
+                                                )
+                                            },
+                                        )
                                         .await
                                         {
-                                            Ok(Ok(_)) => {}
-                                            Ok(Err(error)) => crate::app_eprintln!(
-                                                "[library-cluster] background maintenance failed server_id={}: {}",
-                                                session.server_id,
-                                                error
-                                            ),
-                                            Err(error) => crate::app_eprintln!(
-                                                "[library-cluster] background maintenance task failed server_id={}: {}",
-                                                session.server_id,
-                                                error
-                                            ),
-                                        }
-                                        if let Some(payload) = scheduler_idle_payload(
+                                            Ok(Ok(_)) => None,
+                                            Ok(Err(error)) => {
+                                                crate::app_eprintln!(
+                                                    "[library-cluster] background maintenance failed server_id={}: {}",
+                                                    session.server_id,
+                                                    error
+                                                );
+                                                Some(error)
+                                            }
+                                            Err(error) => {
+                                                crate::app_eprintln!(
+                                                    "[library-cluster] background maintenance task failed server_id={}: {}",
+                                                    session.server_id,
+                                                    error
+                                                );
+                                                Some(error.to_string())
+                                            }
+                                        };
+                                        if let Some(mut payload) = scheduler_idle_payload(
                                             &report,
                                             &session.server_id,
                                             &scope,
                                         ) {
+                                            if let Some(error) = identity_error {
+                                                payload.mark_failed(format!(
+                                                    "identity maintenance failed: {error}"
+                                                ));
+                                            }
                                             let _ = app_for_session.emit(
                                                 psysonic_library::LibrarySyncProgressPayload::IDLE_EVENT_NAME,
                                                 &payload,

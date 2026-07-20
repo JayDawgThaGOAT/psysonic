@@ -48,51 +48,10 @@ impl<'a> ArtifactRepository<'a> {
         format: Option<&str>,
         now: i64,
     ) -> Result<Option<TrackArtifactDto>, String> {
-        if self.store.bulk_ingest_active() {
-            return self.get_readonly(
-                server_id,
-                track_id,
-                artifact_kind,
-                source_kind,
-                source_id,
-                format,
-            );
-        }
-        self.store
-            .with_conn_mut("artifact.get_gc", |conn| {
-                // Lazy TTL cleanup, scoped to the looked-up kind.
-                conn.execute(
-                    "DELETE FROM track_artifact \
-                     WHERE server_id = ?1 AND track_id = ?2 AND artifact_kind = ?3 \
-                       AND expires_at IS NOT NULL AND expires_at < ?4",
-                    params![server_id, track_id, artifact_kind, now],
-                )?;
-
-                Self::query_one(
-                    conn,
-                    server_id,
-                    track_id,
-                    artifact_kind,
-                    source_kind,
-                    source_id,
-                    format,
-                )
-            })
-            .map_err(|e| e.to_string())
-    }
-
-    fn get_readonly(
-        &self,
-        server_id: &str,
-        track_id: &str,
-        artifact_kind: &str,
-        source_kind: Option<&str>,
-        source_id: Option<&str>,
-        format: Option<&str>,
-    ) -> Result<Option<TrackArtifactDto>, String> {
-        self.store
+        let (artifact, has_expired) = self
+            .store
             .with_read_conn(|conn| {
-                Self::query_one(
+                let artifact = Self::query_one(
                     conn,
                     server_id,
                     track_id,
@@ -100,11 +59,35 @@ impl<'a> ArtifactRepository<'a> {
                     source_kind,
                     source_id,
                     format,
-                )
+                    now,
+                )?;
+                let has_expired = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM track_artifact \
+                     WHERE server_id = ?1 AND track_id = ?2 AND artifact_kind = ?3 \
+                       AND expires_at IS NOT NULL AND expires_at < ?4)",
+                    params![server_id, track_id, artifact_kind, now],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                Ok((artifact, has_expired))
             })
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if has_expired && !self.store.bulk_ingest_active() {
+            self.store
+                .with_conn_mut("artifact.get_gc", |conn| {
+                    conn.execute(
+                        "DELETE FROM track_artifact \
+                         WHERE server_id = ?1 AND track_id = ?2 AND artifact_kind = ?3 \
+                           AND expires_at IS NOT NULL AND expires_at < ?4",
+                        params![server_id, track_id, artifact_kind, now],
+                    )?;
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(artifact)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn query_one(
         conn: &rusqlite::Connection,
         server_id: &str,
@@ -113,19 +96,22 @@ impl<'a> ArtifactRepository<'a> {
         source_kind: Option<&str>,
         source_id: Option<&str>,
         format: Option<&str>,
+        now: i64,
     ) -> rusqlite::Result<Option<TrackArtifactDto>> {
         let mut sql = String::from(
             "SELECT server_id, track_id, artifact_kind, format, source_kind, source_id, \
-             language, content_text, content_bytes, not_found, content_hash, fetched_at, \
-             expires_at FROM track_artifact \
-             WHERE server_id = ?1 AND track_id = ?2 AND artifact_kind = ?3",
+              language, content_text, content_bytes, not_found, content_hash, fetched_at, \
+              expires_at FROM track_artifact \
+              WHERE server_id = ?1 AND track_id = ?2 AND artifact_kind = ?3 \
+                AND (expires_at IS NULL OR expires_at >= ?4)",
         );
         let mut bound: Vec<Value> = vec![
             Value::Text(server_id.to_string()),
             Value::Text(track_id.to_string()),
             Value::Text(artifact_kind.to_string()),
+            Value::Integer(now),
         ];
-        let mut next = 4;
+        let mut next = 5;
         if let Some(sk) = source_kind {
             sql.push_str(&format!(" AND source_kind = ?{next}"));
             bound.push(Value::Text(sk.to_string()));
@@ -256,6 +242,9 @@ const UPSERT_ARTIFACT: &str = "INSERT INTO track_artifact \
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
 
     fn artifact(
         kind: &str,
@@ -322,6 +311,48 @@ mod tests {
             .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track_artifact", [], |r| r.get(0)))
             .unwrap();
         assert_eq!(total, 0, "expired row deleted, not just filtered");
+    }
+
+    #[test]
+    fn get_without_expired_rows_does_not_wait_for_writer_lock() {
+        let store = Arc::new(LibraryStore::open_in_memory());
+        seed_track(&store, "s1", "t1");
+        ArtifactRepository::new(&store)
+            .put("s1", "t1", &artifact("lyrics", "plain", "lrclib", "lrclib"), 100)
+            .unwrap();
+        let (writer_started_tx, writer_started_rx) = mpsc::channel();
+        let (release_writer_tx, release_writer_rx) = mpsc::channel();
+        let writer_store = Arc::clone(&store);
+        let writer = thread::spawn(move || {
+            writer_store
+                .with_conn_mut("test.hold_writer", |_conn| {
+                    writer_started_tx.send(()).unwrap();
+                    release_writer_rx.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        });
+        writer_started_rx.recv().unwrap();
+
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader_store = Arc::clone(&store);
+        let reader = thread::spawn(move || {
+            read_tx
+                .send(
+                    ArtifactRepository::new(&reader_store)
+                        .get("s1", "t1", "lyrics", None, None, None, 200),
+                )
+                .unwrap();
+        });
+        let result = read_rx.recv_timeout(Duration::from_secs(2));
+        release_writer_tx.send(()).unwrap();
+        writer.join().unwrap();
+        reader.join().unwrap();
+
+        let artifact = result
+            .expect("read-only artifact lookup blocked on writer")
+            .unwrap();
+        assert!(artifact.is_some());
     }
 
     #[test]

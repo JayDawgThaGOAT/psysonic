@@ -1467,7 +1467,7 @@ async fn library_sync_start_inner(
             let _ = app_for_emit.emit(LibrarySyncProgressPayload::PROGRESS_EVENT_NAME, &payload);
         }
         // Wait for the runner to finish + emit sync-idle.
-        let outcome = match runner_handle.await {
+        let mut outcome = match runner_handle.await {
             Ok(Ok(())) => {
                 LibrarySyncIdlePayload::ok(
                     &server_id_for_emit,
@@ -1520,6 +1520,7 @@ async fn library_sync_start_inner(
                         server_id_for_emit,
                         error
                     );
+                    outcome.mark_failed(format!("identity maintenance failed: {error}"));
                 }
             }
         }
@@ -1922,6 +1923,10 @@ fn purge_server_data(
                 params![server_id],
             )?;
             tx.execute(
+                "DELETE FROM library_tag_cursor WHERE server_id = ?1",
+                params![server_id],
+            )?;
+            tx.execute(
                 "DELETE FROM cluster.track_cluster_key WHERE server_id = ?1",
                 params![server_id],
             )?;
@@ -2213,8 +2218,10 @@ mod tests {
                        VALUES ('{server_id}', '{track_id}', 'Rock', '{album_id}');
                      INSERT INTO artist_artwork_lookup(server_id, artist_id, surface_kind, status, updated_at)
                        VALUES ('{server_id}', '{artist_id}', 'fanart', 'hit', 1);
-                     INSERT INTO library_tag_state(server_id, folders_hash, completed_at)
-                       VALUES ('{server_id}', 'hash', 1);
+                      INSERT INTO library_tag_state(server_id, folders_hash, completed_at)
+                        VALUES ('{server_id}', 'hash', 1);
+                      INSERT INTO library_tag_cursor(server_id, folders_hash, next_folder_id, updated_at)
+                        VALUES ('{server_id}', 'hash', 'folder-1', 1);
                      INSERT INTO entity_user_rating(server_id, entity_kind, entity_id, rating, fetched_at)
                        VALUES ('{server_id}', 'track', '{track_id}', 5, 1);
                      INSERT INTO album_browse_projection(
@@ -2648,6 +2655,7 @@ mod tests {
             ("track_genre", "server_id"),
             ("artist_artwork_lookup", "server_id"),
             ("library_tag_state", "server_id"),
+            ("library_tag_cursor", "server_id"),
             ("entity_user_rating", "server_id"),
             ("album_browse_projection", "server_id"),
             ("canonical_enrichment_link", "owner_server_id"),

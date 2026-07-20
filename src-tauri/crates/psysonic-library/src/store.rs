@@ -12,7 +12,7 @@ use tauri::Manager;
 ///
 /// Migration checklist (wiring, data backfill, open/swap path):
 /// psysonic-workdocs `ai/agent-rules/08-library-db-migrations.md`.
-pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 25;
+pub const LIBRARY_DB_SCHEMA_VERSION: i64 = 26;
 
 /// One-time data repair after migration 014 (`artist.name_sort`).
 pub(crate) const ARTIST_NAME_SORT_RECONCILE_ID: &str = "artist_name_sort_reconcile_v1";
@@ -86,6 +86,9 @@ pub(crate) const MIGRATION_024_COMPOSER_BROWSE_PROJECTION: &str =
 /// Version 25: durable invalidation journal for incremental identity maintenance.
 pub(crate) const MIGRATION_025_IDENTITY_INVALIDATION: &str =
     include_str!("../migrations/025_identity_invalidation.sql");
+/// Version 26: resumable cursor for bounded post-sync library tagging.
+pub(crate) const MIGRATION_026_LIBRARY_TAG_CURSOR: &str =
+    include_str!("../migrations/026_library_tag_cursor.sql");
 
 /// Embedded migrations. Ordered ascending by `version`; the runner sorts
 /// defensively before applying so the source order can stay readable.
@@ -105,6 +108,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (23, MIGRATION_023_STARRED_BROWSE_INDEXES),
     (24, MIGRATION_024_COMPOSER_BROWSE_PROJECTION),
     (25, MIGRATION_025_IDENTITY_INVALIDATION),
+    (26, MIGRATION_026_LIBRARY_TAG_CURSOR),
 ];
 
 /// Idempotent repair — also runs after the migration runner on every open so
@@ -1817,6 +1821,46 @@ mod tests {
             MIGRATIONS.len() as i64,
             "one schema_migrations row per embedded migration, no duplicates"
         );
+    }
+
+    #[test]
+    fn migration_026_adds_tag_cursor_without_rewriting_completion_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_with(
+            &conn,
+            &MIGRATIONS[..MIGRATIONS.len() - 1],
+            LIBRARY_DB_MIN_COMPATIBLE_VERSION,
+            handle_breaking_schema_bump,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO library_tag_state \
+             (server_id, folders_hash, last_untagged_count, completed_at) \
+             VALUES ('s1', 'folders', 7, 123)",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let state: (String, i64, i64) = conn
+            .query_row(
+                "SELECT folders_hash, last_untagged_count, completed_at \
+                 FROM library_tag_state WHERE server_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("folders".into(), 7, 123));
+        let cursor_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'library_tag_cursor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cursor_table, 1);
     }
 
     #[test]

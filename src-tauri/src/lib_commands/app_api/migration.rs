@@ -23,6 +23,7 @@ const LIBRARY_TABLES: &[ScopedTable] = &[
     ScopedTable { table: "track_genre", column: "server_id" },
     ScopedTable { table: "artist_artwork_lookup", column: "server_id" },
     ScopedTable { table: "library_tag_state", column: "server_id" },
+    ScopedTable { table: "library_tag_cursor", column: "server_id" },
     ScopedTable { table: "entity_user_rating", column: "server_id" },
     ScopedTable { table: "album_browse_projection", column: "server_id" },
     ScopedTable { table: "composer_album_projection", column: "server_id" },
@@ -810,6 +811,8 @@ mod tests {
             include_str!("../../../crates/psysonic-library/migrations/022_artist_name_fold.sql"),
             include_str!("../../../crates/psysonic-library/migrations/023_starred_browse_indexes.sql"),
             include_str!("../../../crates/psysonic-library/migrations/024_composer_browse_projection.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/025_identity_invalidation.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/026_library_tag_cursor.sql"),
         ] {
             conn.execute_batch(migration).expect("apply library migration");
         }
@@ -844,8 +847,10 @@ mod tests {
                VALUES ('legacy-a', 'track-1', 'Rock', 'album-1');
              INSERT INTO artist_artwork_lookup(server_id, artist_id, surface_kind, status, updated_at)
                VALUES ('legacy-a', 'artist-1', 'fanart', 'hit', 1);
-             INSERT INTO library_tag_state(server_id, folders_hash, completed_at)
-               VALUES ('legacy-a', 'hash', 1);
+              INSERT INTO library_tag_state(server_id, folders_hash, completed_at)
+                VALUES ('legacy-a', 'hash', 1);
+              INSERT INTO library_tag_cursor(server_id, folders_hash, next_folder_id, updated_at)
+                VALUES ('legacy-a', 'hash', 'folder-1', 1);
              INSERT INTO entity_user_rating(server_id, entity_kind, entity_id, rating, fetched_at)
                VALUES ('legacy-a', 'track', 'track-1', 5, 1);
               INSERT INTO album_browse_projection(

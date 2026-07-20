@@ -479,7 +479,22 @@ pub fn rebuild_cluster_keys(store: &LibraryStore, server_id: Option<&str>) -> Re
 /// - durable invalidations are pending for this server. Initial/resync ingestion
 ///   records a server invalidation; ordinary mutations record exact entities.
 pub fn ensure_cluster_keys_built(store: &LibraryStore, server_id: &str) -> Result<u64, String> {
+    let pending = match store
+        .with_read_conn(|conn| Ok(pending_rebuild(conn, server_id)?.is_some()))
+    {
+        Ok(pending) => pending,
+        // Shared-cache in-memory tests and a busy sidecar can briefly reject a
+        // read while another owner commits cluster metadata. Serialize through
+        // the writer and re-check instead of surfacing a maintenance failure.
+        Err(error) if error.contains("locked") => true,
+        Err(error) => return Err(error),
+    };
+    if !pending {
+        return Ok(0);
+    }
     store.with_conn_mut("identity.ensure_cluster_keys_built", |conn| {
+        // Re-check under the writer lock because another maintenance owner may
+        // have drained the journal after the read-only preflight.
         let Some(pending) = pending_rebuild(conn, server_id)? else {
             return Ok(0);
         };
@@ -1140,6 +1155,59 @@ mod tests {
 
         assert_eq!(rebuilt.iter().filter(|count| **count > 0).count(), 1);
         assert_eq!(rebuilt.into_iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn clean_identity_ensure_does_not_wait_for_writer_lock() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let store = Arc::new(LibraryStore::open_in_memory());
+        TrackRepository::new(&store)
+            .upsert_batch(&[track_row(
+                "s1",
+                "t1",
+                "Title",
+                Some("Artist"),
+                "Album",
+                None,
+                180,
+                "lib",
+            )])
+            .unwrap();
+        rebuild_cluster_keys(&store, None).unwrap();
+        let (writer_started_tx, writer_started_rx) = mpsc::channel();
+        let (release_writer_tx, release_writer_rx) = mpsc::channel();
+        let writer_store = Arc::clone(&store);
+        let writer = std::thread::spawn(move || {
+            writer_store
+                .with_conn_mut("test.hold_writer", |_conn| {
+                    writer_started_tx.send(()).unwrap();
+                    release_writer_rx.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        });
+        writer_started_rx.recv().unwrap();
+
+        let (ensure_tx, ensure_rx) = mpsc::channel();
+        let ensure_store = Arc::clone(&store);
+        let ensure = std::thread::spawn(move || {
+            ensure_tx
+                .send(ensure_cluster_keys_built(&ensure_store, "s1"))
+                .unwrap();
+        });
+        let result = ensure_rx.recv_timeout(Duration::from_secs(2));
+        release_writer_tx.send(()).unwrap();
+        writer.join().unwrap();
+        ensure.join().unwrap();
+
+        assert_eq!(
+            result
+                .expect("clean identity preflight blocked on writer")
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

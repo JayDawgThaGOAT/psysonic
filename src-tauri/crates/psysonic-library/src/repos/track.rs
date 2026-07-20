@@ -285,9 +285,11 @@ impl<'a> TrackRepository<'a> {
                         params![server_id, library_scope, resync_gen, now],
                     )?
                 };
-                crate::browse_projection::rebuild_scope(&tx, server_id, library_scope)?;
-                crate::identity::prune_cluster_keys_for_scope(&tx, server_id, library_scope)?;
-                crate::identity::mark_cluster_keys_dirty(&tx, [server_id])?;
+                if changed > 0 {
+                    crate::browse_projection::rebuild_scope(&tx, server_id, library_scope)?;
+                    crate::identity::prune_cluster_keys_for_scope(&tx, server_id, library_scope)?;
+                    crate::identity::mark_cluster_keys_dirty(&tx, [server_id])?;
+                }
                 tx.commit()?;
                 Ok(changed)
             })?;
@@ -619,34 +621,62 @@ impl<'a> TrackRepository<'a> {
                 let tx = conn.transaction()?;
                 for chunk in album_ids.chunks(CHUNK) {
                     let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+                    let changed_album_sql = format!(
+                        "SELECT DISTINCT album_id FROM track \
+                         WHERE server_id = ? AND deleted = 0 \
+                           AND album_id IN ({placeholders}) \
+                           AND (library_id IS NULL OR library_id = '')"
+                    );
+                    let mut changed_params: Vec<rusqlite::types::Value> =
+                        vec![rusqlite::types::Value::Text(server_id.to_string())];
+                    changed_params.extend(chunk.iter().cloned().map(Into::into));
+                    let changed_album_ids = {
+                        let mut statement = tx.prepare(&changed_album_sql)?;
+                        let rows = statement
+                            .query_map(params_from_iter(changed_params.iter()), |row| row.get(0))?
+                            .collect::<rusqlite::Result<Vec<String>>>()?;
+                        rows
+                    };
+                    if changed_album_ids.is_empty() {
+                        continue;
+                    }
+                    let changed_placeholders = (0..changed_album_ids.len())
+                        .map(|_| "?")
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let sql = format!(
                         "UPDATE track SET library_id = ?1 \
                      WHERE server_id = ?2 AND deleted = 0 \
-                       AND album_id IN ({placeholders}) \
+                       AND album_id IN ({changed_placeholders}) \
                        AND (library_id IS NULL OR library_id = '')"
                     );
                     let mut params: Vec<rusqlite::types::Value> = vec![
                         rusqlite::types::Value::Text(library_id.to_string()),
                         rusqlite::types::Value::Text(server_id.to_string()),
                     ];
-                    for id in chunk {
-                        params.push(id.clone().into());
-                    }
+                    params.extend(changed_album_ids.iter().cloned().map(Into::into));
                     let n = tx.execute(&sql, params_from_iter(params.iter()))?;
                     total += n as u64;
                     tx.execute(
                         &format!(
                             "UPDATE track_genre SET library_id = ?1 \
                          WHERE server_id = ?2 AND track_id IN ( \
-                           SELECT id FROM track WHERE server_id = ?2 \
-                             AND album_id IN ({placeholders}) AND library_id = ?1 \
-                         )"
+                            SELECT id FROM track WHERE server_id = ?2 \
+                              AND album_id IN ({changed_placeholders}) AND library_id = ?1 \
+                         ) AND COALESCE(library_id, '') != ?1"
                         ),
                         params_from_iter(params.iter()),
                     )?;
-                    crate::identity::refresh_library_ids_for_albums(&tx, server_id, chunk)?;
+                    crate::identity::refresh_library_ids_for_albums(
+                        &tx,
+                        server_id,
+                        &changed_album_ids,
+                    )?;
                     crate::browse_projection::refresh_library_tagged_albums(
-                        &tx, server_id, library_id, chunk,
+                        &tx,
+                        server_id,
+                        library_id,
+                        &changed_album_ids,
                     )?;
                 }
                 tx.commit()?;
@@ -1211,6 +1241,24 @@ mod tests {
     }
 
     #[test]
+    fn resync_sweep_with_no_orphans_does_not_rewrite_derived_state() {
+        let store = LibraryStore::open_in_memory();
+        let repo = TrackRepository::new(&store);
+        repo.upsert_batch_initial_ingest_timed(&[row("s1", "seen", "Seen")], Some(2))
+            .unwrap();
+        let before = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+
+        assert_eq!(repo.sweep_resync_orphans("s1", "", 2).unwrap(), 0);
+
+        let after = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
     fn scoped_resync_sweep_preserves_other_library_and_refreshes_derived_rows() {
         let store = LibraryStore::open_in_memory();
         let repo = TrackRepository::new(&store);
@@ -1439,6 +1487,30 @@ mod tests {
         assert_eq!(tagged_projection, 2);
         assert_eq!(identity_tagged, 2);
         assert_eq!(genre_tagged, 2);
+    }
+
+    #[test]
+    fn tag_library_by_album_ids_with_no_empty_rows_is_write_free() {
+        let store = LibraryStore::open_in_memory();
+        let repo = TrackRepository::new(&store);
+        let mut tagged = row("s1", "t1", "First");
+        tagged.library_id = Some("1".into());
+        tagged.album_id = Some("al1".into());
+        repo.upsert_batch(&[tagged]).unwrap();
+        crate::identity::rebuild_cluster_keys(&store, None).unwrap();
+        let before = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+
+        let changed = repo
+            .tag_library_by_album_ids("s1", "1", &["al1".into()])
+            .unwrap();
+
+        let after = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+        assert_eq!(changed, 0);
+        assert_eq!(after, before);
     }
 
     #[test]

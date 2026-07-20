@@ -138,6 +138,11 @@ impl LibrarySyncIdlePayload {
         self.job_id = Some(job_id.to_string());
         self
     }
+
+    pub fn mark_failed(&mut self, message: impl Into<String>) {
+        self.ok = false;
+        self.error = Some(message.into());
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +178,18 @@ mod tests {
         .unwrap();
         assert_eq!(background["source"], "background");
         assert!(background.get("jobId").is_none());
+    }
+
+    #[test]
+    fn idle_payload_failure_preserves_job_context() {
+        let mut payload =
+            LibrarySyncIdlePayload::ok("s1", "scope", "delta_sync", "foreground")
+                .with_job_id("job-1");
+        payload.mark_failed("identity maintenance failed");
+
+        assert!(!payload.ok);
+        assert_eq!(payload.error.as_deref(), Some("identity maintenance failed"));
+        assert_eq!(payload.job_id.as_deref(), Some("job-1"));
     }
 
     #[test]

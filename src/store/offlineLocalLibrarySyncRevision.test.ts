@@ -5,10 +5,6 @@ import { useAuthStore } from '@/store/authStore';
 const syncIdleHandlerRef = vi.hoisted(() => ({
   current: null as ((payload: LibrarySyncIdlePayload) => void) | null,
 }));
-const rebuildClusterMock = vi.hoisted(() =>
-  vi.fn<(indexKey: string) => Promise<boolean>>(async () => true),
-);
-
 vi.mock('@/lib/api/library/events', () => ({
   subscribeLibrarySyncIdle: vi.fn(async (handler: (payload: LibrarySyncIdlePayload) => void) => {
     syncIdleHandlerRef.current = handler;
@@ -16,10 +12,6 @@ vi.mock('@/lib/api/library/events', () => ({
       syncIdleHandlerRef.current = null;
     };
   }),
-}));
-
-vi.mock('@/lib/library/clusterRebuildOnSync', () => ({
-  rebuildClusterForIndexKey: (indexKey: string) => rebuildClusterMock(indexKey),
 }));
 
 import {
@@ -36,12 +28,10 @@ describe('offlineLocalLibrarySyncRevision', () => {
       servers: [{ id: 'srv-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' }],
     });
     resetOfflineLocalLibrarySyncRevisionForTests();
-    rebuildClusterMock.mockReset();
-    rebuildClusterMock.mockResolvedValue(true);
     syncIdleHandlerRef.current = null;
   });
 
-  it('bumps revision after derived keys are ready for index key and profile id', async () => {
+  it('bumps revision after Rust publishes derived-ready sync idle', () => {
     expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
     syncIdleHandlerRef.current?.({
       serverId: 'a.test',
@@ -50,8 +40,7 @@ describe('offlineLocalLibrarySyncRevision', () => {
       ok: true,
       error: null,
     });
-    expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
-    await vi.waitFor(() => expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(1));
+    expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(1);
     expect(offlineLocalLibrarySyncRevision('a.test')).toBe(1);
     expect(librarySyncRevision()).toBe(1);
     expect(libraryScopeSyncRevision(['srv-a'])).toBe(1);
@@ -70,7 +59,7 @@ describe('offlineLocalLibrarySyncRevision', () => {
     expect(librarySyncRevision()).toBe(0);
   });
 
-  it('changes the scoped revision when a different selected server completes', async () => {
+  it('changes the scoped revision when a different selected server completes', () => {
     useAuthStore.setState({
       servers: [
         { id: 'srv-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
@@ -81,47 +70,20 @@ describe('offlineLocalLibrarySyncRevision', () => {
     syncIdleHandlerRef.current?.({
       serverId: 'a.test', libraryScope: '', kind: 'delta_sync', ok: true,
     });
-    await vi.waitFor(() => expect(libraryScopeSyncRevision(['srv-a', 'srv-b'])).toBe(1));
+    expect(libraryScopeSyncRevision(['srv-a', 'srv-b'])).toBe(1);
 
     syncIdleHandlerRef.current?.({
       serverId: 'b.test', libraryScope: '', kind: 'delta_sync', ok: true,
     });
-    await vi.waitFor(() => expect(libraryScopeSyncRevision(['srv-a', 'srv-b'])).toBe(2));
+    expect(libraryScopeSyncRevision(['srv-a', 'srv-b'])).toBe(2);
   });
 
-  it('bumps revision for successful background sync-idle events', async () => {
+  it('bumps revision for successful background sync-idle events', () => {
     expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
     syncIdleHandlerRef.current?.({
       serverId: 'a.test', libraryScope: '', kind: 'delta_sync', source: 'background', ok: true,
     });
-    await vi.waitFor(() => expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(1));
+    expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(1);
     expect(librarySyncRevision()).toBe(1);
-  });
-
-  it('does not publish the revision while cluster maintenance is pending', async () => {
-    let release!: () => void;
-    rebuildClusterMock.mockImplementationOnce(() => new Promise(resolve => {
-      release = () => resolve(true);
-    }));
-    expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
-    syncIdleHandlerRef.current?.({
-      serverId: 'a.test', libraryScope: '', kind: 'delta_sync', ok: true,
-    });
-    await Promise.resolve();
-    expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
-    release();
-    await vi.waitFor(() => expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(1));
-  });
-
-  it('does not publish the revision when cluster maintenance fails', async () => {
-    rebuildClusterMock.mockResolvedValueOnce(false);
-    expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
-    syncIdleHandlerRef.current?.({
-      serverId: 'a.test', libraryScope: '', kind: 'delta_sync', ok: true,
-    });
-    await vi.waitFor(() => expect(rebuildClusterMock).toHaveBeenCalledOnce());
-    await Promise.resolve();
-    expect(offlineLocalLibrarySyncRevision('srv-a')).toBe(0);
-    expect(librarySyncRevision()).toBe(0);
   });
 });
