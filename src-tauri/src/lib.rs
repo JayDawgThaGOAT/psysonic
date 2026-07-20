@@ -448,34 +448,204 @@ pub fn run() {
                 let _ = window.set_title("Psysonic (Dev)");
             }
 
-            // ── Dev: `--theme-watch <theme.css>` live theme reload ─────────
-            // Poll a local theme.css and push it into the running app on save,
-            // so theme authors get a live loop without re-importing a zip. The
-            // frontend (dev only) installs it under the id in its
-            // `[data-theme='<id>']` selector and applies it. Dev-builds only.
+            // ── Dev: `--theme-watch <theme.css | dir>` live theme reload ───
+            // Poll a local theme.css — or every `themes/*/theme.css` in a
+            // cloned themes-repo checkout — and push contents into the running
+            // app, so theme authors get a live loop without re-importing zips.
+            // The frontend (dev only, main window) installs each payload under
+            // the id in its `[data-theme='<id>']` selector; a save applies
+            // live, the directory startup sweep only installs so authors can
+            // switch between the checkout's themes in the UI. Dev-builds only.
             #[cfg(debug_assertions)]
             {
                 let args: Vec<String> = std::env::args().collect();
                 if let Some(i) = args.iter().position(|a| a == "--theme-watch") {
                     match args.get(i + 1).cloned() {
                         Some(path) => {
-                            eprintln!("[theme-watch] watching {path}");
+                            use std::collections::HashMap;
+                            use std::path::PathBuf;
+                            use std::sync::{Arc, Mutex};
+                            use std::time::SystemTime;
+                            use tauri::Listener;
+
+                            // Accept a repo root (has themes/), a themes/ dir,
+                            // a single theme folder, or a bare theme.css.
+                            enum WatchTarget {
+                                Dir(PathBuf),
+                                File(PathBuf),
+                            }
+                            let root = PathBuf::from(&path);
+                            let target = if root.is_dir() && !root.join("theme.css").is_file() {
+                                if root.join("themes").is_dir() {
+                                    WatchTarget::Dir(root.join("themes"))
+                                } else {
+                                    WatchTarget::Dir(root)
+                                }
+                            } else if root.is_dir() {
+                                WatchTarget::File(root.join("theme.css"))
+                            } else {
+                                WatchTarget::File(root)
+                            };
+                            match &target {
+                                WatchTarget::Dir(d) => {
+                                    eprintln!("[theme-watch] watching {}/*/theme.css", d.display())
+                                }
+                                WatchTarget::File(f) => {
+                                    if !f.is_file() {
+                                        eprintln!(
+                                            "[theme-watch] warning: {} does not exist — nothing will load until it appears",
+                                            f.display()
+                                        );
+                                    }
+                                    eprintln!("[theme-watch] watching {}", f.display());
+                                }
+                            }
+
+                            // Per-file state: css + manifest mtimes (gate the
+                            // reads while both files are unchanged) and last
+                            // pushed payload (change detection + ready
+                            // re-send). Entries only update after a successful
+                            // emit, so a failed push retries next tick instead
+                            // of being marked seen.
+                            type Stamps = (Option<SystemTime>, Option<SystemTime>);
+                            type Seen = HashMap<PathBuf, (Stamps, serde_json::Value)>;
+                            let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(HashMap::new()));
+
+                            // The frontend announces its listeners (on mount
+                            // and after every dev-server reload) via
+                            // `theme-watch:ready`; re-send everything already
+                            // loaded so no emit is lost to a webview that
+                            // wasn't listening yet. Directory mode re-seeds
+                            // install-only (the active theme id is persisted,
+                            // so its CSS comes back without stealing the
+                            // selection); single-file mode re-applies the one
+                            // authored theme. Change detection keeps running
+                            // untouched, so a save landing mid-reload still
+                            // arrives as an applying `css` event.
+                            let ready_event = if matches!(target, WatchTarget::Dir(_)) {
+                                "theme-watch:css-seed"
+                            } else {
+                                "theme-watch:css"
+                            };
+                            {
+                                let seen = Arc::clone(&seen);
+                                let handle = app.handle().clone();
+                                app.listen("theme-watch:ready", move |_| {
+                                    let Ok(m) = seen.lock() else { return };
+                                    for (_, payload) in m.values() {
+                                        let _ = handle.emit(ready_event, payload);
+                                    }
+                                });
+                            }
+
                             let handle = app.handle().clone();
-                            std::thread::spawn(move || {
-                                let p = std::path::PathBuf::from(&path);
-                                let mut last_css = String::new();
-                                loop {
-                                    if let Ok(css) = std::fs::read_to_string(&p) {
-                                        if css != last_css {
-                                            last_css = css.clone();
-                                            let _ = handle.emit("theme-watch:css", css);
+                            std::thread::spawn(move || loop {
+                                let files: Vec<PathBuf> = match &target {
+                                    // Re-scan each tick so theme folders added
+                                    // while running are picked up live.
+                                    WatchTarget::Dir(dir) => std::fs::read_dir(dir)
+                                        .map(|rd| {
+                                            rd.flatten()
+                                                .map(|e| e.path().join("theme.css"))
+                                                .filter(|p| p.is_file())
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
+                                    WatchTarget::File(f) => vec![f.clone()],
+                                };
+                                for f in files {
+                                    let css_mtime =
+                                        std::fs::metadata(&f).and_then(|m| m.modified()).ok();
+                                    // The sibling manifest is part of the
+                                    // watched payload — a version bump alone
+                                    // must reach the UI (tester report: it
+                                    // didn't), so its stamp gates too.
+                                    let manifest_path =
+                                        f.parent().map(|d| d.join("manifest.json"));
+                                    let (manifest_exists, manifest_mtime) = match manifest_path
+                                        .as_ref()
+                                        .map(std::fs::metadata)
+                                    {
+                                        Some(Ok(md)) => (true, md.modified().ok()),
+                                        _ => (false, None),
+                                    };
+                                    let stamps = (css_mtime, manifest_mtime);
+                                    let Ok(mut m) = seen.lock() else { continue };
+                                    // mtime gate: skip the full reads while
+                                    // both stamps are unchanged (a None stamp
+                                    // never matches an existing file, so
+                                    // filesystems without mtime fall back to
+                                    // read + compare).
+                                    if let Some(((prev_css, prev_manifest), _)) = m.get(&f) {
+                                        let css_fresh =
+                                            prev_css.is_some() && *prev_css == css_mtime;
+                                        let manifest_fresh = *prev_manifest == manifest_mtime
+                                            && (manifest_mtime.is_some() || !manifest_exists);
+                                        if css_fresh && manifest_fresh {
+                                            continue;
                                         }
                                     }
-                                    std::thread::sleep(std::time::Duration::from_millis(300));
+                                    let Ok(css) = std::fs::read_to_string(&f) else {
+                                        continue;
+                                    };
+                                    // Ship the sibling manifest's metadata so
+                                    // the frontend can show the theme's real
+                                    // name/author/version instead of dev
+                                    // placeholders (and the update badge
+                                    // stays quiet).
+                                    let manifest = manifest_path
+                                        .and_then(|p| std::fs::read_to_string(p).ok())
+                                        .and_then(|s| {
+                                            serde_json::from_str::<serde_json::Value>(&s).ok()
+                                        });
+                                    let meta = |k: &str| {
+                                        manifest
+                                            .as_ref()
+                                            .and_then(|v| v.get(k))
+                                            .and_then(|v| v.as_str())
+                                            .map(String::from)
+                                    };
+                                    let payload = serde_json::json!({
+                                        "css": css,
+                                        "name": meta("name"),
+                                        "author": meta("author"),
+                                        "version": meta("version"),
+                                        "description": meta("description"),
+                                        "mode": meta("mode"),
+                                    });
+                                    let event = match m.get_mut(&f) {
+                                        // mtime-only touch — restamp quietly.
+                                        Some(entry) if entry.1 == payload => {
+                                            entry.0 = stamps;
+                                            continue;
+                                        }
+                                        // Metadata-only change (version bump
+                                        // etc.) refreshes the install without
+                                        // stealing the active theme.
+                                        Some(entry)
+                                            if entry.1.get("css").and_then(|c| c.as_str())
+                                                == Some(css.as_str()) =>
+                                        {
+                                            "theme-watch:css-seed"
+                                        }
+                                        // First sight in directory mode
+                                        // installs without stealing the
+                                        // active theme; a save applies.
+                                        None if matches!(target, WatchTarget::Dir(_)) => {
+                                            "theme-watch:css-seed"
+                                        }
+                                        _ => "theme-watch:css",
+                                    };
+                                    if handle.emit(event, &payload).is_ok() {
+                                        m.insert(f, (stamps, payload));
+                                    }
                                 }
+                                std::thread::sleep(std::time::Duration::from_millis(300));
                             });
                         }
-                        None => eprintln!("[theme-watch] usage: --theme-watch <path/to/theme.css>"),
+                        None => eprintln!(
+                            "[theme-watch] usage: --theme-watch <path/to/theme.css | path/to/themes-checkout>"
+                        ),
                     }
                 }
             }

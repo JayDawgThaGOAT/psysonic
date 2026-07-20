@@ -139,6 +139,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * The header search field on the Playlists page now filters the list by playlist name (same scoped badge pattern as Artists / Albums), including in folder view.
 
+### Artist page — add the whole discography to the queue
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1321](https://github.com/Psychotoxical/psysonic/pull/1321)**
+
+* A new queue button on the artist page appends the artist's entire discography to the current queue in one click, next to Play all and Shuffle — matching what album pages already offer.
+
 
 ## Changed
 
@@ -332,6 +338,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **By [@AliMahmoudDev](https://github.com/AliMahmoudDev), PR [#1301](https://github.com/Psychotoxical/psysonic/pull/1301)**
 
 * Modal dialogs carried no accessible name, so a screen reader announced them without saying which dialog had opened. The dialog is now linked to its title, and each instance gets its own id so several open dialogs cannot be confused for one another.
+
+### Themes — smooth UI with many themes installed
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), reported by Asra on the Psysonic Discord, PR [#1315](https://github.com/Psychotoxical/psysonic/pull/1315)**
+
+* With a large number of community themes installed, every hover or playback-state change made the browser re-evaluate the CSS of every installed theme, which could slow the UI to a crawl. Only the active theme (plus the scheduler's day and night picks) participates now; the others stay dormant until applied — switching themes is unaffected.
+
+### Settings — cover art toggles translated
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1319](https://github.com/Psychotoxical/psysonic/pull/1319)**
+
+* The queue cover-art setting and the track-list setting's title showed English text in every language except Russian — both are translated in all languages now, and the German description states more precisely which pages show the thumbnails.
+
+### Square corners — player bar and list thumbnails included
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), reported by JU3RG on the Psysonic Discord, PR [#1320](https://github.com/Psychotoxical/psysonic/pull/1320)**
+
+* The Square Corners toggle left the player bar cover and the small cover thumbnails in list rows rounded (queue, playlists, favorites, search, Random Mix). They now go square with everything else; the floating player bar's circular cover stays round by design.
+
+### Duplicate server session on Navidrome
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), reported by TheHomeGuy on the Psysonic Discord, PR [#1322](https://github.com/Psychotoxical/psysonic/pull/1322)**
+
+* Native requests carried a separate User-Agent from the in-app view, so the server listed the app as two logged-in players at once. They now share one identity and show as a single session.
 
 
 ## [1.49.0] - 2026-06-29

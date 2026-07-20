@@ -4,17 +4,18 @@ import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useLyricsStore } from './store/lyricsStore';
 import { useThemeStore } from './store/themeStore';
 import { useInstalledThemesStore } from './store/installedThemesStore';
-import { syncInjectedThemes } from '@/lib/themes/themeInjection';
+import { gateInjectedThemes, syncInjectedThemes } from '@/lib/themes/themeInjection';
 import { useThemeScheduler } from '@/app/hooks/useThemeScheduler';
 import { useFontStore } from './store/fontStore';
 import { getWindowKind } from './app/windowKind';
+import { showToast } from '@/lib/dom/toast';
 import MiniPlayerApp from './app/MiniPlayerApp';
 import MainApp from './app/MainApp';
 
 export default function App() {
-  // Re-subscribe so themeStore changes trigger a re-render (the value itself
-  // is consumed via useThemeScheduler / data-theme attribute below).
-  useThemeStore(s => s.theme);
+  const theme = useThemeStore(s => s.theme);
+  const themeDay = useThemeStore(s => s.themeDay);
+  const themeNight = useThemeStore(s => s.themeNight);
   const effectiveTheme = useThemeScheduler();
   const font = useFontStore(s => s.font);
   const buttonSize = useThemeStore(s => s.buttonSize);
@@ -31,28 +32,84 @@ export default function App() {
   // active community theme is painted without a network round-trip.
   useEffect(() => {
     syncInjectedThemes(installedThemes);
-  }, [installedThemes]);
+    // Only the active slots participate in style matching (inactive styles
+    // get media="not all" — see gateInjectedThemes). Runs in the same effects
+    // flush as the data-theme attribute below, so a switch paints with both
+    // applied.
+    gateInjectedThemes([theme, themeDay, themeNight, effectiveTheme]);
+  }, [installedThemes, theme, themeDay, themeNight, effectiveTheme]);
 
-  // Dev only: `--theme-watch <theme.css>` (debug builds) pushes a local theme's
-  // CSS in on every save. Install it under the id in its `[data-theme='<id>']`
-  // selector and apply it — the syncInjectedThemes effect above re-injects, so
-  // authoring is live without re-importing a zip. Never wired in production.
+  // Dev only: `--theme-watch <theme.css | dir>` (debug builds) pushes local
+  // theme CSS (+ sibling manifest.json metadata) in on every save. Each
+  // payload is installed under the id in its `[data-theme='<id>']` selector —
+  // the syncInjectedThemes effect above re-injects, so authoring is live
+  // without re-importing a zip. `theme-watch:css` also applies (single file,
+  // or a save in a watched directory); `theme-watch:css-seed` only installs
+  // (directory startup sweep), so authors can switch between a themes-repo
+  // checkout's themes in the UI. Both windows subscribe: dev-seeded themes
+  // are session-only (excluded from persistence), so the mini player cannot
+  // get them through the cross-window storage sync. Never wired in
+  // production.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    let unlisten: (() => void) | undefined;
-    void import('@tauri-apps/api/event').then(({ listen }) => {
-      const sub = listen<string>('theme-watch:css', ({ payload }) => {
-        const id = payload.match(/\[data-theme=['"]([^'"]+)['"]\]/)?.[1];
+    const unlisteners: (() => void)[] = [];
+    void import('@tauri-apps/api/event').then(({ listen, emit }) => {
+      type WatchPayload = {
+        css: string;
+        name?: string | null;
+        author?: string | null;
+        version?: string | null;
+        description?: string | null;
+        mode?: string | null;
+      };
+      const install = (payload: WatchPayload, apply: boolean) => {
+        const css = payload?.css;
+        const id = css?.match(/\[data-theme=['"]([^'"]+)['"]\]/)?.[1];
         if (!id) return;
+        // Manifest metadata wins, then a store-installed copy's, then dev
+        // placeholders — watched themes keep their real identity, and only
+        // the CSS is the live payload. Fresh seeds are marked dev
+        // (session-only, never persisted); a store-installed theme being
+        // watched keeps its persisted entry.
+        const prev = useInstalledThemesStore.getState().getInstalled(id);
         useInstalledThemesStore.getState().install({
-          id, name: id, author: 'dev', version: '0.0.0', description: '', mode: 'dark', css: payload, installedAt: Date.now(),
+          id,
+          name: payload.name ?? prev?.name ?? id,
+          author: payload.author ?? prev?.author ?? 'dev',
+          version: payload.version ?? prev?.version ?? '0.0.0',
+          description: payload.description ?? prev?.description ?? '',
+          mode: payload.mode === 'light' || payload.mode === 'dark'
+            ? payload.mode
+            : prev?.mode ?? 'dark',
+          tags: prev?.tags,
+          css,
+          installedAt: prev?.installedAt ?? Date.now(),
+          dev: prev ? prev.dev ?? false : true,
         });
-        useThemeStore.getState().setTheme(id);
-      });
+        if (apply) {
+          useThemeStore.getState().setTheme(id);
+          // Confirm the save reached the app — theme authors watch the app
+          // window, not the terminal. Main window only: the mini player
+          // subscribes too and would double the toast. Dev-only path, so the
+          // string stays untranslated (same as the rest of theme-watch).
+          if (getWindowKind() !== 'mini') {
+            showToast(`Theme synced: ${payload.name ?? prev?.name ?? id}`, 2500, 'success');
+          }
+        }
+      };
+      const subs = [
+        listen<WatchPayload>('theme-watch:css', ({ payload }) => install(payload, true)),
+        listen<WatchPayload>('theme-watch:css-seed', ({ payload }) => install(payload, false)),
+      ];
       // Guard the mocked-in-tests case where listen() isn't a promise.
-      if (sub && typeof sub.then === 'function') sub.then(u => { unlisten = u; });
+      for (const sub of subs) {
+        if (sub && typeof sub.then === 'function') void sub.then(u => { unlisteners.push(u); });
+      }
+      // Announce the attached listeners (again after every dev-server reload)
+      // so the watcher (re-)sends current contents — no lost first emit.
+      void emit('theme-watch:ready').catch(() => {});
     }).catch(() => {});
-    return () => unlisten?.();
+    return () => { unlisteners.forEach(u => u()); };
   }, []);
 
   useEffect(() => {
