@@ -139,6 +139,10 @@ fn backfill_is_idempotent_and_marks_completion() {
     store
         .with_conn_mut("test", |conn| {
             conn.execute("DELETE FROM composer_album_projection", [])?;
+            conn.execute(
+                "DELETE FROM library_data_migration WHERE id = ?1",
+                params![MIGRATION_ID],
+            )?;
             Ok(())
         })
         .unwrap();
@@ -153,4 +157,50 @@ fn backfill_is_idempotent_and_marks_completion() {
         })
         .unwrap();
     assert_eq!(count, 1);
+}
+
+#[test]
+fn partial_incremental_projection_does_not_imply_completion() {
+    let store = LibraryStore::open_in_memory();
+    let raw_one = serde_json::json!({
+        "contributors": [{ "role": "composer", "artistId": "c1", "name": "One" }]
+    });
+    let raw_two = serde_json::json!({
+        "contributors": [{ "role": "composer", "artistId": "c2", "name": "Two" }]
+    });
+    TrackRepository::new(&store)
+        .upsert_batch(&[
+            track("t1", "a1", raw_one),
+            track("t2", "a2", raw_two),
+        ])
+        .unwrap();
+    store
+        .with_conn_mut("test.partial_composer_projection", |conn| {
+            conn.execute(
+                "DELETE FROM composer_album_projection WHERE composer_id = 'c2'",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM library_data_migration WHERE id = ?1",
+                params![MIGRATION_ID],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let status = inspect(&store).unwrap();
+    assert!(status.needed);
+    assert_eq!(status.total_tracks, 2);
+    assert_eq!(status.done_tracks, 0);
+
+    run_backfill(&store, None).unwrap();
+    assert!(!inspect(&store).unwrap().needed);
+    let count: i64 = store
+        .with_conn("test", |conn| {
+            conn.query_row("SELECT COUNT(*) FROM composer_album_projection", [], |row| {
+                row.get(0)
+            })
+        })
+        .unwrap();
+    assert_eq!(count, 2);
 }

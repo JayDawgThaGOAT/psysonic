@@ -377,23 +377,6 @@ fn inspect_album(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto
                     done_tracks: total.max(0) as u64,
                 });
             }
-            let migration_started: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM library_data_migration WHERE id = ?1)",
-                params![MIGRATION_ID],
-                |r| r.get(0),
-            )?;
-            let has_projection: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM album_browse_projection)",
-                [],
-                |r| r.get(0),
-            )?;
-            if !migration_started && has_projection {
-                return Ok(ScopeBrowseProjectionInspectDto {
-                    needed: false,
-                    total_tracks: total.max(0) as u64,
-                    done_tracks: total.max(0) as u64,
-                });
-            }
             let cursor = cursor_rowid(conn)?;
             let done: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM track WHERE deleted = 0 AND rowid <= ?1",
@@ -436,18 +419,8 @@ pub fn is_ready(store: &LibraryStore) -> Result<bool, String> {
             if migration_completed(conn)? {
                 return Ok(true);
             }
-            // Fresh installs have no legacy catalog to backfill: sync maintains
-            // projection rows incrementally before the first browse request.
-            let migration_started: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM library_data_migration WHERE id = ?1)",
-                params![MIGRATION_ID],
-                |r| r.get(0),
-            )?;
-            if migration_started {
-                return Ok(false);
-            }
             conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM album_browse_projection)",
+                "SELECT NOT EXISTS(SELECT 1 FROM track WHERE deleted = 0)",
                 [],
                 |r| r.get(0),
             )
@@ -692,6 +665,47 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn partial_incremental_projection_does_not_imply_completion() {
+        let store = LibraryStore::open_in_memory();
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                track("t1", "a1", "Album One", "lib"),
+                track("t2", "a2", "Album Two", "lib"),
+            ])
+            .unwrap();
+        store
+            .with_conn_mut("test.partial_projection", |conn| {
+                conn.execute(
+                    "DELETE FROM album_browse_projection WHERE album_id = 'a2'",
+                    [],
+                )?;
+                conn.execute(
+                    "DELETE FROM library_data_migration WHERE id = ?1",
+                    params![MIGRATION_ID],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let status = inspect_album(&store).unwrap();
+        assert!(status.needed);
+        assert_eq!(status.total_tracks, 2);
+        assert_eq!(status.done_tracks, 0);
+        assert!(!is_ready(&store).unwrap());
+
+        run_backfill_impl(&store, None).unwrap();
+        assert!(is_ready(&store).unwrap());
+        let count: i64 = store
+            .with_read_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM album_browse_projection", [], |row| {
+                    row.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[test]

@@ -85,8 +85,23 @@ export default function DeviceSync() {
 
   const isRunning = jobStatus === 'running';
 
+  // Browser (playlists / albums / artists tabs + their loaders + debounced search)
+  const {
+    playlists, randomAlbums, albumSearchResults, albumSearchLoading,
+    artists, loadingBrowser,
+    expandedArtistIds, artistAlbumsMap, loadingArtistIds,
+    toggleArtistExpand,
+    serverIndexKey: browserServerIndexKey,
+  } = useDeviceSyncBrowser(activeTab, search, resetSearch);
+
   // ─── Device scan + manifest auto-import ─────────────────────────────────
-  const { scanDevice } = useDeviceSyncDeviceScan(targetDir, sources.length, driveDetected, t);
+  const { scanDevice } = useDeviceSyncDeviceScan(
+    targetDir,
+    sources.length,
+    driveDetected,
+    browserServerIndexKey,
+    t,
+  );
 
   // Source status (path map + derived synced/pending/deletion)
   const { sourcePathsMap, sourceStatuses } = useDeviceSyncSourceStatuses(
@@ -126,15 +141,6 @@ export default function DeviceSync() {
   // ─── Listen for background sync events ──────────────────────────────────
   useDeviceSyncJobEvents(t, scanDevice);
 
-  // Browser (playlists / albums / artists tabs + their loaders + debounced search)
-  const {
-    playlists, randomAlbums, albumSearchResults, albumSearchLoading,
-    artists, loadingBrowser,
-    expandedArtistIds, artistAlbumsMap, loadingArtistIds,
-    toggleArtistExpand,
-    serverIndexKey: browserServerIndexKey,
-  } = useDeviceSyncBrowser(activeTab, search, resetSearch);
-
   // ─── Migration handlers ─────────────────────────────────────────────────
 
   const startMigrationPreview = () => runDeviceSyncMigrationPreview({
@@ -156,7 +162,12 @@ export default function DeviceSync() {
     setMigrationOldTemplate('');
   };
 
-  const handleChooseFolder = () => runDeviceSyncChooseFolder({ t, setTargetDir, scanDevice });
+  const handleChooseFolder = () => runDeviceSyncChooseFolder({
+    t,
+    ownerServerIndexKey: browserServerIndexKey,
+    setTargetDir,
+    scanDevice,
+  });
 
   // ─── Sync (non-blocking) ────────────────────────────────────────────────
 

@@ -106,4 +106,36 @@ describe('reportPlaybackSourceFailure', () => {
 
     expect(usePlaybackAlternativeStore.getState().failure?.generation).toBe(2);
   });
+
+  it('reports unavailable only when no alternative source remains', async () => {
+    const unavailable = vi.fn();
+    mocks.resolveSources.mockResolvedValue([]);
+
+    reportPlaybackSourceFailure({
+      generation: 1,
+      queueIndex: 0,
+      queueItems: [{ serverId: 'srv-a', trackId: 'failed' }],
+      track: makeTrack({ id: 'failed', serverId: 'srv-a' }),
+      detail: 'decode error',
+    }, unavailable);
+
+    await waitFor(() => expect(usePlaybackAlternativeStore.getState().status).toBe('ready'));
+    expect(unavailable).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the failed slot selected when an alternative exists', async () => {
+    const unavailable = vi.fn();
+    mocks.resolveSources.mockResolvedValue([source('srv-b', 'copy')]);
+
+    reportPlaybackSourceFailure({
+      generation: 1,
+      queueIndex: 0,
+      queueItems: [{ serverId: 'srv-a', trackId: 'failed' }],
+      track: makeTrack({ id: 'failed', serverId: 'srv-a' }),
+      detail: 'decode error',
+    }, unavailable);
+
+    await waitFor(() => expect(usePlaybackAlternativeStore.getState().status).toBe('ready'));
+    expect(unavailable).not.toHaveBeenCalled();
+  });
 });

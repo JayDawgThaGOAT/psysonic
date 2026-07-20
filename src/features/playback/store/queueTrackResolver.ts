@@ -275,32 +275,26 @@ export function resolveVisibleRange(refs: QueueItemRef[], fromIdx: number, toIdx
   if (end > start) void resolveBatch(refs.slice(start, end));
 }
 
-/** Drop cached entries for a track id, forcing the next resolve to re-fetch. */
-export function invalidateQueueResolver(trackId: string): void {
-  let changed = false;
-  for (const key of [...cache.keys()]) {
-    if (key.endsWith(`:${trackId}`)) {
-      cache.delete(key);
-      changed = true;
-    }
-  }
-  if (changed) notify();
+/** Drop one owner-qualified cached entry, forcing the next resolve to re-fetch. */
+export function invalidateQueueResolver(trackId: string, serverId: string): void {
+  const key = refKey({ serverId: canonicalQueueServerKey(serverId), trackId });
+  if (cache.delete(key)) notify();
 }
 
 /** Patch cached entries for a track id in place (e.g. after a star/rating sync
  *  succeeds). Unlike {@link invalidateQueueResolver}, this keeps the entry so a
  *  visible queue row never blanks to a placeholder — the row stays resolved and
  *  just reflects the synced value. No-op for refs not currently cached. */
-export function patchCachedTrack(trackId: string, patch: Partial<Track>, serverId?: string): void {
-  let changed = false;
-  const scopedKey = serverId ? `${canonicalQueueServerKey(serverId)}:${trackId}` : null;
-  for (const [key, track] of cache) {
-    if ((scopedKey && key === scopedKey) || (!scopedKey && key.endsWith(`:${trackId}`))) {
-      cache.set(key, { ...track, ...patch });
-      changed = true;
-    }
-  }
-  if (changed) notify();
+export function patchCachedTrack(
+  trackId: string,
+  patch: Partial<Track>,
+  serverId: string,
+): void {
+  const key = refKey({ serverId: canonicalQueueServerKey(serverId), trackId });
+  const track = cache.get(key);
+  if (!track) return;
+  cache.set(key, { ...track, ...patch });
+  notify();
 }
 
 /** Test-only: clear cache + in-flight set. */

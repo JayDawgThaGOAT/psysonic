@@ -101,7 +101,7 @@ function onStarSuccess(task: Extract<Task, { kind: 'star' }>): void {
   // Thin-state: the queue's copy lives in the resolver cache. Patch it in place
   // to the synced value rather than dropping it — a dropped entry would blank the
   // visible queue row to a "…" placeholder until the next window re-resolve.
-  patchCachedTrack(task.id, { starred: starredVal }, task.serverId);
+  patchCachedTrack(task.id, { starred: starredVal }, task.serverId ?? '');
 }
 
 function onRatingSuccess(task: Extract<Task, { kind: 'rating' }>): void {
@@ -114,7 +114,9 @@ function onRatingSuccess(task: Extract<Task, { kind: 'rating' }>): void {
   });
   // Patch the cached queue track in place (see onStarSuccess) so the row keeps
   // its title and shows the synced rating without flashing a placeholder.
-  if (rating !== undefined) patchCachedTrack(task.id, { userRating: rating }, task.serverId);
+  if (rating !== undefined) {
+    patchCachedTrack(task.id, { userRating: rating }, task.serverId ?? '');
+  }
 }
 
 /** Optimistically (un)star a song and sync it to the server with retry. */

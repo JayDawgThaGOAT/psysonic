@@ -263,7 +263,7 @@ describe('mixed-server play selection', () => {
 });
 
 describe('audio_play failure', () => {
-  it('does not auto-skip and reports the frozen queue source', async () => {
+  it('auto-skips only after alternative lookup finds no source', async () => {
     const server = makeServer({ id: 'srv-a', url: 'https://a.test' });
     useAuthStore.setState({
       servers: [server],
@@ -284,7 +284,7 @@ describe('audio_play failure', () => {
     await Promise.resolve();
 
     const player = usePlayerStore.getState();
-    expect(next).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(false);
     expect(player.queueIndex).toBe(0);
     expect(player.currentTrack?.id).toBe('track-0');
     expect(usePlaybackAlternativeStore.getState().failure).toEqual(expect.objectContaining({

@@ -305,23 +305,6 @@ pub(crate) fn inspect(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspe
                     done_tracks: total.max(0) as u64,
                 });
             }
-            let migration_started: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM library_data_migration WHERE id = ?1)",
-                params![MIGRATION_ID],
-                |row| row.get(0),
-            )?;
-            let has_projection: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM composer_album_projection)",
-                [],
-                |row| row.get(0),
-            )?;
-            if !migration_started && has_projection {
-                return Ok(ScopeBrowseProjectionInspectDto {
-                    needed: false,
-                    total_tracks: total.max(0) as u64,
-                    done_tracks: total.max(0) as u64,
-                });
-            }
             let cursor = cursor_rowid(conn)?;
             let done: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM track WHERE deleted = 0 AND rowid <= ?1",

@@ -10,12 +10,13 @@ import { showToast } from '@/lib/dom/toast';
 
 export interface RunDeviceSyncChooseFolderDeps {
   t: TFunction;
+  ownerServerIndexKey: string | null;
   setTargetDir: (dir: string) => void;
   scanDevice: () => Promise<void>;
 }
 
 export async function runDeviceSyncChooseFolder(deps: RunDeviceSyncChooseFolderDeps): Promise<void> {
-  const { t, setTargetDir, scanDevice } = deps;
+  const { t, ownerServerIndexKey, setTargetDir, scanDevice } = deps;
   const sel = await openDialog({ directory: true, multiple: false, title: t('deviceSync.chooseFolder') });
   if (!sel) return;
 
@@ -28,7 +29,7 @@ export async function runDeviceSyncChooseFolder(deps: RunDeviceSyncChooseFolderD
       'read_device_manifest', { destDir: dir }
     );
     if (useDeviceSyncStore.getState().targetDir !== dir) return;
-    const manifestSources = deviceSyncSourcesFromManifest(manifest);
+    const manifestSources = deviceSyncSourcesFromManifest(manifest, ownerServerIndexKey);
     if (manifestSources.length > 0) {
       useDeviceSyncStore.getState().clearSources();
       manifestSources.forEach(s => useDeviceSyncStore.getState().addSource(s));

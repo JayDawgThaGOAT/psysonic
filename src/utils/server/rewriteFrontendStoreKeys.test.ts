@@ -5,7 +5,11 @@ import { useLocalPlaybackStore } from '../../store/localPlaybackStore';
 import { useOfflineStore } from '@/features/offline';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { deviceSyncSourceKey, useDeviceSyncStore } from '@/features/deviceSync';
-import { rewriteFrontendStoreKeysForRemap } from './rewriteFrontendStoreKeys';
+import {
+  rewriteFrontendStoreKeys,
+  rewriteFrontendStoreKeysForRemap,
+} from './rewriteFrontendStoreKeys';
+import { makeServer } from '@/test/helpers/factories';
 
 describe('rewriteFrontendStoreKeysForRemap', () => {
   beforeEach(() => {
@@ -66,6 +70,53 @@ describe('rewriteFrontendStoreKeysForRemap', () => {
     const state = useOfflineStore.getState();
     expect(state.albums).toHaveProperty('new:al-1');
     expect(state.albums).not.toHaveProperty('old:al-1');
+  });
+
+  it('matches the full server key when it contains a port', async () => {
+    useOfflineStore.setState({
+      albums: {
+        'old.test:4533:al-1': {
+          serverId: 'old.test:4533',
+          id: 'al-1',
+          name: 'X',
+          artist: 'Y',
+          trackIds: ['t1'],
+        },
+      },
+    });
+
+    await rewriteFrontendStoreKeysForRemap([
+      { oldKey: 'old.test:4533', newKey: 'new.test:4533' },
+    ]);
+
+    expect(useOfflineStore.getState().albums).toEqual({
+      'new.test:4533:al-1': expect.objectContaining({
+        serverId: 'new.test:4533',
+        id: 'al-1',
+      }),
+    });
+  });
+
+  it('merges offline album track IDs when the destination key already exists', async () => {
+    useOfflineStore.setState({
+      albums: {
+        'old:al-1': {
+          serverId: 'old', id: 'al-1', name: 'Old', artist: 'Artist', trackIds: ['t1', 't2'],
+        },
+        'new:al-1': {
+          serverId: 'new', id: 'al-1', name: 'New', artist: 'Artist', trackIds: ['t2', 't3'],
+        },
+      },
+    });
+
+    await rewriteFrontendStoreKeysForRemap([{ oldKey: 'old', newKey: 'new' }]);
+
+    expect(useOfflineStore.getState().albums['new:al-1']).toEqual(expect.objectContaining({
+      serverId: 'new',
+      name: 'New',
+      trackIds: ['t2', 't3', 't1'],
+    }));
+    expect(useOfflineStore.getState().albums).not.toHaveProperty('old:al-1');
   });
 
   it('rewrites local playback entries under the new key', async () => {
@@ -187,5 +238,78 @@ describe('rewriteFrontendStoreKeysForRemap', () => {
     const entries = useLocalPlaybackStore.getState().entries;
     expect(entries['new:t1']?.localPath).toBe('/new');
     expect(entries).not.toHaveProperty('old:t1');
+  });
+
+  it('keeps the more durable local playback tier on a key collision', async () => {
+    useLocalPlaybackStore.setState({
+      entries: {
+        'old:t1': {
+          serverIndexKey: 'old',
+          trackId: 't1',
+          localPath: '/old-library',
+          layoutFingerprint: 'old',
+          sizeBytes: 10,
+          tier: 'library',
+          cachedAt: 1,
+          lastPlayedAt: 5,
+          suffix: 'flac',
+        },
+        'new:t1': {
+          serverIndexKey: 'new',
+          trackId: 't1',
+          localPath: '/new-cache',
+          layoutFingerprint: 'new',
+          sizeBytes: 5,
+          tier: 'ephemeral',
+          cachedAt: 2,
+          lastPlayedAt: 10,
+          suffix: 'mp3',
+        },
+      },
+    });
+
+    await rewriteFrontendStoreKeysForRemap([{ oldKey: 'old', newKey: 'new' }]);
+
+    expect(useLocalPlaybackStore.getState().entries['new:t1']).toEqual(expect.objectContaining({
+      serverIndexKey: 'new',
+      localPath: '/old-library',
+      tier: 'library',
+      lastPlayedAt: 10,
+    }));
+    expect(useLocalPlaybackStore.getState().entries).not.toHaveProperty('old:t1');
+  });
+
+  it('merges UUID-keyed upgrade collisions that converge on one URL key', async () => {
+    const serverA = makeServer({ id: 'profile-a', url: 'http://same.test:4533' });
+    const serverB = makeServer({ id: 'profile-b', url: 'https://same.test:4533' });
+    useOfflineStore.setState({
+      albums: {
+        'profile-a:al-1': {
+          serverId: 'profile-a', id: 'al-1', name: 'Album', artist: 'Artist', trackIds: ['t1'],
+        },
+        'profile-b:al-1': {
+          serverId: 'profile-b', id: 'al-1', name: 'Album', artist: 'Artist', trackIds: ['t2'],
+        },
+      },
+    });
+    useLocalPlaybackStore.setState({
+      entries: {
+        'profile-a:t1': {
+          serverIndexKey: 'profile-a', trackId: 't1', localPath: '/library',
+          layoutFingerprint: '', sizeBytes: 10, tier: 'library', cachedAt: 1, suffix: 'flac',
+        },
+        'profile-b:t1': {
+          serverIndexKey: 'profile-b', trackId: 't1', localPath: '/cache',
+          layoutFingerprint: '', sizeBytes: 5, tier: 'ephemeral', cachedAt: 2, suffix: 'mp3',
+        },
+      },
+    });
+
+    await rewriteFrontendStoreKeys([serverA, serverB]);
+
+    expect(useOfflineStore.getState().albums['same.test:4533:al-1']?.trackIds)
+      .toEqual(['t1', 't2']);
+    expect(useLocalPlaybackStore.getState().entries['same.test:4533:t1'])
+      .toEqual(expect.objectContaining({ localPath: '/library', tier: 'library' }));
   });
 });

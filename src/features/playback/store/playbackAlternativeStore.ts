@@ -45,7 +45,7 @@ export function reportPlaybackSourceFailure(args: {
   queueItems: QueueItemRef[];
   track: Track | null;
   detail: string;
-}): void {
+}, onUnavailable?: () => void): void {
   const expectedRef = args.queueItems[args.queueIndex];
   if (!expectedRef || !args.track) return;
 
@@ -85,10 +85,12 @@ export function reportPlaybackSourceFailure(args: {
         expectedRef,
       ));
     usePlaybackAlternativeStore.setState({ status: 'ready', sources: alternatives });
+    if (alternatives.length === 0) onUnavailable?.();
   }).catch(error => {
     console.error('[psysonic] alternative source lookup failed:', error);
     if (usePlaybackAlternativeStore.getState().failure?.key !== key) return;
     usePlaybackAlternativeStore.setState({ status: 'error', sources: [] });
+    onUnavailable?.();
   });
 }
 

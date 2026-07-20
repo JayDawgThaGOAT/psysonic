@@ -1526,6 +1526,35 @@ fn run_migrations(conn: &Connection) -> rusqlite::Result<MigrationOutcome> {
     )
 }
 
+fn mark_projection_migration_complete_if_empty(
+    conn: &Connection,
+    migration_id: &str,
+) -> rusqlite::Result<()> {
+    let required_tables: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('track', 'library_data_migration')",
+        [],
+        |row| row.get(0),
+    )?;
+    if required_tables != 2 {
+        return Ok(());
+    }
+    let has_live_tracks: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM track WHERE deleted = 0)",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_live_tracks {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO library_data_migration (id, cursor_rowid, started_at, completed_at) \
+         VALUES (?1, 0, strftime('%s','now'), strftime('%s','now')) \
+         ON CONFLICT(id) DO UPDATE SET completed_at = excluded.completed_at",
+        params![migration_id],
+    )?;
+    Ok(())
+}
+
 /// Test-friendly entry point. Production code goes through `run_migrations`,
 /// which fixes `migrations`, `min_compatible`, and `hook` to the prod values.
 pub(crate) fn run_migrations_with(
@@ -1579,6 +1608,17 @@ pub(crate) fn run_migrations_with(
             continue;
         }
         conn.execute_batch(sql)?;
+        match version {
+            20 => mark_projection_migration_complete_if_empty(
+                conn,
+                crate::browse_projection::MIGRATION_ID,
+            )?,
+            24 => mark_projection_migration_complete_if_empty(
+                conn,
+                crate::composer_projection::MIGRATION_ID,
+            )?,
+            _ => {}
+        }
         record_schema_migration(conn, version)?;
     }
     Ok(MigrationOutcome::Applied)
@@ -1777,6 +1817,25 @@ mod tests {
             MIGRATIONS.len() as i64,
             "one schema_migrations row per embedded migration, no duplicates"
         );
+    }
+
+    #[test]
+    fn fresh_database_marks_projection_backfills_complete() {
+        let store = LibraryStore::open_in_memory();
+        let completed: i64 = store
+            .with_conn("test", |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM library_data_migration \
+                     WHERE id IN (?1, ?2) AND completed_at IS NOT NULL",
+                    params![
+                        crate::browse_projection::MIGRATION_ID,
+                        crate::composer_projection::MIGRATION_ID,
+                    ],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(completed, 2);
     }
 
     #[test]

@@ -312,7 +312,7 @@ The 5-minute TTL is a conservative compromise: long enough to survive a brief ap
 ### Lifecycle
 - `src/utils/orbit.ts` — `startOrbitSession`, `joinOrbitSession`, `endOrbitSession`, `leaveOrbitSession`, `suggestOrbitTrack`, `approveOrbitSuggestion`, `declineOrbitSuggestion`, `hostEnqueueToOrbit`, `cleanupOrphanedOrbitPlaylists`, `effectiveShuffleIntervalMs`.
 - `src/utils/orbitBulkGuard.ts` — standalone confirm-dialog helper invoked from `playerStore` when `>1` tracks land in the queue while a session is active.
-- `src/utils/switchActiveServer.ts` — wires Orbit teardown into server-switch.
+- `src/utils/server/switchActiveServer.ts` — switches the active account without tearing down the source-bound Orbit session.
 
 ### Hooks
 - `src/hooks/useOrbitHost.ts` — host state tick + outbox sweep + merge pipeline + heartbeat.

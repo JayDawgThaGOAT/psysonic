@@ -17,6 +17,7 @@ export function useDeviceSyncDeviceScan(
   targetDir: string | null,
   sourcesLength: number,
   driveDetected: boolean,
+  ownerServerIndexKey: string | null,
   t: TFunction,
 ): DeviceSyncDeviceScanResult {
   const setDeviceFilePaths = useDeviceSyncStore.getState().setDeviceFilePaths;
@@ -64,14 +65,14 @@ export function useDeviceSyncDeviceScan(
       'read_device_manifest', { destDir: targetDir }
     ).then(manifest => {
       if (useDeviceSyncStore.getState().targetDir !== requestTarget) return;
-      const manifestSources = deviceSyncSourcesFromManifest(manifest);
+      const manifestSources = deviceSyncSourcesFromManifest(manifest, ownerServerIndexKey);
       if (manifestSources.length > 0) {
         useDeviceSyncStore.getState().clearSources();
         manifestSources.forEach(s => useDeviceSyncStore.getState().addSource(s));
         showToast(t('deviceSync.manifestImported', { count: manifestSources.length }), 4000, 'info');
       }
     }).catch(() => {});
-  }, [targetDir, driveDetected, t]);
+  }, [targetDir, driveDetected, ownerServerIndexKey, t]);
 
   // Clear device file list and reset import flag when stick is unplugged
   useEffect(() => {

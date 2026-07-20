@@ -65,6 +65,7 @@ import {
 } from '@/features/playback/store/gaplessPreloadState';
 import { queueTrackIdentityKey } from '@/features/playback/utils/playback/queueIdentity';
 import { usePlaybackAlternativeStore } from '@/features/playback/store/playbackAlternativeStore';
+import { bumpPlayGeneration } from '@/features/playback/store/engineState';
 
 function stubPlaybackInvokes(): void {
   onInvoke('audio_play', () => undefined);
@@ -245,18 +246,18 @@ describe('audio:ended', () => {
 });
 
 describe('audio:error', () => {
-  it('keeps the failed queue slot selected and opens the alternative-source flow', async () => {
+  it('skips the failed slot when no alternative source exists', async () => {
     const queue = makeTracks(2);
     seedQueue(queue, { index: 0, currentTrack: queue[0] });
     const next = vi.fn();
     usePlayerStore.setState({ isPlaying: true, next });
 
     emitTauriEvent('audio:error', 'decoder failed');
-    vi.advanceTimersByTime(2_000);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(usePlaybackAlternativeStore.getState().status).toBe('ready'));
+    vi.advanceTimersByTime(1_500);
 
     const player = usePlayerStore.getState();
-    expect(next).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(false);
     expect(player.queueIndex).toBe(0);
     expect(player.currentTrack?.id).toBe(queue[0].id);
     expect(player.isPlaying).toBe(false);
@@ -264,6 +265,20 @@ describe('audio:error', () => {
       queueIndex: 0,
       detail: 'decoder failed',
     }));
+  });
+
+  it('does not skip after the user changes playback generation', async () => {
+    const queue = makeTracks(2);
+    seedQueue(queue, { index: 0, currentTrack: queue[0] });
+    const next = vi.fn();
+    usePlayerStore.setState({ isPlaying: true, next });
+
+    emitTauriEvent('audio:error', 'decoder failed');
+    await vi.waitFor(() => expect(usePlaybackAlternativeStore.getState().status).toBe('ready'));
+    bumpPlayGeneration();
+    vi.advanceTimersByTime(1_500);
+
+    expect(next).not.toHaveBeenCalled();
   });
 });
 

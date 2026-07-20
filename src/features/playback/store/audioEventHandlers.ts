@@ -92,6 +92,7 @@ import { armCrossfadeDynamicOverlap, getCrossfadeTransition } from '@/features/p
 import { armAutodjMixing } from '@/features/playback/store/autodjTransitionUi';
 import {
   queueItemIdentityKey,
+  sameQueueItemRef,
   sameQueueTrack,
 } from '@/features/playback/utils/playback/queueIdentity';
 import { reportPlaybackSourceFailure } from '@/features/playback/store/playbackAlternativeStore';
@@ -553,5 +554,19 @@ export function handleAudioError(message: string): void {
     queueItems: store.queueItems,
     track: store.currentTrack,
     detail,
+  }, () => {
+    setTimeout(() => {
+      if (getPlayGeneration() !== gen) return;
+      const live = usePlayerStore.getState();
+      const liveRef = live.queueItems[live.queueIndex];
+      const failedRef = store.queueItems[store.queueIndex];
+      if (
+        live.queueIndex !== store.queueIndex ||
+        !liveRef ||
+        !failedRef ||
+        !sameQueueItemRef(liveRef, failedRef)
+      ) return;
+      live.next(false);
+    }, 1500);
   });
 }

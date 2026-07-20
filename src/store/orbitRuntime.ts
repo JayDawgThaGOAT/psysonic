@@ -9,12 +9,20 @@
 // identical to today's behavior outside an Orbit session. A session can only start
 // through the topbar, which loads the barrel (→ registers) before any session
 // exists, so the registered runtime is always in place when it matters.
-import type { OrbitRole, OrbitPhase, OrbitState } from '@/features/orbit'; // type-only (erased at runtime)
+export type OrbitRole = 'host' | 'guest';
+export type OrbitPhase = 'idle' | 'starting' | 'joining' | 'active' | 'ended' | 'error';
+
+export interface OrbitRuntimeState {
+  isPlaying: boolean;
+  positionMs: number;
+  positionAt: number;
+  currentTrack: { trackId: string } | null;
+}
 
 export interface OrbitSnapshot {
   role: OrbitRole | null;
   phase: OrbitPhase;
-  state: OrbitState | null;
+  state: OrbitRuntimeState | null;
   serverId: string | null;
 }
 
@@ -75,6 +83,6 @@ export function isOrbitPlaybackSyncActive(): boolean {
   return isSyncingPhase(role, phase);
 }
 
-export function estimateLivePosition(state: OrbitState, nowMs: number): number {
+export function estimateLivePosition(state: OrbitRuntimeState, nowMs: number): number {
   return state.isPlaying ? state.positionMs + (nowMs - state.positionAt) : state.positionMs;
 }

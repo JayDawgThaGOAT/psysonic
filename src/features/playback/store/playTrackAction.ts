@@ -9,6 +9,7 @@ import {
   queueItemIdentityKey,
   queueTrackIdentityKey,
   queueTrackIdentityMatches,
+  sameQueueItemRef,
   sameQueueTrack,
 } from '@/features/playback/utils/playback/queueIdentity';
 import {
@@ -606,6 +607,20 @@ export function runPlayTrack(
             queueItems: failed.queueItems,
             track: failed.currentTrack,
             detail: String(err),
+          }, () => {
+            setTimeout(() => {
+              if (getPlayGeneration() !== gen) return;
+              const live = get();
+              const liveRef = live.queueItems[live.queueIndex];
+              const failedRef = failed.queueItems[failed.queueIndex];
+              if (
+                live.queueIndex !== failed.queueIndex ||
+                !liveRef ||
+                !failedRef ||
+                !sameQueueItemRef(liveRef, failedRef)
+              ) return;
+              live.next(false);
+            }, 500);
           });
         });
     };

@@ -3,6 +3,7 @@ import {
   deviceSyncOwnerKey,
   deviceSyncSourceKey,
   deviceSyncSourcesFromManifest,
+  migrateDeviceSyncPersistedState,
   useDeviceSyncStore,
   type DeviceSyncSource,
 } from './deviceSyncStore';
@@ -25,6 +26,7 @@ describe('deviceSyncStore ownership', () => {
     useDeviceSyncStore.setState({
       targetDir: null,
       sources: [],
+      legacySources: [],
       checkedIds: [],
       pendingDeletion: [],
       deviceFilePaths: [],
@@ -61,9 +63,35 @@ describe('deviceSyncStore ownership', () => {
     })).toEqual([]);
 
     expect(deviceSyncSourcesFromManifest({
+      version: 2,
+      sources: [{ type: 'album', id: 'legacy', name: 'Legacy' }],
+    }, sourceA.serverIndexKey)).toEqual([{
+      type: 'album',
+      id: 'legacy',
+      name: 'Legacy',
+      serverIndexKey: sourceA.serverIndexKey,
+    }]);
+
+    expect(deviceSyncSourcesFromManifest({
       version: 3,
       ownerServerIndexKey: sourceB.serverIndexKey,
       sources: [sourceA],
     })).toEqual([]);
+  });
+
+  it('preserves ownerless v0 selections until a server is explicitly selected', () => {
+    const legacy = { type: 'album' as const, id: 'legacy', name: 'Legacy' };
+    const migrated = migrateDeviceSyncPersistedState({ sources: [legacy] });
+    expect(migrated.sources).toEqual([]);
+    expect(migrated.legacySources).toEqual([legacy]);
+
+    useDeviceSyncStore.setState(migrated);
+    useDeviceSyncStore.getState().addSource(sourceA);
+
+    expect(useDeviceSyncStore.getState().legacySources).toEqual([]);
+    expect(useDeviceSyncStore.getState().sources).toEqual([
+      { ...legacy, serverIndexKey: sourceA.serverIndexKey },
+      sourceA,
+    ]);
   });
 });

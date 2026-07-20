@@ -1,9 +1,13 @@
 import type { ServerProfile } from '../../store/authStoreTypes';
 import { useAnalysisStrategyStore } from '../../store/analysisStrategyStore';
 import { useCoverStrategyStore } from '../../store/coverStrategyStore';
-import { useLocalPlaybackStore } from '../../store/localPlaybackStore';
+import {
+  useLocalPlaybackStore,
+  type LocalPlaybackEntry,
+  type LocalPlaybackTier,
+} from '../../store/localPlaybackStore';
 import { useLibraryIndexStore } from '../../store/libraryIndexStore';
-import { useOfflineStore } from '@/features/offline';
+import { useOfflineStore, type OfflineAlbumMeta } from '@/features/offline';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useDeviceSyncStore } from '@/features/deviceSync';
 import { serverIndexKeyFromUrl } from '@/lib/server/serverIndexKey';
@@ -25,43 +29,85 @@ function buildMappings(servers: ServerProfile[]): Mapping[] {
     .filter(mapping => mapping.legacyId.length > 0 && mapping.indexKey.length > 0);
 }
 
+function matchCompositeKey(key: string, mappings: Mapping[]): (Mapping & { suffix: string }) | null {
+  let matched: Mapping | null = null;
+  for (const mapping of mappings) {
+    if (
+      key.startsWith(`${mapping.legacyId}:`) &&
+      (!matched || mapping.legacyId.length > matched.legacyId.length)
+    ) {
+      matched = mapping;
+    }
+  }
+  if (!matched) return null;
+  return { ...matched, suffix: key.slice(matched.legacyId.length + 1) };
+}
+
+function mergeOfflineAlbum(
+  existing: OfflineAlbumMeta,
+  incoming: OfflineAlbumMeta,
+  serverId: string,
+): OfflineAlbumMeta {
+  return {
+    ...incoming,
+    ...existing,
+    serverId,
+    trackIds: [...new Set([...existing.trackIds, ...incoming.trackIds])],
+  };
+}
+
+const LOCAL_PLAYBACK_TIER_PRIORITY: Record<LocalPlaybackTier, number> = {
+  ephemeral: 0,
+  'favorite-auto': 1,
+  library: 2,
+};
+
+function mergeLocalPlaybackEntry(
+  existing: LocalPlaybackEntry,
+  incoming: LocalPlaybackEntry,
+  serverIndexKey: string,
+): LocalPlaybackEntry {
+  const incomingWins =
+    LOCAL_PLAYBACK_TIER_PRIORITY[incoming.tier] > LOCAL_PLAYBACK_TIER_PRIORITY[existing.tier];
+  const winner = incomingWins ? incoming : existing;
+  const other = incomingWins ? existing : incoming;
+  return {
+    ...winner,
+    serverIndexKey,
+    lastPlayedAt: Math.max(winner.lastPlayedAt ?? 0, other.lastPlayedAt ?? 0) || undefined,
+    pinSource: winner.pinSource ?? other.pinSource,
+  };
+}
+
 function rewriteOfflineStoreKeys(mappings: Mapping[]): void {
-  const map = new Map(mappings.map(mapping => [mapping.legacyId, mapping.indexKey]));
   useOfflineStore.setState((state) => {
     const albums = { ...state.albums };
     for (const [key, meta] of Object.entries(state.albums)) {
-      const i = key.indexOf(':');
-      if (i <= 0) continue;
-      const legacyId = key.slice(0, i);
-      const albumId = key.slice(i + 1);
-      const indexKey = map.get(legacyId);
-      if (!indexKey) continue;
-      const nextKey = `${indexKey}:${albumId}`;
-      if (!albums[nextKey]) {
-        albums[nextKey] = { ...meta, serverId: indexKey };
-      }
-      delete albums[key];
+      const match = matchCompositeKey(key, mappings);
+      if (!match) continue;
+      const nextKey = `${match.indexKey}:${match.suffix}`;
+      const existing = albums[nextKey];
+      albums[nextKey] = existing
+        ? mergeOfflineAlbum(existing, meta, match.indexKey)
+        : { ...meta, serverId: match.indexKey };
+      if (key !== nextKey) delete albums[key];
     }
     return { albums };
   });
 }
 
 function rewriteLocalPlaybackStoreKeys(mappings: Mapping[]): void {
-  const map = new Map(mappings.map(mapping => [mapping.legacyId, mapping.indexKey]));
   useLocalPlaybackStore.setState((state) => {
     const entries = { ...state.entries };
     for (const [key, entry] of Object.entries(state.entries)) {
-      const i = key.indexOf(':');
-      if (i <= 0) continue;
-      const legacyId = key.slice(0, i);
-      const trackId = key.slice(i + 1);
-      const indexKey = map.get(legacyId);
-      if (!indexKey) continue;
-      const nextKey = `${indexKey}:${trackId}`;
-      if (!entries[nextKey]) {
-        entries[nextKey] = { ...entry, serverIndexKey: indexKey };
-      }
-      delete entries[key];
+      const match = matchCompositeKey(key, mappings);
+      if (!match) continue;
+      const nextKey = `${match.indexKey}:${match.suffix}`;
+      const existing = entries[nextKey];
+      entries[nextKey] = existing
+        ? mergeLocalPlaybackEntry(existing, entry, match.indexKey)
+        : { ...entry, serverIndexKey: match.indexKey };
+      if (key !== nextKey) delete entries[key];
     }
     return { entries };
   });

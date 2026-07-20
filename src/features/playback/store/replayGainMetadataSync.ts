@@ -27,6 +27,7 @@ import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 import { useAuthStore } from '@/store/authStore';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
+import { sameQueueItemRef } from '@/features/playback/utils/playback/queueIdentity';
 
 function replayGainNeighbours(
   queueItems: QueueItemRef[],
@@ -84,13 +85,16 @@ function applyCurrentTrackMetadataUpgrade(
   if (!shouldSyncCurrentTrackMetadata(prev, merged, queueItems, queueIndex)) return;
 
   usePlayerStore.setState({ currentTrack: merged });
-  patchCachedTrack(prev.id, {
-    title: merged.title,
-    duration: merged.duration,
-    replayGainTrackDb: merged.replayGainTrackDb,
-    replayGainAlbumDb: merged.replayGainAlbumDb,
-    replayGainPeak: merged.replayGainPeak,
-  });
+  const ref = queueItems[queueIndex];
+  if (ref) {
+    patchCachedTrack(prev.id, {
+      title: merged.title,
+      duration: merged.duration,
+      replayGainTrackDb: merged.replayGainTrackDb,
+      replayGainAlbumDb: merged.replayGainAlbumDb,
+      replayGainPeak: merged.replayGainPeak,
+    }, ref.serverId);
+  }
   if (
     isReplayGainActive()
     && shouldUpgradeReplayGainMetadata(prev, merged, queueItems, queueIndex)
@@ -142,13 +146,18 @@ export async function maybeRefreshCurrentTrackMetadataFromIndex(): Promise<void>
   if (!serverId) return;
 
   const trackId = currentTrack.id;
+  const expectedRef = { ...ref };
   const song = await resolveSongMetaIndexFirst(serverId, trackId);
   if (!song) return;
 
   const live = usePlayerStore.getState();
   if (!live.isPlaying || live.currentRadio || !live.currentTrack) return;
   const liveRef = live.queueItems[live.queueIndex];
-  if (live.currentTrack.id !== trackId || liveRef?.trackId !== trackId) return;
+  if (
+    live.currentTrack.id !== trackId ||
+    !liveRef ||
+    !sameQueueItemRef(liveRef, expectedRef)
+  ) return;
 
   const merged = mergePlaybackTrackMetadata(live.currentTrack, songToTrack(song));
   applyCurrentTrackMetadataUpgrade(live.currentTrack, merged, live.queueItems, live.queueIndex);
