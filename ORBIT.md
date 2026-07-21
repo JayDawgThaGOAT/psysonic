@@ -40,8 +40,9 @@ Click **Psy Orbit** in the top bar → **Create a session**. The start modal ope
 
 - **Session name** — a random playful name is generated; edit it or reroll with the dice button.
 - **Max guests** — cap on concurrent participants (1–32). You don't count.
+- **Session server** — when your library scope includes several servers, choose the Navidrome instance that will host the session. Psysonic temporarily narrows the library scope and mixed queue to that server, then restores the previous scope when the session ends.
 - **Invite link** — ready to copy and share the moment the modal opens. Pre-generated from a fresh session id + the slugified name.
-- **Clear my queue first** — optional. Start with an empty queue (guest suggestions land fresh) vs. keep your current queue and share it with the guests.
+- **Clear my queue first** — optional. Start with an empty queue (guest suggestions land fresh) vs. keep the chosen server's queued tracks and share them with the guests.
 
 Click **Start Orbit**. The session bar appears at the top of the window (session name, participant count, shuffle countdown, settings / share / help / exit buttons). The link is now live — share it.
 
@@ -267,11 +268,10 @@ The state blob is size-bounded to 4 KB (serialised JSON). `serialiseOrbitState` 
 
 ### Cleanup
 
-Three layers of defense against orphaned playlists:
+Two layers of defense against orphaned playlists:
 
 1. **Explicit exit.** `endOrbitSession` (host) or `leaveOrbitSession` (guest) deletes the participant's own playlists synchronously. The happy path.
-2. **Server-switch teardown.** Switching Navidrome servers tears the current session down first (up to 1.5 s), then switches. Prevents "in session against wrong server" states.
-3. **App-start orphan sweep.** Every app launch runs `cleanupOrphanedOrbitPlaylists`: lists every `__psyorbit_*` playlist the current user owns, parses the heartbeat from the comment, deletes anything with a heartbeat older than 5 minutes (or `ended: true`, or an unparseable comment). The current local session is always protected.
+2. **App-start orphan sweep.** Every app launch runs `cleanupOrphanedOrbitPlaylists`: lists every `__psyorbit_*` playlist the current user owns, parses the heartbeat from the comment, deletes anything with a heartbeat older than 5 minutes (or `ended: true`, or an unparseable comment). The current local session is always protected.
 
 The 5-minute TTL is a conservative compromise: long enough to survive a brief app restart (and a session running on another device of yours), short enough that a dead session doesn't clutter the server indefinitely.
 
@@ -295,7 +295,7 @@ The 5-minute TTL is a conservative compromise: long enough to survive a brief ap
 - **Bulk "Play All" in-session.** Dialog: "Add 14 tracks to the Orbit queue?" On confirm, appended. On cancel, no-op.
 - **Single-click on song row in-session.** Swallowed; shows "Double-click to add" toast.
 - **Multiple accounts on target server.** Paste flow opens an account picker modal. Keyboard-navigable.
-- **Server switch while in session.** Teardown runs before switch. Any server-resident session playlists get cleaned up by their host's next app-start sweep.
+- **Server switch while in session.** The session remains bound to its original server; changing the visible active server cannot redirect playlist reads, writes, suggestions or cleanup.
 - **Initial sync race.** The guest's first tick retries on 500 ms cadence until the player state actually matches the host's last-known track (up to 2 s per attempt, then falls through with a best-effort mirror).
 - **`positionAt` stale on join.** Seek fraction is clamped to [0, 0.99] — prevents `audio:ended` from firing at the very start of a join.
 - **Outbox deletion mid-session** (cleanup race): host sees the guest drop out on the next sweep; guest's next heartbeat recreates the outbox if they're still connected.

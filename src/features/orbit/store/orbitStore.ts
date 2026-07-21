@@ -17,6 +17,11 @@ import type { OrbitState } from '@/features/orbit/api/orbit';
 
 export type OrbitRole = 'host' | 'guest';
 
+export interface OrbitHostScopeSnapshot {
+  activeServerId: string | null;
+  libraryBrowseServerIds: string[];
+}
+
 /** Fine-grained lifecycle phase. Drives which modal/indicator UI is visible. */
 export type OrbitPhase =
   /** No session bound. */
@@ -39,6 +44,8 @@ interface OrbitStore {
   sessionId: string | null;
   /** Saved server profile that owns every remote Orbit playlist operation. */
   serverId: string | null;
+  /** Host-only active-server/library scope to restore when the session ends. */
+  hostScopeSnapshot: OrbitHostScopeSnapshot | null;
   /** Monotonic local generation; invalidates async work from prior bindings. */
   bindingRevision: number;
   /** Navidrome playlist id of the canonical session playlist. */
@@ -106,6 +113,7 @@ const initialState = {
   role: null,
   sessionId: null,
   serverId: null,
+  hostScopeSnapshot: null,
   bindingRevision: 0,
   sessionPlaylistId: null,
   outboxPlaylistId: null,

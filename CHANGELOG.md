@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
 
 * Playlist creation, smart-playlist editing, radio actions and other destination-sensitive flows select the target server explicitly instead of silently using the active server.
-* Context menus, ratings, favourites, sharing, offline pins, device sync and Orbit carry the item's owner through the complete action. The same numeric Subsonic ID may now safely exist on several servers at once.
+* Context menus, ratings, favourites, sharing, offline pins, device sync and Orbit carry the item's owner through the complete action. Creating an Orbit session from a multi-server scope now asks which server should host it, temporarily keeps only that server in the library scope and shared queue, then restores the previous scope when the session ends.
 * Sharing a mixed-server queue asks which server's tracks to include in the link; single-server queues still copy immediately without an extra prompt.
 
 ## Changed

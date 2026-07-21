@@ -10,16 +10,48 @@ const mocks = vi.hoisted(() => ({
   setState: vi.fn(),
   phase: 'idle',
   bindingRevision: 0,
+  activeServerId: 'srv-owner',
+  libraryBrowseServerIds: ['srv-owner'] as string[],
+  libraryBrowseScopeVersion: 0,
+  switchActiveServer: vi.fn(),
+  setLibraryBrowseServerExclusive: vi.fn(),
+  retainQueueForServer: vi.fn(),
+  clearQueue: vi.fn(),
 }));
 
 vi.mock('@/store/authStore', () => ({
   useAuthStore: {
     getState: () => ({
       servers: [mocks.activeServer, { id: 'srv-other', username: 'other' }],
+      activeServerId: mocks.activeServerId,
+      libraryBrowseServerIds: mocks.libraryBrowseServerIds,
+      libraryBrowseScopeVersion: mocks.libraryBrowseScopeVersion,
+      musicFoldersByServer: {},
       getActiveServer: () => mocks.activeServer,
+      setLibraryBrowseServerExclusive: mocks.setLibraryBrowseServerExclusive,
     }),
+    setState: (update: object | ((state: object) => object)) => {
+      const current = {
+        servers: [mocks.activeServer, { id: 'srv-other', username: 'other' }],
+        activeServerId: mocks.activeServerId,
+        libraryBrowseServerIds: mocks.libraryBrowseServerIds,
+        libraryBrowseScopeVersion: mocks.libraryBrowseScopeVersion,
+        musicFoldersByServer: {},
+      };
+      const next = (typeof update === 'function' ? update(current) : update) as {
+        activeServerId?: string | null;
+        libraryBrowseServerIds?: string[];
+        libraryBrowseScopeVersion?: number;
+      };
+      if (next.activeServerId !== undefined) mocks.activeServerId = next.activeServerId ?? '';
+      if (next.libraryBrowseServerIds) mocks.libraryBrowseServerIds = next.libraryBrowseServerIds;
+      if (next.libraryBrowseScopeVersion !== undefined) {
+        mocks.libraryBrowseScopeVersion = next.libraryBrowseScopeVersion;
+      }
+    },
   },
 }));
+vi.mock('@/utils/server/switchActiveServer', () => ({ switchActiveServer: mocks.switchActiveServer }));
 vi.mock('@/features/orbit/store/orbitStore', () => ({
   orbitBindingRevisionIsCurrent: (revision: number) => mocks.bindingRevision === revision,
   orbitBindingIsCurrent: ({ bindingRevision }: { bindingRevision: number }) => (
@@ -45,7 +77,14 @@ vi.mock('@/features/orbit/utils/remote', () => ({
 vi.mock('@/features/orbit/utils/transitions', () => ({
   readOrbitTransitionSettings: () => ({ gaplessEnabled: true, crossfadeEnabled: false, crossfadeDuration: 0 }),
 }));
-vi.mock('@/features/playback/store/playerStore', () => ({ usePlayerStore: { getState: () => ({}) } }));
+vi.mock('@/features/playback/store/playerStore', () => ({
+  usePlayerStore: {
+    getState: () => ({
+      retainQueueForServer: mocks.retainQueueForServer,
+      clearQueue: mocks.clearQueue,
+    }),
+  },
+}));
 vi.mock('@/lib/api/subsonicLibrary', () => ({ getSongForServer: vi.fn() }));
 vi.mock('@/lib/media/songToTrack', () => ({ songToTrack: vi.fn() }));
 
@@ -54,8 +93,20 @@ import { startOrbitSession } from '@/features/orbit/utils/host';
 beforeEach(() => {
   mocks.phase = 'idle';
   mocks.bindingRevision = 0;
+  mocks.activeServerId = 'srv-owner';
+  mocks.libraryBrowseServerIds = ['srv-owner'];
+  mocks.libraryBrowseScopeVersion = 0;
   mocks.activeServer.id = 'srv-owner';
   mocks.activeServer.username = 'host';
+  mocks.switchActiveServer.mockReset().mockImplementation(async (server: { id: string }) => {
+    mocks.activeServerId = server.id;
+    return true;
+  });
+  mocks.setLibraryBrowseServerExclusive.mockReset().mockImplementation((serverId: string) => {
+    mocks.libraryBrowseServerIds = [serverId];
+  });
+  mocks.retainQueueForServer.mockReset();
+  mocks.clearQueue.mockReset();
   mocks.createPlaylist.mockReset()
     .mockResolvedValueOnce({ id: 'session-playlist' })
     .mockResolvedValueOnce({ id: 'outbox-playlist' });
@@ -93,6 +144,49 @@ describe('startOrbitSession server ownership', () => {
       serverId: 'srv-owner',
       phase: 'active',
     }));
+    expect(mocks.retainQueueForServer).toHaveBeenCalledWith('srv-owner');
+  });
+
+  it('switches to a selected scoped server and records the scope to restore', async () => {
+    mocks.activeServerId = 'srv-owner';
+    mocks.libraryBrowseServerIds = ['srv-owner', 'srv-other'];
+
+    await startOrbitSession({ name: 'Session', sid: 'dddd4444', serverId: 'srv-other' });
+
+    expect(mocks.switchActiveServer).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv-other' }));
+    expect(mocks.setLibraryBrowseServerExclusive).toHaveBeenCalledWith('srv-other');
+    expect(mocks.retainQueueForServer).toHaveBeenCalledWith('srv-other');
+    expect(mocks.setState).toHaveBeenCalledWith(expect.objectContaining({
+      serverId: 'srv-other',
+      hostScopeSnapshot: {
+        activeServerId: 'srv-owner',
+        libraryBrowseServerIds: ['srv-owner', 'srv-other'],
+      },
+    }));
+  });
+
+  it('clears instead of pruning when the host requests an empty queue', async () => {
+    await startOrbitSession({
+      name: 'Session',
+      sid: 'eeee5555',
+      serverId: 'srv-owner',
+      clearQueue: true,
+    });
+
+    expect(mocks.clearQueue).toHaveBeenCalledTimes(1);
+    expect(mocks.retainQueueForServer).not.toHaveBeenCalled();
+  });
+
+  it('restores the previous active server and library scope when startup fails', async () => {
+    mocks.libraryBrowseServerIds = ['srv-owner', 'srv-other'];
+    mocks.createPlaylist.mockReset().mockRejectedValueOnce(new Error('create failed'));
+
+    await expect(startOrbitSession({ name: 'Session', sid: 'ffff6666', serverId: 'srv-other' }))
+      .rejects.toThrow('create failed');
+
+    expect(mocks.activeServerId).toBe('srv-owner');
+    expect(mocks.libraryBrowseServerIds).toEqual(['srv-owner', 'srv-other']);
+    expect(mocks.setPhase).toHaveBeenLastCalledWith('idle');
   });
 
   it('cleans up partial creation on the same captured owner', async () => {

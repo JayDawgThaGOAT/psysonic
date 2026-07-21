@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -12,9 +12,10 @@ import {
 } from '@/features/orbit/utils/orbit';
 import { randomOrbitSessionName } from '@/features/orbit/utils/orbitNames';
 import { useAuthStore } from '@/store/authStore';
-import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { isLanUrl, serverShareBaseUrl } from '@/lib/server/serverEndpoint';
+import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 import { ORBIT_DEFAULT_MAX_USERS } from '@/features/orbit/api/orbit';
+import ServerChoiceList from '@/ui/ServerChoiceList';
 
 interface Props { onClose: () => void; }
 
@@ -37,7 +38,18 @@ export default function OrbitStartModal({ onClose }: Props) {
   const [hasCopied, setHasCopied] = useState(false);
   const [clearQueue, setClearQueue] = useState(false);
 
-  const [server]   = useState(() => useAuthStore.getState().getActiveServer());
+  const servers = useAuthStore(state => state.servers);
+  const libraryBrowseServerIds = useAuthStore(state => state.libraryBrowseServerIds);
+  const [serverId, setServerId] = useState(() => {
+    const auth = useAuthStore.getState();
+    return auth.libraryBrowseServerIds.includes(auth.activeServerId ?? '')
+      ? auth.activeServerId ?? ''
+      : auth.libraryBrowseServerIds[0] ?? auth.activeServerId ?? '';
+  });
+  const serverOptions = servers
+    .filter(server => libraryBrowseServerIds.includes(server.id))
+    .map(server => ({ id: server.id, label: serverListDisplayLabel(server, servers) }));
+  const server = servers.find(candidate => candidate.id === serverId);
   // Orbit links go to remote guests — use the share URL (public by default
   // when both are set; LAN only if shareUsesLocalUrl is on). The LAN warning
   // then correctly reads the address the guest will actually see.
@@ -45,10 +57,7 @@ export default function OrbitStartModal({ onClose }: Props) {
   const serverName = server?.name ?? server?.url ?? t('orbit.fallbackServer');
   const onLan      = isLanUrl(serverBase);
 
-  const shareLink = useMemo(
-    () => buildOrbitShareLink(serverBase, sid),
-    [serverBase, sid],
-  );
+  const shareLink = buildOrbitShareLink(serverBase, sid);
 
   const writeLinkToClipboard = async (): Promise<boolean> => {
     try {
@@ -72,6 +81,7 @@ export default function OrbitStartModal({ onClose }: Props) {
     setError(null);
     const trimmed = name.trim();
     if (!trimmed) { setError(t('orbit.errNameRequired')); return; }
+    if (!server) { setError(t('orbit.joinErrNoUser')); return; }
 
     if (!hasCopied) {
       const ok = await writeLinkToClipboard();
@@ -80,8 +90,7 @@ export default function OrbitStartModal({ onClose }: Props) {
 
     setBusy(true);
     try {
-      if (clearQueue) usePlayerStore.getState().clearQueue();
-      await startOrbitSession({ name: trimmed, maxUsers, sid, serverId: server?.id });
+      await startOrbitSession({ name: trimmed, maxUsers, sid, serverId: server.id, clearQueue });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : t('orbit.errStartFailed'));
@@ -128,6 +137,24 @@ export default function OrbitStartModal({ onClose }: Props) {
           <span>{onLan ? t('orbit.tipLan') : t('orbit.tipRemote')}</span>
         </div>
 
+        {serverOptions.length > 1 && (
+          <div className="orbit-start-modal__field">
+            <div className="orbit-start-modal__label">{t('orbit.labelServer')}</div>
+            <ServerChoiceList
+              value={serverId}
+              options={serverOptions}
+              onChange={(nextServerId) => {
+                setServerId(nextServerId);
+                setHasCopied(false);
+                setError(null);
+              }}
+              ariaLabel={t('orbit.serverAria')}
+              disabled={busy}
+            />
+            <div className="orbit-start-modal__helper">{t('orbit.helperServer')}</div>
+          </div>
+        )}
+
         <div className="orbit-start-modal__field">
           <label className="orbit-start-modal__label" htmlFor="orbit-name">
             {t('orbit.labelName')}
@@ -141,7 +168,7 @@ export default function OrbitStartModal({ onClose }: Props) {
               onChange={e => { setName(e.target.value); setHasCopied(false); }}
               onKeyDown={e => {
                 if (e.key !== 'Enter') return;
-                if (busy || !name.trim()) return;
+                if (busy || !name.trim() || !server) return;
                 e.preventDefault();
                 void onStart();
               }}
@@ -222,7 +249,7 @@ export default function OrbitStartModal({ onClose }: Props) {
             type="button"
             className="btn btn-primary"
             onClick={onStart}
-            disabled={busy || !name.trim()}
+            disabled={busy || !name.trim() || !server}
           >
             {busy
               ? t('orbit.btnStarting')

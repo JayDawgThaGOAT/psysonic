@@ -5,6 +5,18 @@ import { useOrbitStore } from '@/features/orbit/store/orbitStore';
 const mocks = vi.hoisted(() => ({
   writeOrbitState: vi.fn(),
   deletePlaylist: vi.fn(),
+  authState: {
+    servers: [
+      { id: 'srv-old', url: 'https://old.example' },
+      { id: 'srv-selected', url: 'https://selected.example' },
+      { id: 'srv-new', url: 'https://new.example' },
+    ],
+    activeServerId: 'srv-selected' as string | null,
+    libraryBrowseServerIds: ['srv-selected'] as string[],
+    libraryBrowseScopeVersion: 0,
+    musicFoldersByServer: {},
+    musicFolders: [],
+  },
 }));
 
 vi.mock('@/features/orbit/utils/remote', () => ({
@@ -20,7 +32,18 @@ vi.mock('@/lib/api/subsonicPlaylists', () => ({
 }));
 vi.mock('@/lib/api/subsonicLibrary', () => ({ getSongForServer: vi.fn() }));
 vi.mock('@/lib/media/songToTrack', () => ({ songToTrack: vi.fn() }));
-vi.mock('@/store/authStore', () => ({ useAuthStore: { getState: () => ({ servers: [] }) } }));
+vi.mock('@/store/authStore', () => ({
+  useAuthStore: {
+    getState: () => mocks.authState,
+    setState: (update: object | ((state: typeof mocks.authState) => object)) => {
+      Object.assign(
+        mocks.authState,
+        typeof update === 'function' ? update(mocks.authState) : update,
+      );
+    },
+  },
+}));
+vi.mock('@/utils/server/switchActiveServer', () => ({ switchActiveServer: vi.fn() }));
 vi.mock('@/store/playlistMembershipStore', () => ({
   usePlaylistMembershipStore: { getState: () => ({ setPlaylistSongIds: vi.fn() }) },
 }));
@@ -53,7 +76,11 @@ beforeEach(() => {
     outboxPlaylistId: null,
     phase: 'idle',
     state: null,
+    hostScopeSnapshot: null,
   });
+  mocks.authState.activeServerId = 'srv-selected';
+  mocks.authState.libraryBrowseServerIds = ['srv-selected'];
+  mocks.authState.libraryBrowseScopeVersion = 0;
   mocks.writeOrbitState.mockReset().mockResolvedValue(undefined);
   mocks.deletePlaylist.mockReset().mockResolvedValue(undefined);
 });
@@ -94,6 +121,26 @@ describe('Orbit teardown generations', () => {
       role: 'guest',
       serverId: 'srv-new',
       bindingRevision: 2,
+    }));
+  });
+
+  it('restores the host active server and library scope before returning to idle', async () => {
+    bind('host', 1, 'srv-selected');
+    useOrbitStore.setState({
+      hostScopeSnapshot: {
+        activeServerId: 'srv-old',
+        libraryBrowseServerIds: ['srv-old', 'srv-selected'],
+      },
+    });
+
+    await endOrbitSession();
+
+    expect(mocks.authState.activeServerId).toBe('srv-old');
+    expect(mocks.authState.libraryBrowseServerIds).toEqual(['srv-old', 'srv-selected']);
+    expect(useOrbitStore.getState()).toEqual(expect.objectContaining({
+      role: null,
+      phase: 'idle',
+      hostScopeSnapshot: null,
     }));
   });
 });

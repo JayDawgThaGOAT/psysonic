@@ -28,6 +28,8 @@ import {
   clearQueueServerForPlayback,
   ensureQueueServerPinned,
 } from '@/features/playback/utils/playback/playbackServer';
+import { profileIdFromQueueRef } from '@/lib/media/trackServerScope';
+import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import { clearTimelineSessionHistory } from '@/features/playback/store/timelineSessionHistory';
 import {
   getShuffleOriginalOrder,
@@ -69,11 +71,11 @@ function seedIncoming(state: PlayerState, tracks: Track[]): void {
 }
 
 /**
- * Eleven queue-mutation actions. Shared invariant: every action except
- * `setRadioArtistId` pushes a queue-undo snapshot and calls
- * `syncUserQueueMutationToServer` so the Navidrome `savePlayQueue` stays in sync.
- * Exceptions: `enqueue`'s optional third argument **`skipQueueUndo`** and
- * **`pruneUpcomingToCurrent(true)`** — Lucky Mix pushes one snapshot up-front.
+ * Queue-mutation actions. Explicit queue edits normally push an undo snapshot
+ * and sync Navidrome's `savePlayQueue`. Lifecycle mutations are exceptions:
+ * `clearQueue` and `retainQueueForServer` are not undoable, while
+ * `enqueue(..., skipQueueUndo)` and `pruneUpcomingToCurrent(true)` rely on a
+ * caller-owned snapshot.
  */
 export function createQueueMutationActions(set: SetState, get: GetState): Pick<
   PlayerState,
@@ -83,6 +85,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
   | 'enqueueRadio'
   | 'setRadioArtistId'
   | 'pruneUpcomingToCurrent'
+  | 'retainQueueForServer'
   | 'clearQueue'
   | 'reorderQueue'
   | 'shuffleQueue'
@@ -340,6 +343,48 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       const newIndex = at >= 0 ? at : 0;
       set({ queueItems: newItems, queueIndex: newIndex });
       syncUserQueueMutationToServer(items, newItems, s.currentTrack, s.currentTime);
+    },
+
+    retainQueueForServer: (serverId) => {
+      const state = get();
+      const previousItems = itemsOf(state);
+      const targetProfileId = resolveServerIdForIndexKey(serverId) || serverId;
+      const fallbackProfileId = resolveServerIdForIndexKey(state.queueServerId ?? '')
+        || state.queueServerId
+        || useAuthStore.getState().activeServerId
+        || '';
+      const nextItems = previousItems.filter(ref => (
+        (profileIdFromQueueRef(ref) || fallbackProfileId) === targetProfileId
+      ));
+      const nextQueueIndex = state.currentTrack
+        ? nextItems.findIndex(ref => queueItemRefMatchesTrack(ref, state.currentTrack!))
+        : -1;
+      const keepsCurrentTrack = nextQueueIndex >= 0 && !state.currentRadio;
+      const mustStop = Boolean(state.currentRadio || (state.currentTrack && !keepsCurrentTrack));
+
+      if (mustStop) get().stop();
+
+      const queueServerId = canonicalQueueServerKey(serverId) || serverId;
+      set({
+        queueItems: nextItems,
+        queueIndex: keepsCurrentTrack ? nextQueueIndex : 0,
+        queueServerId,
+        navidromePublicSharePageUrl: null,
+        ...(!keepsCurrentTrack && state.currentTrack ? {
+          currentTrack: null,
+          waveformBins: null,
+          isPlaying: false,
+          progress: 0,
+          buffered: 0,
+          currentTime: 0,
+        } : {}),
+      });
+      syncUserQueueMutationToServer(
+        previousItems,
+        nextItems,
+        keepsCurrentTrack ? state.currentTrack : null,
+        keepsCurrentTrack ? state.currentTime : 0,
+      );
     },
 
     clearQueue: () => {

@@ -2,9 +2,12 @@ import { createPlaylist, deletePlaylist } from '@/lib/api/subsonicPlaylists';
 import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { useAuthStore } from '@/store/authStore';
+import { deriveLibraryBrowseServerIdsWithFallback } from '@/lib/library/libraryBrowseScope';
+import { switchActiveServer } from '@/utils/server/switchActiveServer';
 import {
   orbitBindingIsCurrent,
   orbitBindingRevisionIsCurrent,
+  type OrbitHostScopeSnapshot,
   useOrbitStore,
 } from '@/features/orbit/store/orbitStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
@@ -36,6 +39,39 @@ export interface StartOrbitArgs {
   sid?: string;
   /** Captured server profile shown in the start modal. */
   serverId?: string;
+  /** Start with an empty queue instead of retaining the chosen server's tracks. */
+  clearQueue?: boolean;
+}
+
+function restoreHostScopeSnapshot(snapshot: OrbitHostScopeSnapshot | null): void {
+  if (!snapshot) return;
+  const auth = useAuthStore.getState();
+  const activeServerId = snapshot.activeServerId
+    && auth.servers.some(server => server.id === snapshot.activeServerId)
+    ? snapshot.activeServerId
+    : auth.activeServerId;
+  const libraryBrowseServerIds = deriveLibraryBrowseServerIdsWithFallback({
+    servers: auth.servers,
+    activeServerId,
+    libraryBrowseServerIds: snapshot.libraryBrowseServerIds,
+  });
+  const activeChanged = activeServerId !== auth.activeServerId;
+  const scopeChanged = libraryBrowseServerIds.length !== auth.libraryBrowseServerIds.length
+    || libraryBrowseServerIds.some((id, index) => id !== auth.libraryBrowseServerIds[index]);
+  if (!activeChanged && !scopeChanged) return;
+
+  // Every saved server already has a live HTTP context. Restore the previous
+  // pointers synchronously so normal teardown and app exit do not wait on a probe.
+  useAuthStore.setState(state => ({
+    ...(activeChanged ? {
+      activeServerId,
+      musicFolders: activeServerId ? state.musicFoldersByServer[activeServerId] ?? [] : [],
+    } : {}),
+    ...(scopeChanged ? {
+      libraryBrowseServerIds,
+      libraryBrowseScopeVersion: state.libraryBrowseScopeVersion + 1,
+    } : {}),
+  }));
 }
 
 /**
@@ -61,12 +97,25 @@ export async function startOrbitSession(args: StartOrbitArgs): Promise<OrbitStat
     throw new Error(`Cannot start while phase is ${store.phase}`);
   }
   const startRevision = store.bindingRevision;
+  const hostScopeSnapshot: OrbitHostScopeSnapshot = {
+    activeServerId: auth.activeServerId,
+    libraryBrowseServerIds: [...auth.libraryBrowseServerIds],
+  };
 
   store.setPhase('starting');
 
   let sessionPlaylistId: string | null = null;
   let outboxPlaylistId:  string | null = null;
   try {
+    if (auth.activeServerId !== serverId) {
+      const switched = await switchActiveServer(server);
+      if (!orbitBindingRevisionIsCurrent(startRevision)) throw new Error('Orbit start superseded');
+      if (!switched) throw new Error('Could not connect to the selected Orbit server');
+    }
+    useAuthStore.getState().setLibraryBrowseServerExclusive(serverId);
+    if (args.clearQueue) usePlayerStore.getState().clearQueue();
+    else usePlayerStore.getState().retainQueueForServer(serverId);
+
     const sid = args.sid ?? generateSessionId();
     const sessionName = orbitSessionPlaylistName(sid);
     const outboxName  = orbitOutboxPlaylistName(sid, username);
@@ -102,6 +151,7 @@ export async function startOrbitSession(args: StartOrbitArgs): Promise<OrbitStat
     useOrbitStore.setState({
       role: 'host',
       serverId,
+      hostScopeSnapshot,
       bindingRevision: startRevision + 1,
       sessionId: sid,
       sessionPlaylistId,
@@ -117,7 +167,10 @@ export async function startOrbitSession(args: StartOrbitArgs): Promise<OrbitStat
     // Best-effort cleanup of anything we managed to create before the failure.
     if (outboxPlaylistId)  { try { await deletePlaylist(outboxPlaylistId, serverId); }  catch { /* ignore */ } }
     if (sessionPlaylistId) { try { await deletePlaylist(sessionPlaylistId, serverId); } catch { /* ignore */ } }
-    if (orbitBindingRevisionIsCurrent(startRevision)) useOrbitStore.getState().setPhase('idle');
+    if (orbitBindingRevisionIsCurrent(startRevision)) {
+      restoreHostScopeSnapshot(hostScopeSnapshot);
+      useOrbitStore.getState().setPhase('idle');
+    }
     throw err;
   }
 }
@@ -135,12 +188,17 @@ export async function endOrbitSession(): Promise<void> {
     role,
     state,
     serverId,
+    hostScopeSnapshot,
     bindingRevision,
     sessionPlaylistId,
     outboxPlaylistId,
   } = useOrbitStore.getState();
   if (role !== 'host') return;
-  if (!serverId) { useOrbitStore.getState().reset(); return; }
+  if (!serverId) {
+    restoreHostScopeSnapshot(hostScopeSnapshot);
+    useOrbitStore.getState().reset();
+    return;
+  }
 
   // 1) Flip `ended` so guests notice on their next poll even if deletion fails.
   if (sessionPlaylistId && state) {
@@ -156,7 +214,10 @@ export async function endOrbitSession(): Promise<void> {
   if (sessionPlaylistId) { try { await deletePlaylist(sessionPlaylistId, serverId); } catch { /* best-effort */ } }
 
   // 3) Local teardown.
-  if (orbitBindingRevisionIsCurrent(bindingRevision)) useOrbitStore.getState().reset();
+  if (orbitBindingRevisionIsCurrent(bindingRevision)) {
+    restoreHostScopeSnapshot(hostScopeSnapshot);
+    useOrbitStore.getState().reset();
+  }
 }
 
 /**

@@ -51,8 +51,8 @@ export default function OrbitJoinModal({ onClose }: Props) {
     try {
       let targetServerId = active?.id ?? '';
       // Auto-switch to the link's server if the user has an account for it.
-      // Multiple candidates → picker modal. switch tears down any lingering
-      // orbit session.
+      // Multiple candidates → picker modal. Any existing Orbit binding remains
+      // pinned to its original server until its own lifecycle ends.
       if (activeUrl !== wantUrl) {
         const candidates = useAuthStore.getState().servers
           .filter(s => s.url.replace(/\/+$/, '') === wantUrl);

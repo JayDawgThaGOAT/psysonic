@@ -279,6 +279,41 @@ describe('reorderQueue', () => {
 });
 
 describe('mixed-server queue identity', () => {
+  it('retains one server and follows its current track to the new index', () => {
+    const other = makeTrack({ id: 'other', serverId: 'srv-a' });
+    const current = makeTrack({ id: 'current', serverId: 'srv-b' });
+    const next = makeTrack({ id: 'next', serverId: 'srv-b' });
+    seedQueue([other, current, next], { index: 1, currentTrack: current });
+
+    usePlayerStore.getState().retainQueueForServer('srv-b');
+
+    const state = usePlayerStore.getState();
+    expect(state.queueItems).toEqual([
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'current' }),
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'next' }),
+    ]);
+    expect(state.queueIndex).toBe(0);
+    expect(state.currentTrack).toBe(current);
+    expect(state.queueServerId).toBe('srv-b');
+  });
+
+  it('stops and clears a current track owned by a removed server', () => {
+    const current = makeTrack({ id: 'current', serverId: 'srv-a' });
+    const retained = makeTrack({ id: 'retained', serverId: 'srv-b' });
+    seedQueue([current, retained], { index: 0, currentTrack: current });
+    usePlayerStore.setState({ isPlaying: true, currentTime: 30, progress: 0.5 });
+
+    usePlayerStore.getState().retainQueueForServer('srv-b');
+
+    const state = usePlayerStore.getState();
+    expect(state.queueItems).toEqual([
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'retained' }),
+    ]);
+    expect(state.currentTrack).toBeNull();
+    expect(state.isPlaying).toBe(false);
+    expect(state.currentTime).toBe(0);
+  });
+
   it('prunes after the current owner, not the first equal raw id', () => {
     const a = makeTrack({ id: 'shared', serverId: 'srv-a' });
     const b = makeTrack({ id: 'shared', serverId: 'srv-b' });

@@ -110,6 +110,9 @@ export interface PlayerState {
   /** For Lucky Mix: drop upcoming tail; keep the currently playing item only.
    * When `skipQueueUndo` is true, callers must push undo separately (macro rebuild). */
   pruneUpcomingToCurrent: (skipQueueUndo?: boolean) => void;
+  /** Keep only queue items owned by one server. Used when Orbit temporarily
+   * constrains a mixed-server session to its selected Navidrome host. */
+  retainQueueForServer: (serverId: string) => void;
   clearQueue: () => void;
 
   isQueueVisible: boolean;
