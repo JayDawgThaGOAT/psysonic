@@ -246,44 +246,43 @@ fn reset_affected_rank_partitions(tx: &Transaction<'_>) -> rusqlite::Result<()> 
     )
 }
 
+const CAPTURE_INVALIDATED_RANK_PARTITIONS_SQL: &str = "WITH invalidated_artist AS MATERIALIZED ( \
+       SELECT entity_id FROM identity_invalidation \
+       WHERE server_id = ?1 AND kind = 'artist' \
+     ), \
+     invalidated_album AS MATERIALIZED ( \
+       SELECT entity_id FROM identity_invalidation \
+       WHERE server_id = ?1 AND kind = 'album' \
+       UNION \
+       SELECT DISTINCT t.album_id FROM invalidated_artist ia \
+       CROSS JOIN track t INDEXED BY idx_track_artist \
+       WHERE t.server_id = ?1 AND t.deleted = 0 AND t.artist_id = ia.entity_id \
+         AND t.album_id IS NOT NULL AND t.album_id != '' \
+     ), \
+     candidate_track AS MATERIALIZED ( \
+       SELECT entity_id FROM identity_invalidation \
+       WHERE server_id = ?1 AND kind = 'track' \
+       UNION \
+       SELECT t.id FROM invalidated_album ia \
+       CROSS JOIN track t INDEXED BY idx_track_album \
+       WHERE t.server_id = ?1 AND t.deleted = 0 AND t.album_id = ia.entity_id \
+       UNION \
+       SELECT t.id FROM invalidated_artist ia \
+       CROSS JOIN track t INDEXED BY idx_track_artist \
+       WHERE t.server_id = ?1 AND t.deleted = 0 AND t.artist_id = ia.entity_id \
+     ) \
+     INSERT OR IGNORE INTO temp.identity_rank_partition(cluster_key, duration_bucket) \
+     SELECT ck.cluster_key, ck.duration_sec / 5 \
+     FROM candidate_track candidate \
+     INNER JOIN cluster.track_cluster_key ck \
+       ON ck.server_id = ?1 AND ck.track_id = candidate.entity_id \
+     WHERE ck.cluster_key IS NOT NULL";
+
 fn capture_invalidated_rank_partitions(
     tx: &Transaction<'_>,
     server_id: &str,
 ) -> rusqlite::Result<()> {
-    tx.execute(
-        "WITH invalidated_artist AS MATERIALIZED ( \
-           SELECT entity_id FROM identity_invalidation \
-           WHERE server_id = ?1 AND kind = 'artist' \
-         ), \
-         invalidated_album AS MATERIALIZED ( \
-           SELECT entity_id FROM identity_invalidation \
-           WHERE server_id = ?1 AND kind = 'album' \
-           UNION \
-           SELECT DISTINCT t.album_id FROM invalidated_artist ia \
-           CROSS JOIN track t \
-           WHERE t.server_id = ?1 AND t.deleted = 0 AND t.artist_id = ia.entity_id \
-             AND t.album_id IS NOT NULL AND t.album_id != '' \
-         ), \
-         candidate_track AS MATERIALIZED ( \
-           SELECT entity_id FROM identity_invalidation \
-           WHERE server_id = ?1 AND kind = 'track' \
-           UNION \
-           SELECT t.id FROM invalidated_album ia \
-           CROSS JOIN track t \
-           WHERE t.server_id = ?1 AND t.deleted = 0 AND t.album_id = ia.entity_id \
-           UNION \
-           SELECT t.id FROM invalidated_artist ia \
-           CROSS JOIN track t \
-           WHERE t.server_id = ?1 AND t.deleted = 0 AND t.artist_id = ia.entity_id \
-         ) \
-         INSERT OR IGNORE INTO temp.identity_rank_partition(cluster_key, duration_bucket) \
-         SELECT ck.cluster_key, ck.duration_sec / 5 \
-         FROM candidate_track candidate \
-         INNER JOIN cluster.track_cluster_key ck \
-           ON ck.server_id = ?1 AND ck.track_id = candidate.entity_id \
-         WHERE ck.cluster_key IS NOT NULL",
-        params![server_id],
-    )?;
+    tx.execute(CAPTURE_INVALIDATED_RANK_PARTITIONS_SQL, params![server_id])?;
     Ok(())
 }
 
@@ -954,6 +953,38 @@ mod tests {
             })
             .unwrap();
         assert_eq!(after, ("t2".into(), 0));
+    }
+
+    #[test]
+    fn invalidated_rank_partition_plan_uses_partial_track_indexes() {
+        let store = LibraryStore::open_in_memory();
+        let plan = store
+            .with_conn_mut("test.invalidated_rank_partition_plan", |conn| {
+                conn.execute_batch(
+                    "CREATE TEMP TABLE IF NOT EXISTS identity_rank_partition ( \
+                       cluster_key TEXT NOT NULL, \
+                       duration_bucket INTEGER NOT NULL, \
+                       PRIMARY KEY (cluster_key, duration_bucket) \
+                     ) WITHOUT ROWID;",
+                )?;
+                let mut statement = conn.prepare(&format!(
+                    "EXPLAIN QUERY PLAN {CAPTURE_INVALIDATED_RANK_PARTITIONS_SQL}"
+                ))?;
+                let plan = statement
+                    .query_map(params!["s1"], |row| row.get::<_, String>(3))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(plan)
+            })
+            .unwrap();
+
+        assert!(
+            plan.iter().any(|line| line.contains("idx_track_artist")),
+            "artist invalidation did not use idx_track_artist: {plan:#?}"
+        );
+        assert!(
+            plan.iter().any(|line| line.contains("idx_track_album")),
+            "album invalidation did not use idx_track_album: {plan:#?}"
+        );
     }
 
     #[test]

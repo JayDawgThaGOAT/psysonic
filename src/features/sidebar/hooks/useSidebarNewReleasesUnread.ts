@@ -55,8 +55,7 @@ export function useSidebarNewReleasesUnread({
     localStorage.setItem(scopedSeenStorageKey, JSON.stringify(normalized));
   }, [scopedSeenStorageKey]);
 
-  const refreshNewReleasesUnread = useCallback(async (markAsSeen = false) => {
-    const seq = ++newReleasesRefreshSeqRef.current;
+  const refreshNewReleasesUnread = useCallback(async (seq: number, markAsSeen = false) => {
     const isCurrent = () => seq === newReleasesRefreshSeqRef.current;
 
     if (!isLoggedIn || !anchorServerId || scopes.length === 0) {
@@ -76,6 +75,7 @@ export function useSidebarNewReleasesUnread({
         // poll and starves the Home New/Latest rails.
         false,
       );
+      if (!isCurrent()) return;
       const newestIds = newest.albums.map(a => a.id).filter(Boolean);
       const seenIds = readSeenNewReleaseIds();
 
@@ -116,6 +116,7 @@ export function useSidebarNewReleasesUnread({
   const refreshDebounceRef = useRef<number | null>(null);
   const pendingMarkAsSeenRef = useRef(false);
   const scheduleRefreshNewReleasesUnread = useCallback((markAsSeen = false) => {
+    const seq = ++newReleasesRefreshSeqRef.current;
     pendingMarkAsSeenRef.current = pendingMarkAsSeenRef.current || markAsSeen;
     if (refreshDebounceRef.current != null) {
       window.clearTimeout(refreshDebounceRef.current);
@@ -124,7 +125,7 @@ export function useSidebarNewReleasesUnread({
       refreshDebounceRef.current = null;
       const mark = pendingMarkAsSeenRef.current;
       pendingMarkAsSeenRef.current = false;
-      void refreshNewReleasesUnread(mark);
+      void refreshNewReleasesUnread(seq, mark);
     }, NEW_RELEASES_UNREAD_DEBOUNCE_MS);
   }, [refreshNewReleasesUnread]);
 
@@ -173,6 +174,8 @@ export function useSidebarNewReleasesUnread({
         window.clearTimeout(refreshDebounceRef.current);
         refreshDebounceRef.current = null;
       }
+      pendingMarkAsSeenRef.current = false;
+      newReleasesRefreshSeqRef.current += 1;
     };
   }, [pathname, scheduleRefreshNewReleasesUnread]);
 

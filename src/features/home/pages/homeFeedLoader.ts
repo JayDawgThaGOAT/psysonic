@@ -19,8 +19,8 @@ export const HOME_REQUEST_TIMEOUT_MS = 4000;
 // they patch in on arrival. A busy backend (cluster rebuild holding the mainstage
 // read connection) can make these local reads resolve correct data ~15s late; a
 // tight 4s deadline discarded that correct result and left the rails permanently
-// empty. Give them a generous safety cap instead of the shared request timeout.
-export const HOME_CHRONOLOGICAL_TIMEOUT_MS = 30000;
+// empty. Keep the safety cap below the local-read single-flight's 30s eviction.
+export const HOME_CHRONOLOGICAL_TIMEOUT_MS = 25000;
 export const HOME_LOCAL_READ_TIMEOUT_MS = 1000;
 export const HOME_PAGE_SIZE = 12;
 export const HOME_HERO_COUNT = 8;

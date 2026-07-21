@@ -9,6 +9,7 @@ vi.mock('@/lib/library/libraryReady', () => ({
 
 import { resetLibraryLocalReadSingleFlightsForTests } from '@/lib/library/localReadSingleFlight';
 import {
+  HOME_CHRONOLOGICAL_TIMEOUT_MS,
   HOME_LOCAL_READ_TIMEOUT_MS,
   HOME_REQUEST_TIMEOUT_MS,
   advanceHomeOffsets,
@@ -205,7 +206,7 @@ describe('homeFeedLoader failure isolation', () => {
     const first = loadHomeChronologicalFeed(options);
     const second = loadHomeChronologicalFeed(options);
     await vi.waitFor(() => expect(libraryScopeListMainstageAlbums).toHaveBeenCalledTimes(1));
-    await vi.advanceTimersByTimeAsync(HOME_REQUEST_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(HOME_CHRONOLOGICAL_TIMEOUT_MS);
 
     await expect(first).resolves.toMatchObject({ status: 'timeout' });
     await expect(second).resolves.toMatchObject({ status: 'timeout' });
@@ -307,9 +308,9 @@ describe('homeFeedLoader failure isolation', () => {
         }>(() => {})),
       },
     });
-    await vi.advanceTimersByTimeAsync(HOME_REQUEST_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(HOME_CHRONOLOGICAL_TIMEOUT_MS);
     const result = await resultPromise;
-    expect(result).toEqual({ status: 'timeout', durationMs: HOME_REQUEST_TIMEOUT_MS });
+    expect(result).toEqual({ status: 'timeout', durationMs: HOME_CHRONOLOGICAL_TIMEOUT_MS });
     const patched = patchHomeChronologicalFeed(current, 'recent', result);
     expect(patched).toBe(current);
     expect(patched.recent.map(item => item.id)).toEqual(['prior']);

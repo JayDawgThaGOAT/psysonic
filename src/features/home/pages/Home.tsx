@@ -1,5 +1,5 @@
 import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import Hero from '@/features/home/components/Hero';
 import { AlbumRow } from '@/features/album';
@@ -185,6 +185,11 @@ export default function Home() {
   const displayedSnapshotRef = useRef<HomeFeedSnapshot | null>(initialFeed);
   const feedLoadVersionRef = useRef(0);
   const appliedSyncRevisionRef = useRef(librarySyncRevision);
+  const activeScopeRef = useRef({ scopeKey, scopeVersion });
+
+  useLayoutEffect(() => {
+    activeScopeRef.current = { scopeKey, scopeVersion };
+  }, [scopeKey, scopeVersion]);
 
   useEffect(() => {
     const canLoadFeed = serverIds.length > 0 && !!scopeKey && !!anchorServerId;
@@ -471,6 +476,10 @@ export default function Home() {
   const loadMore = async (section: HomeAlbumSection) => {
     const current = displayedSnapshotRef.current;
     if (!current || !anchorServerId) return;
+    if (current.scopeKey !== scopeKey || current.scopeVersion !== scopeVersion) return;
+    const requestedScope = { scopeKey, scopeVersion };
+    const sectionAlbums = current[section];
+    const sectionOffset = current.offsets[section];
     try {
       const next = await loadMoreHomeAlbums({
         snapshot: current,
@@ -481,8 +490,27 @@ export default function Home() {
         mixConfig: getMixMinRatingsConfigFromAuth(),
         deps: { filterAlbumsByMixRatingsAcrossServers },
       });
-      writeHomeFeedCache(next);
-      applyFeedSnapshot(next);
+      const activeScope = activeScopeRef.current;
+      if (
+        activeScope.scopeKey !== requestedScope.scopeKey
+        || activeScope.scopeVersion !== requestedScope.scopeVersion
+      ) return;
+      const displayed = displayedSnapshotRef.current;
+      if (
+        !displayed
+        || displayed.scopeKey !== requestedScope.scopeKey
+        || displayed.scopeVersion !== requestedScope.scopeVersion
+        || displayed[section] !== sectionAlbums
+        || displayed.offsets[section] !== sectionOffset
+      ) return;
+      const merged: HomeFeedSnapshot = {
+        ...displayed,
+        savedAt: next.savedAt,
+        offsets: { ...displayed.offsets, [section]: next.offsets[section] },
+        [section]: next[section],
+      };
+      writeHomeFeedCache(merged);
+      applyFeedSnapshot(merged);
     } catch (e) {
       console.error('Failed to load more', e);
     }

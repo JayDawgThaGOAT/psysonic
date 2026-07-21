@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { act, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
 
@@ -7,11 +8,30 @@ const homeMocks = vi.hoisted(() => ({
   connection: { status: 'checking' as 'checking' | 'connected' | 'disconnected' },
   loadHomeFeedWithStatus: vi.fn(),
   loadHomeChronologicalFeed: vi.fn(),
+  loadMoreHomeAlbums: vi.fn(),
+  scope: { key: 'scope', version: 1 },
   unavailableServerIds: new Set<string>(),
 }));
 
 vi.mock('@/features/album', () => ({
-  AlbumRow: () => null,
+  AlbumRow: ({
+    title,
+    albums,
+    onLoadMore,
+  }: {
+    title: string;
+    albums: Array<{ name: string }>;
+    onLoadMore?: () => void;
+  }) => (
+    <div data-testid={`home-row-${title}`}>
+      {albums.map(album => album.name).join(',')}
+      {onLoadMore && (
+        <button type="button" data-testid={`load-more-${title}`} onClick={onLoadMore}>
+          load more
+        </button>
+      )}
+    </div>
+  ),
   LosslessAlbumsRail: () => null,
 }));
 vi.mock('@/features/home/components/Hero', () => ({
@@ -32,7 +52,7 @@ vi.mock('@/features/playback/utils/mixRatingFilter', () => ({
 }));
 vi.mock('@/lib/perf/perfFlags', () => ({
   usePerfProbeFlags: () => ({
-    disableMainstageRails: true,
+    disableMainstageRails: false,
     disableHomeAlbumRows: false,
     disableHomeSongRails: false,
     disableMainstageRailArtwork: true,
@@ -70,6 +90,7 @@ vi.mock('@/lib/library/libraryBrowseScope', async importOriginal => ({
   deriveLibraryBrowseScope: () => ({
     anchorServerId: 'server-a',
     pairs: [{ serverId: 'server-a', libraryId: 'library-a' }],
+    fingerprint: homeMocks.scope.key,
   }),
 }));
 vi.mock('@/lib/network/serverReachability', async importOriginal => ({
@@ -77,10 +98,10 @@ vi.mock('@/lib/network/serverReachability', async importOriginal => ({
   useUnavailableServerIds: () => homeMocks.unavailableServerIds,
 }));
 vi.mock('@/features/home/pages/homeFeedLoader', () => ({
-  deriveHomeFeedScope: () => ({ serverIds: ['server-a'], scopeKey: 'scope' }),
+  deriveHomeFeedScope: () => ({ serverIds: ['server-a'], scopeKey: homeMocks.scope.key }),
   loadHomeFeedWithStatus: homeMocks.loadHomeFeedWithStatus,
   loadHomeChronologicalFeed: homeMocks.loadHomeChronologicalFeed,
-  loadMoreHomeAlbums: vi.fn(),
+  loadMoreHomeAlbums: homeMocks.loadMoreHomeAlbums,
   patchHomeChronologicalFeed: (snapshot: HomeFeedSnapshot) => snapshot,
   preserveHomeChronologicalFeeds: (snapshot: HomeFeedSnapshot) => snapshot,
 }));
@@ -114,10 +135,14 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function snapshot(name: string): HomeFeedSnapshot {
+function snapshot(
+  name: string,
+  scopeKey = homeMocks.scope.key,
+  scopeVersion = homeMocks.scope.version,
+): HomeFeedSnapshot {
   return {
-    scopeKey: 'scope',
-    scopeVersion: 1,
+    scopeKey,
+    scopeVersion,
     savedAt: 1,
     offsets: {
       starred: { 'server-a': 0 },
@@ -144,8 +169,10 @@ describe('Home startup feed loading', () => {
     resetAuthStore();
     clearHomeFeedCache();
     homeMocks.connection.status = 'checking';
+    homeMocks.scope = { key: 'scope', version: 1 };
     homeMocks.loadHomeFeedWithStatus.mockReset();
     homeMocks.loadHomeChronologicalFeed.mockReset();
+    homeMocks.loadMoreHomeAlbums.mockReset();
     homeMocks.loadHomeChronologicalFeed.mockResolvedValue({
       status: 'success', albums: [], hasMore: false, durationMs: 0,
     });
@@ -207,5 +234,45 @@ describe('Home startup feed loading', () => {
     });
     await waitFor(() => expect(readHomeFeedCache('scope', 1)?.heroAlbums[0]?.name).toBe('fresh'));
     expect(screen.getByTestId('home-hero')).toHaveTextContent('fresh');
+  });
+
+  it('does not apply a load-more result after the active scope changes', async () => {
+    const oldScopeLoadMore = deferred<HomeFeedSnapshot>();
+    const newScopeFeed = deferred<{ snapshot: HomeFeedSnapshot; emptySnapshotReliable: boolean }>();
+    homeMocks.connection.status = 'connected';
+    homeMocks.loadHomeFeedWithStatus
+      .mockResolvedValueOnce({ snapshot: snapshot('old-scope'), emptySnapshotReliable: true })
+      .mockReturnValueOnce(newScopeFeed.promise);
+    homeMocks.loadMoreHomeAlbums.mockReturnValueOnce(oldScopeLoadMore.promise);
+    useMigrationStore.setState({ phase: 'completed' });
+
+    renderWithProviders(<Home />);
+    await waitFor(() => expect(screen.getByTestId('home-hero')).toHaveTextContent('old-scope'));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('load-more-Personal Favorites'));
+    expect(homeMocks.loadMoreHomeAlbums).toHaveBeenCalledTimes(1);
+
+    homeMocks.scope = { key: 'new-scope', version: 2 };
+    await act(async () => {
+      useAuthStore.setState({ libraryBrowseScopeVersion: 2 });
+    });
+    await waitFor(() => expect(homeMocks.loadHomeFeedWithStatus).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      newScopeFeed.resolve({
+        snapshot: snapshot('new-scope', 'new-scope', 2),
+        emptySnapshotReliable: true,
+      });
+      await newScopeFeed.promise;
+    });
+    await waitFor(() => expect(screen.getByTestId('home-hero')).toHaveTextContent('new-scope'));
+
+    await act(async () => {
+      oldScopeLoadMore.resolve(snapshot('stale-load-more', 'scope', 1));
+      await oldScopeLoadMore.promise;
+    });
+
+    expect(screen.getByTestId('home-hero')).toHaveTextContent('new-scope');
+    expect(readHomeFeedCache('new-scope', 2)?.heroAlbums[0]?.name).toBe('new-scope');
   });
 });
