@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent } from '@testing-library/react';
+import { fireEvent, waitFor, within } from '@testing-library/react';
 import QueuePanel from '@/features/queue/components/QueuePanel';
 import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
 import { resetAllStores } from '@/test/helpers/storeReset';
-import { makeTrack } from '@/test/helpers/factories';
+import { makeTrack, seedQueue } from '@/test/helpers/factories';
 import { onInvoke, registerDefaultCoverInvokeHandlers } from '@/test/mocks/tauri';
+import { decodeSharePayloadFromText } from '@/lib/share/shareLink';
 
 const copyTextToClipboardMock = vi.fn(async (_text: string) => true);
 
@@ -44,7 +45,7 @@ function seedPublicShareQueue(pageUrl: string) {
   });
 }
 
-describe('QueuePanel public share toolbar', () => {
+describe('QueuePanel share toolbar', () => {
   beforeEach(() => {
     resetAllStores();
     copyTextToClipboardMock.mockClear();
@@ -78,5 +79,50 @@ describe('QueuePanel public share toolbar', () => {
     const { getByLabelText } = renderWithProviders(<QueuePanel />);
     fireEvent.click(getByLabelText('Copy Navidrome share link'));
     expect(copyTextToClipboardMock).toHaveBeenCalledWith(pageUrl);
+  });
+
+  it('shares a single represented server without prompting, even when another server is active', async () => {
+    const secondServerId = useAuthStore.getState().addServer({
+      name: 'Second', url: 'https://second.test', username: 'u2', password: 'p2',
+    });
+    const track = makeTrack({ id: 'second-track', serverId: secondServerId });
+    seedQueue([track], { currentTrack: track, serverId: secondServerId });
+
+    const { getByLabelText, queryByRole } = renderWithProviders(<QueuePanel />);
+    fireEvent.click(getByLabelText('Copy queue share link'));
+
+    await waitFor(() => expect(copyTextToClipboardMock).toHaveBeenCalledOnce());
+    expect(queryByRole('dialog')).not.toBeInTheDocument();
+    expect(decodeSharePayloadFromText(copyTextToClipboardMock.mock.calls[0]![0])).toEqual({
+      srv: 'https://second.test',
+      k: 'queue',
+      ids: ['second-track'],
+    });
+  });
+
+  it('prompts for a server when the queue is mixed and shares only that server\'s tracks', async () => {
+    const activeServerId = useAuthStore.getState().activeServerId!;
+    const secondServerId = useAuthStore.getState().addServer({
+      name: 'Second', url: 'https://second.test', username: 'u2', password: 'p2',
+    });
+    const activeTrack = makeTrack({ id: 'active-track', serverId: activeServerId });
+    const secondTrack = makeTrack({ id: 'second-track', serverId: secondServerId });
+    seedQueue([activeTrack, secondTrack], { currentTrack: activeTrack, serverId: activeServerId });
+
+    const { getByLabelText, getByRole, queryByRole } = renderWithProviders(<QueuePanel />);
+    fireEvent.click(getByLabelText('Copy queue share link'));
+
+    const dialog = getByRole('dialog');
+    expect(copyTextToClipboardMock).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'Second' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy queue share link' }));
+
+    await waitFor(() => expect(copyTextToClipboardMock).toHaveBeenCalledOnce());
+    expect(queryByRole('dialog')).not.toBeInTheDocument();
+    expect(decodeSharePayloadFromText(copyTextToClipboardMock.mock.calls[0]![0])).toEqual({
+      srv: 'https://second.test',
+      k: 'queue',
+      ids: ['second-track'],
+    });
   });
 });

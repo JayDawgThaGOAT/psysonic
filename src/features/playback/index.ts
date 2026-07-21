@@ -15,3 +15,4 @@ export {
 } from './utils/playback/playbackServer';
 export { useVolumeToggle } from './hooks/useVolumeToggle';
 export { sameQueueTrack } from './utils/playback/queueIdentity';
+export { queueTrackIdsForServerProfile } from './utils/playback/trackServerScope';

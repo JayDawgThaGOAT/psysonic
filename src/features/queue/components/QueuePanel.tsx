@@ -12,10 +12,6 @@ import { usePlaylistStore } from '@/features/playlist';
 import { useTranslation } from 'react-i18next';
 import { usePlaybackLibraryNavigate } from '@/features/playback/hooks/usePlaybackLibraryNavigate';
 import { useAuthStore } from '@/store/authStore';
-import { encodeSharePayload } from '@/lib/share/shareLink';
-import { serverShareBaseUrl } from '@/lib/server/serverEndpoint';
-import { copyTextToClipboard } from '@/lib/server/serverMagicString';
-import { showToast } from '@/lib/dom/toast';
 import { useThemeStore } from '@/store/themeStore';
 import { useLyricsStore } from '@/store/lyricsStore';
 import { LyricsPane } from '@/features/lyrics';
@@ -23,6 +19,7 @@ import { NowPlayingInfo } from '@/features/nowPlaying';
 import { useLuckyMixStore } from '@/features/randomMix';
 import { useQueueToolbarStore } from '@/store/queueToolbarStore';
 import { SavePlaylistModal } from '@/features/queue/components/SavePlaylistModal';
+import { ShareQueueModal } from '@/features/queue/components/ShareQueueModal';
 import { LoadPlaylistModal } from '@/features/queue/components/LoadPlaylistModal';
 import { QueueHeader } from '@/features/queue/components/QueueHeader';
 import { QueueCurrentTrack } from '@/features/queue/components/QueueCurrentTrack';
@@ -32,14 +29,11 @@ import { QueueToolbar } from '@/features/queue/components/QueueToolbar';
 import { QueueList } from '@/features/queue/components/QueueList';
 import { QueueTabBar } from '@/features/queue/components/QueueTabBar';
 import { useQueueAutoScroll } from '@/features/queue/hooks/useQueueAutoScroll';
+import { useQueueShare } from '@/features/queue/hooks/useQueueShare';
 import { useTimelineBootstrapOnMode, useTimelineHistoryResolver, useTimelinePlayHistory } from '@/features/playback/hooks/useTimelinePlayHistory';
 import { buildTimelineDisplayRows } from '@/features/playback/utils/buildTimelineDisplayRows';
-import {
-  activeServerQueueTrackIds,
-  queueTrackIdsForServerProfile,
-} from '@/features/playback/utils/playback/trackServerScope';
+import { queueTrackIdsForServerProfile } from '@/features/playback';
 import { isActivePublicShareQueue } from '@/lib/share/navidromePublicSharePlayback';
-import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 
 export default function QueuePanel() {
   const orbitRole = useOrbitStore(s => s.role);
@@ -186,13 +180,20 @@ function QueuePanelHostOrSolo() {
     suppressNextAutoScrollRef,
   });
 
-  const queuePlaylistServerOptions = useMemo(() => servers
-    .filter(server => queueTrackIdsForServerProfile(queueItems, server.id).length > 0)
-    .map(server => ({ id: server.id, label: serverListDisplayLabel(server, servers) })), [queueItems, servers]);
-  const defaultQueuePlaylistServerId = activeServerId
-    && queuePlaylistServerOptions.some(server => server.id === activeServerId)
-    ? activeServerId
-    : queuePlaylistServerOptions[0]?.id ?? '';
+  const {
+    serverOptions: queueServerOptions,
+    defaultServerId: defaultQueueServerId,
+    shareModalOpen,
+    handleCopy: handleCopyQueueShare,
+    shareForServer,
+    closeShareModal,
+  } = useQueueShare({
+    queueItems,
+    servers,
+    activeServerId,
+    publicShareQueueActive,
+    navidromePublicSharePageUrl,
+  });
   const [activePlaylist, setActivePlaylist] = useState<{
     id: string;
     name: string;
@@ -232,7 +233,7 @@ function QueuePanelHostOrSolo() {
         if (activePlaylistSaveGenerationRef.current === generation) setSaveState('idle');
       }
     } else {
-      if (queuePlaylistServerOptions.length === 0) return;
+      if (queueServerOptions.length === 0) return;
       setSaveModalOpen(true);
     }
   };
@@ -248,35 +249,7 @@ function QueuePanelHostOrSolo() {
     clearQueue();
     setActivePlaylist(null);
     setSaveModalOpen(false);
-  };
-
-  const handleCopyQueueShare = async () => {
-    if (publicShareQueueActive) {
-      const pageUrl = navidromePublicSharePageUrl?.trim();
-      if (!pageUrl) {
-        showToast(t('queue.shareNavidromePublicMissing'), 4000, 'error');
-        return;
-      }
-      const ok = await copyTextToClipboard(pageUrl);
-      if (ok) showToast(t('contextMenu.shareCopied'));
-      else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
-      return;
-    }
-    const ids = activeServerQueueTrackIds(queueItems);
-    if (ids.length === 0) {
-      showToast(t('queue.shareQueueEmpty'), 3000, 'info');
-      return;
-    }
-    // Queue share goes to remote recipients — use the share URL, not the
-    // connect URL the active app is currently bound to (would leak the LAN
-    // host on a dual-address profile).
-    const active = useAuthStore.getState().getActiveServer();
-    if (!active) return;
-    const srv = serverShareBaseUrl(active);
-    if (!srv) return;
-    const ok = await copyTextToClipboard(encodeSharePayload({ srv, k: 'queue', ids }));
-    if (ok) showToast(t('contextMenu.shareCopied'));
-    else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
+    closeShareModal();
   };
 
   // Queue mode shows upcoming tracks only — the current track lives in the
@@ -449,8 +422,8 @@ function QueuePanelHostOrSolo() {
             playlistOperationGenerationRef.current += 1;
             setSaveModalOpen(false);
           }}
-          serverOptions={queuePlaylistServerOptions}
-          initialServerId={defaultQueuePlaylistServerId}
+          serverOptions={queueServerOptions}
+          initialServerId={defaultQueueServerId}
           onSave={async (name, serverId) => {
             const generation = ++playlistOperationGenerationRef.current;
             activePlaylistSaveGenerationRef.current += 1;
@@ -458,7 +431,7 @@ function QueuePanelHostOrSolo() {
             const trackIds = queueTrackIdsForServerProfile(queueItems, serverId);
             if (
               trackIds.length === 0
-              || !queuePlaylistServerOptions.some(server => server.id === serverId)
+              || !queueServerOptions.some(server => server.id === serverId)
             ) {
               setSaveModalOpen(false);
               return;
@@ -478,6 +451,15 @@ function QueuePanelHostOrSolo() {
               console.error('Failed to save playlist', e);
             }
           }}
+        />
+      )}
+
+      {shareModalOpen && (
+        <ShareQueueModal
+          onClose={closeShareModal}
+          serverOptions={queueServerOptions}
+          initialServerId={defaultQueueServerId}
+          onShare={shareForServer}
         />
       )}
 

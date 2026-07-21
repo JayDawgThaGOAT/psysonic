@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Playlist creation, smart-playlist editing, radio actions and other destination-sensitive flows select the target server explicitly instead of silently using the active server.
 * Context menus, ratings, favourites, sharing, offline pins, device sync and Orbit carry the item's owner through the complete action. The same numeric Subsonic ID may now safely exist on several servers at once.
+* Sharing a mixed-server queue asks which server's tracks to include in the link; single-server queues still copy immediately without an extra prompt.
 
 ## Changed
 
