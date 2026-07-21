@@ -87,6 +87,18 @@ describe('NowPlayingDropdown multi-server scope', () => {
     ]));
   });
 
+  it('isolates the live pulse when listeners are present', async () => {
+    getNowPlayingForServersMock.mockResolvedValue([entry('b', 'two', 'bob')]);
+    renderWithProviders(<NowPlayingDropdown />);
+
+    const trigger = screen.getByRole('button', { name: /Live/i });
+    await waitFor(() => expect(trigger).toHaveTextContent('1'));
+    expect(trigger.querySelector('.now-playing-dropdown__live-icon')).toHaveClass(
+      'now-playing-dropdown__live-icon--active',
+    );
+    expect(trigger.querySelector('.animate-pulse')).toBeNull();
+  });
+
   it('keeps the owning server in album navigation', async () => {
     getNowPlayingForServersMock.mockResolvedValue([entry('b', 'two', 'bob')]);
     renderWithProviders(<NowPlayingDropdown />);

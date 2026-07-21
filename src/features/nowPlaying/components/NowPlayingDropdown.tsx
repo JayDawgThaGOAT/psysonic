@@ -195,7 +195,11 @@ export default function NowPlayingDropdown() {
         data-tooltip-pos="bottom"
         style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem' }}
       >
-        <Radio size={18} className={visible.length > 0 ? 'animate-pulse' : ''} style={{ color: visible.length > 0 ? 'var(--accent)' : 'inherit' }} />
+        <span
+          className={`now-playing-dropdown__live-icon${visible.length > 0 ? ' now-playing-dropdown__live-icon--active' : ''}`}
+        >
+          <Radio size={18} />
+        </span>
         <span className="now-playing-dropdown__label">Live</span>
         {visible.length > 0 && (
           <span style={{

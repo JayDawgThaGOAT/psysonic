@@ -71,6 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Cold starts no longer reveal a blank or partially committed app shell between the splash and the first route content; the handoff is atomic after the initial screen is ready.
 
+### Live indicator — preserve the pulse without high idle CPU
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* The header Live icon keeps its pulsing state while listeners are present, but confines the animation to an isolated 10 FPS layer and pauses it while the window is unfocused or reduced motion is requested.
+
 
 ## [1.50.0]
 
