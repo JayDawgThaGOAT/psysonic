@@ -12,11 +12,10 @@ export function sameRadioStation(
   return Boolean(a && b && radioStationKey(a) === radioStationKey(b));
 }
 
-/** Convert persisted raw ids to one concrete owner without dropping unavailable-owner keys. */
+/** Convert only unambiguous persisted raw ids without dropping unavailable-owner keys. */
 export function migrateRadioStationKeys(
   keys: readonly string[],
   stations: readonly InternetRadioStation[],
-  preferredServerId?: string | null,
 ): string[] {
   const exactKeys = new Set(stations.map(radioStationKey));
   const stationsByRawId = new Map<string, InternetRadioStation[]>();
@@ -30,10 +29,6 @@ export function migrateRadioStationKeys(
     if (exactKeys.has(key)) return key;
     const candidates = stationsByRawId.get(key);
     if (!candidates?.length) return key;
-    if (preferredServerId) {
-      const preferred = candidates.find(station => station.serverId === preferredServerId);
-      return preferred ? radioStationKey(preferred) : key;
-    }
     return candidates.length === 1 ? radioStationKey(candidates[0]) : key;
   });
   return [...new Set(migrated)];

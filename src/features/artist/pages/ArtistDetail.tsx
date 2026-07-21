@@ -105,7 +105,7 @@ export default function ArtistDetail() {
   // call order will mismatch between renders.
   const sectionConfig = useArtistLayoutStore(s => s.sections);
   const entityRatingSupportByServer = useAuthStore(s => s.entityRatingSupportByServer);
-  const artistEntityRatingSupport = entityRatingSupportByServer[activeServerId] ?? 'unknown';
+  const artistEntityRatingSupport = entityRatingSupportByServer[artistOwnerServerId] ?? 'unknown';
   const offlineCtx = useOfflineBrowseContext();
   const artistActionPolicy = offlineActionPolicy('artistDetail', offlineCtx.active);
 
@@ -122,7 +122,7 @@ export default function ArtistDetail() {
   }, [id, artist?.id, artist?.userRating]);
 
   const handleArtistEntityRating = (rating: number) => runArtistEntityRating({
-    artist, id, rating, artistEntityRatingSupport, activeServerId, t,
+    artist, id, rating, artistEntityRatingSupport, serverId: artistOwnerServerId, t,
     setArtistEntityRating, setArtist,
   });
 
@@ -150,7 +150,7 @@ export default function ArtistDetail() {
 
   const handleShareArtist = () => {
     if (!id || !artist) return;
-    return runArtistShare({ artist, serverId: activeServerId, t });
+    return runArtistShare({ artist, serverId: artistOwnerServerId, t });
   };
 
   const playTopSongWithContinuation = (startIndex: number) => runArtistDetailPlayTopSong({
@@ -163,7 +163,7 @@ export default function ArtistDetail() {
   });
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => runArtistImageUpload({
-    e, artist, serverId: activeServerId, t, setUploading, setCoverRevision,
+    e, artist, serverId: artistOwnerServerId, t, setUploading, setCoverRevision,
   });
 
   // Cover URLs — must run every render (before early returns) or hook order breaks.

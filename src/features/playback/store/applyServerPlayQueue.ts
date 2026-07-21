@@ -142,6 +142,7 @@ export function mergeQueueServerProjection(
   existing: QueueItemRef[],
   serverProfileId: string,
   remote: QueueItemRef[],
+  preserveLocalSurplus = true,
 ): QueueItemRef[] {
   const merged: QueueItemRef[] = [];
   let remoteIndex = 0;
@@ -158,6 +159,8 @@ export function mergeQueueServerProjection(
     if (remoteIndex < remote.length) {
       merged.push(remote[remoteIndex]);
       remoteIndex++;
+    } else if (preserveLocalSurplus) {
+      merged.push(ref);
     }
     insertionIndex = merged.length;
   }
@@ -173,12 +176,18 @@ export function applyMappedQueueProjection(
   mappedTracks: Track[],
   q: PlayQueueResult,
   serverProfileId: string,
+  preserveLocalSurplus = true,
 ): void {
   seedQueueResolver(serverProfileId, mappedTracks);
   const remoteRefs = toQueueItemRefs(serverProfileId, mappedTracks);
   const player = usePlayerStore.getState();
   const previousCurrentRef = player.queueItems[player.queueIndex];
-  const queueItems = mergeQueueServerProjection(player.queueItems, serverProfileId, remoteRefs);
+  const queueItems = mergeQueueServerProjection(
+    player.queueItems,
+    serverProfileId,
+    remoteRefs,
+    preserveLocalSurplus,
+  );
 
   const exactPreservedIndex = previousCurrentRef ? queueItems.indexOf(previousCurrentRef) : -1;
   const preservedIndex = exactPreservedIndex >= 0
@@ -271,7 +280,9 @@ export async function applyServerPlayQueue(
     const localTime = usePlayerStore.getState().currentTime;
     if (queueIsMultiServer()) {
       // Keep the other owners' slots in place while refreshing this server's order.
-      applyMappedQueueProjection(mappedTracks, q, profileId);
+      // Background pulls preserve local surplus; an explicit manual pull has an
+      // undo snapshot and may intentionally accept the shorter remote queue.
+      applyMappedQueueProjection(mappedTracks, q, profileId, !options.pushUndo);
     } else {
       applyMappedQueue(mappedTracks, q, profileId, preferServerPosition, localTime);
     }

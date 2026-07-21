@@ -13,6 +13,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const orbitMocks = vi.hoisted(() => ({
+  role: null as 'host' | null,
+  allowsTrackServer: vi.fn((_serverId?: string) => true),
+  showToast: vi.fn(),
+}));
+
 vi.mock('@/lib/api/subsonic', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/subsonic')>('@/lib/api/subsonic');
   return {
@@ -50,8 +56,15 @@ vi.mock('@/music-network', () => {
 vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/store/orbitRuntime')>()),
   orbitBulkGuard: vi.fn(async () => true),
-  orbitAllowsTrackServer: vi.fn(() => true),
+  orbitAllowsTrackServer: orbitMocks.allowsTrackServer,
+  orbitSnapshot: () => ({
+    role: orbitMocks.role,
+    phase: orbitMocks.role ? 'active' : 'idle',
+    state: null,
+    serverId: orbitMocks.role ? 'srv-a' : null,
+  }),
 }));
+vi.mock('@/lib/dom/toast', () => ({ showToast: orbitMocks.showToast }));
 
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { onInvoke, invokeMock } from '@/test/mocks/tauri';
@@ -81,6 +94,10 @@ beforeEach(() => {
   vi.useFakeTimers();
   resetPlayerStore();
   resetAuthStore();
+  orbitMocks.role = null;
+  orbitMocks.allowsTrackServer.mockReset();
+  orbitMocks.allowsTrackServer.mockReturnValue(true);
+  orbitMocks.showToast.mockReset();
   stubPlaybackInvokes();
 });
 
@@ -292,6 +309,19 @@ describe('audio_play failure', () => {
       expectedRef: { serverId: 'a.test', trackId: 'track-0' },
       detail: 'Error: engine rejected source',
     }));
+  });
+});
+
+describe('Orbit host server ownership', () => {
+  it('reports a blocked cross-server play instead of failing silently', () => {
+    orbitMocks.role = 'host';
+    orbitMocks.allowsTrackServer.mockReturnValue(false);
+    const foreign = makeTrack({ id: 'foreign', serverId: 'srv-b' });
+
+    usePlayerStore.getState().playTrack(foreign, [foreign]);
+
+    expect(invokeMock).not.toHaveBeenCalledWith('audio_play', expect.anything());
+    expect(orbitMocks.showToast).toHaveBeenCalledWith(expect.any(String), 4000, 'error');
   });
 });
 

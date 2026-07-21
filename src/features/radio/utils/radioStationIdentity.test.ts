@@ -17,19 +17,17 @@ describe('radioStationIdentity', () => {
     expect(sameRadioStation(stations[0], stations[1])).toBe(false);
   });
 
-  it('migrates a legacy raw id to the preferred owner and preserves unavailable keys', () => {
+  it('does not bind an ambiguous legacy raw id to the active owner', () => {
     expect(migrateRadioStationKeys(
       ['shared', 'srv-c:missing'],
       stations,
-      'srv-b',
-    )).toEqual(['srv-b:shared', 'srv-c:missing']);
+    )).toEqual(['shared', 'srv-c:missing']);
   });
 
-  it('does not assign a raw id to another owner while the preferred owner is absent', () => {
+  it('migrates an unambiguous raw id and preserves unavailable keys', () => {
     expect(migrateRadioStationKeys(
-      ['shared'],
+      ['shared', 'missing'],
       [stations[0]],
-      'srv-b',
-    )).toEqual(['shared']);
+    )).toEqual(['srv-a:shared', 'missing']);
   });
 });

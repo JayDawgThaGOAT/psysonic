@@ -13,14 +13,14 @@ export interface RunArtistEntityRatingDeps {
   id: string | undefined;
   rating: number;
   artistEntityRatingSupport: string;
-  activeServerId: string;
+  serverId: string;
   t: TFunction;
   setArtistEntityRating: (v: number) => void;
   setArtist: React.Dispatch<React.SetStateAction<SubsonicArtist | null>>;
 }
 
 export async function runArtistEntityRating(deps: RunArtistEntityRatingDeps): Promise<void> {
-  const { artist, id, rating, artistEntityRatingSupport, activeServerId, t, setArtistEntityRating, setArtist } = deps;
+  const { artist, id, rating, artistEntityRatingSupport, serverId, t, setArtistEntityRating, setArtist } = deps;
   if (!artist || artist.id !== id) return;
   const artistId = artist.id;
   const ratingAtStart = artist.userRating ?? 0;
@@ -29,12 +29,13 @@ export async function runArtistEntityRating(deps: RunArtistEntityRatingDeps): Pr
 
   if (artistEntityRatingSupport !== 'full') return;
 
+  const ownerServerId = artist.serverId ?? serverId;
   try {
-    await setRating(artistId, rating, { serverId: artist.serverId ?? activeServerId, kind: 'artist' });
+    await setRating(artistId, rating, { serverId: ownerServerId, kind: 'artist' });
     setArtist(a => (a && a.id === artistId ? { ...a, userRating: rating } : a));
   } catch (err) {
     setArtistEntityRating(ratingAtStart);
-    useAuthStore.getState().setEntityRatingSupport(activeServerId, 'track_only');
+    useAuthStore.getState().setEntityRatingSupport(ownerServerId, 'track_only');
     showToast(
       typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
       4500,

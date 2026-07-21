@@ -64,6 +64,7 @@ export default function Statistics() {
   const [genres, setGenres] = useState<SubsonicGenre[]>([]);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [aggregateLoading, setAggregateLoading] = useState(true);
+  const [aggregateUnavailable, setAggregateUnavailable] = useState(false);
 
   const [totalPlaytime, setTotalPlaytime] = useState<number | null>(null);
   const [playtimeCapped, setPlaytimeCapped] = useState(false);
@@ -99,19 +100,12 @@ export default function Statistics() {
       return;
     }
     setOverviewLoading(true);
-    const startedAt = performance.now();
     fetchStatisticsOverview()
       .then(d => {
         setRecent(d.recent);
         setFrequent(d.frequent);
         setHighest(d.highest);
         setOverviewLoading(false);
-        console.info('[statistics] overview loaded', {
-          elapsedMs: Math.round(performance.now() - startedAt),
-          recent: d.recent.length,
-          frequent: d.frequent.length,
-          highest: d.highest.length,
-        });
       })
       .catch(() => setOverviewLoading(false));
   }, [musicLibraryFilterVersion, libraryBrowseScopeVersion, offlineBrowseActive, isPlayerStats]);
@@ -131,7 +125,7 @@ export default function Statistics() {
     setFormatData(null);
     setFormatTrackCount(0);
     setAggregateLoading(true);
-    const startedAt = performance.now();
+    setAggregateUnavailable(false);
     (async () => {
       try {
         const agg = await fetchStatisticsLibraryAggregates();
@@ -143,27 +137,21 @@ export default function Statistics() {
         setPlaytimeCapped(agg.capped);
         setGenres(agg.genres);
         setFormatData(agg.formats);
-        setFormatTrackCount(agg.songsCounted);
+        setFormatTrackCount(agg.formatTrackCount ?? agg.songsCounted);
         setAggregateLoading(false);
-        console.info('[statistics] index aggregates loaded', {
-          elapsedMs: Math.round(performance.now() - startedAt),
-          artists: agg.artistCount,
-          albums: agg.albumsCounted,
-          songs: agg.songsCounted,
-          genres: agg.genres.length,
-          formats: agg.formats.length,
-        });
+        setAggregateUnavailable(false);
       } catch {
         if (!cancelled) {
-          setArtistCount(0);
-          setTotalPlaytime(0);
-          setTotalAlbums(0);
-          setTotalSongs(0);
+          setArtistCount(null);
+          setTotalPlaytime(null);
+          setTotalAlbums(null);
+          setTotalSongs(null);
           setPlaytimeCapped(false);
           setGenres([]);
           setFormatData([]);
           setFormatTrackCount(0);
           setAggregateLoading(false);
+          setAggregateUnavailable(true);
         }
       }
     })();
@@ -199,15 +187,19 @@ export default function Statistics() {
     }).catch(() => setLfmLoading(false));
   }, [lfmPeriod, enrichmentPrimaryId, offlineBrowseActive, isPlayerStats]);
 
-  const playtimeDisplay = totalPlaytime === null
+  const playtimeDisplay = aggregateUnavailable
+    ? '—'
+    : totalPlaytime === null
     ? t('statistics.computing')
     : (playtimeCapped ? '≥ ' : '') + formatHumanHoursMinutes(totalPlaytime);
 
   const countDisplay = (n: number | null) =>
-    n === null ? t('statistics.computing') : (playtimeCapped ? '≥ ' : '') + n.toLocaleString();
+    aggregateUnavailable
+      ? '—'
+      : n === null ? t('statistics.computing') : (playtimeCapped ? '≥ ' : '') + n.toLocaleString();
 
   const stats = [
-    { label: t('statistics.statArtists'), value: artistCount?.toLocaleString() ?? t('statistics.computing'), tooltip: t('statistics.statArtistsTooltip') },
+    { label: t('statistics.statArtists'), value: aggregateUnavailable ? '—' : artistCount?.toLocaleString() ?? t('statistics.computing'), tooltip: t('statistics.statArtistsTooltip') },
     { label: t('statistics.statAlbums'), value: countDisplay(totalAlbums) },
     { label: t('statistics.statSongs'), value: countDisplay(totalSongs) },
     { label: t('statistics.statPlaytime'), value: playtimeDisplay },

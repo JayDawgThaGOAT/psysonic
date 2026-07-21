@@ -109,7 +109,6 @@ export function useFavoritesData(): FavoritesDataResult {
             const migrated = new Set(migrateRadioStationKeys(
               [...favIds],
               available,
-              activeServerId,
             ));
             localStorage.setItem('psysonic_radio_favorites', JSON.stringify([...migrated]));
             return available.filter(station => migrated.has(radioStationKey(station)));

@@ -16,11 +16,24 @@ const apiMock = vi.fn();
 const indexStatisticsMock = vi.fn();
 const indexMostPlayedMock = vi.fn();
 const getAlbumListForServerMock = vi.fn();
+const getRandomSongsForServerMock = vi.fn();
+const getArtistsForServerMock = vi.fn();
+const readyLibraryServerKeysMock = vi.fn();
 
 beforeEach(resetServerReachabilitySnapshot);
 
 vi.mock('@/lib/api/subsonicLibrary', () => ({
   getAlbumListForServer: (...args: unknown[]) => getAlbumListForServerMock(...args),
+  getRandomSongsForServer: (...args: unknown[]) => getRandomSongsForServerMock(...args),
+}));
+
+vi.mock('@/lib/api/subsonicArtists', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/api/subsonicArtists')>()),
+  getArtistsForServer: (...args: unknown[]) => getArtistsForServerMock(...args),
+}));
+
+vi.mock('@/lib/library/libraryReady', () => ({
+  readyLibraryServerKeys: (...args: unknown[]) => readyLibraryServerKeysMock(...args),
 }));
 
 vi.mock('@/lib/api/subsonicClient', async importOriginal => {
@@ -89,6 +102,9 @@ describe('fetchStatisticsLibraryAggregates', () => {
   beforeEach(() => {
     indexStatisticsMock.mockReset();
     getAlbumListForServerMock.mockReset();
+    getRandomSongsForServerMock.mockReset().mockResolvedValue([]);
+    getArtistsForServerMock.mockReset().mockResolvedValue([]);
+    readyLibraryServerKeysMock.mockReset().mockImplementation(async (serverIds: string[]) => serverIds);
     useAuthStore.setState({
       activeServerId: 'stats-a',
       servers: [
@@ -121,6 +137,7 @@ describe('fetchStatisticsLibraryAggregates', () => {
       capped: false,
       genres: [{ value: 'Rock', songCount: 40, albumCount: 10 }],
       formats: [{ format: 'FLAC', count: 60 }],
+      formatTrackCount: 80,
     });
     expect(second).toBe(first);
     expect(indexStatisticsMock).toHaveBeenCalledTimes(1);
@@ -147,6 +164,72 @@ describe('fetchStatisticsLibraryAggregates', () => {
       { serverId: 'stats-a', libraryIds: ['rock'] },
     ]);
   });
+
+  it('falls back to explicit-server APIs when the local index is not ready', async () => {
+    useAuthStore.setState({
+      activeServerId: 'fallback-a',
+      servers: [
+        { id: 'fallback-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+      ],
+      libraryBrowseServerIds: ['fallback-a'],
+      libraryBrowseSelectionByServer: { 'fallback-a': [] },
+    });
+    readyLibraryServerKeysMock.mockResolvedValue(null);
+    getArtistsForServerMock.mockResolvedValue([{ id: 'artist-1', name: 'Artist' }]);
+    getAlbumListForServerMock.mockResolvedValue([{
+      id: 'album-1',
+      name: 'Album',
+      duration: 600,
+      songCount: 5,
+      genre: 'Rock',
+    }]);
+    getRandomSongsForServerMock.mockResolvedValue([
+      { id: 'song-1', title: 'Song', suffix: 'flac' },
+    ]);
+
+    await expect(fetchStatisticsLibraryAggregates()).resolves.toEqual(expect.objectContaining({
+      artistCount: 1,
+      albumsCounted: 1,
+      songsCounted: 5,
+      playtimeSec: 600,
+      formats: [{ format: 'FLAC', count: 1 }],
+      formatTrackCount: 1,
+    }));
+    expect(indexStatisticsMock).not.toHaveBeenCalled();
+    expect(getAlbumListForServerMock).toHaveBeenCalledWith(
+      'fallback-a',
+      'alphabeticalByName',
+      500,
+      0,
+      {},
+    );
+  });
+
+  it('falls back to the network when the ready index query fails', async () => {
+    useAuthStore.setState({
+      activeServerId: 'ipc-fallback',
+      servers: [
+        { id: 'ipc-fallback', name: 'Fallback', url: 'https://fallback.test', username: 'u', password: 'p' },
+      ],
+      libraryBrowseServerIds: ['ipc-fallback'],
+      libraryBrowseSelectionByServer: { 'ipc-fallback': [] },
+    });
+    indexStatisticsMock.mockRejectedValueOnce(new Error('ipc unavailable'));
+    getAlbumListForServerMock.mockResolvedValue([{
+      id: 'album-1',
+      name: 'Album',
+      duration: 300,
+      songCount: 3,
+    }]);
+
+    await expect(fetchStatisticsLibraryAggregates()).resolves.toEqual(expect.objectContaining({
+      albumsCounted: 1,
+      songsCounted: 3,
+      playtimeSec: 300,
+    }));
+    expect(indexStatisticsMock).toHaveBeenCalledOnce();
+    expect(getAlbumListForServerMock).toHaveBeenCalledOnce();
+  });
 });
 
 describe('fetchStatisticsOverview', () => {
@@ -154,6 +237,10 @@ describe('fetchStatisticsOverview', () => {
     getAlbumListForServerMock.mockReset();
     useAuthStore.setState({
       activeServerId: 'stats-a',
+      servers: [
+        { id: 'stats-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'stats-b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
       libraryBrowseServerIds: ['stats-a', 'stats-b'],
       libraryBrowseSelectionByServer: { 'stats-a': ['rock'], 'stats-b': [] },
     });
@@ -181,6 +268,10 @@ describe('fetchMostPlayedAlbums', () => {
     indexMostPlayedMock.mockReset();
     useAuthStore.setState({
       activeServerId: 'stats-a',
+      servers: [
+        { id: 'stats-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'stats-b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
       libraryBrowseServerIds: ['stats-a', 'stats-b'],
       libraryBrowseSelectionByServer: { 'stats-a': ['rock'], 'stats-b': [] },
     });

@@ -12,9 +12,9 @@ const mocks = vi.hoisted(() => ({
   },
   enqueue: vi.fn(),
   getAlbum: vi.fn(),
-  getAlbumWithCredentials: vi.fn(),
+  resolveAlbum: vi.fn(),
   getArtist: vi.fn(),
-  getArtistWithCredentials: vi.fn(),
+  resolveArtist: vi.fn(),
   getSongForServer: vi.fn(),
   orbitBulkGuard: vi.fn(),
   showToast: vi.fn(),
@@ -30,9 +30,9 @@ vi.mock('@/lib/api/subsonicArtists', () => ({
   getArtist: mocks.getArtist,
 }));
 
-vi.mock('@/lib/api/subsonicEntityWithCredentials', () => ({
-  getAlbumWithCredentials: mocks.getAlbumWithCredentials,
-  getArtistWithCredentials: mocks.getArtistWithCredentials,
+vi.mock('@/store/mediaResolver', () => ({
+  resolveAlbum: mocks.resolveAlbum,
+  resolveArtist: mocks.resolveArtist,
 }));
 
 vi.mock('@/store/authStore', () => ({
@@ -105,11 +105,11 @@ describe('share search payload resolution', () => {
       setActiveServer: vi.fn(),
     };
     mocks.getSongForServer.mockResolvedValue({ ...sharedSong, serverId: 'shared' });
-    mocks.getAlbumWithCredentials.mockResolvedValue({
+    mocks.resolveAlbum.mockResolvedValue({
       album: { id: 'album-1', name: 'Shared Album', artist: 'Shared Artist' },
       songs: [],
     });
-    mocks.getArtistWithCredentials.mockResolvedValue({
+    mocks.resolveArtist.mockResolvedValue({
       artist: { id: 'artist-1', name: 'Shared Artist' },
       albums: [],
     });
@@ -150,20 +150,8 @@ describe('share search payload resolution', () => {
       id: 'artist-1',
     });
 
-    expect(mocks.getAlbumWithCredentials).toHaveBeenCalledWith(
-      sharedServer.url,
-      sharedServer.username,
-      sharedServer.password,
-      'album-1',
-      sharedServer,
-    );
-    expect(mocks.getArtistWithCredentials).toHaveBeenCalledWith(
-      sharedServer.url,
-      sharedServer.username,
-      sharedServer.password,
-      'artist-1',
-      sharedServer,
-    );
+    expect(mocks.resolveAlbum).toHaveBeenCalledWith('shared', 'album-1');
+    expect(mocks.resolveArtist).toHaveBeenCalledWith('shared', 'artist-1');
     expect(mocks.getAlbum).not.toHaveBeenCalled();
     expect(mocks.getArtist).not.toHaveBeenCalled();
     expect(mocks.authState.current.setActiveServer).not.toHaveBeenCalled();
@@ -179,13 +167,7 @@ describe('share search payload resolution', () => {
     });
 
     expect(result.type).toBe('ok');
-    expect(mocks.getArtistWithCredentials).toHaveBeenCalledWith(
-      sharedServer.url,
-      sharedServer.username,
-      sharedServer.password,
-      'composer-1',
-      sharedServer,
-    );
+    expect(mocks.resolveArtist).toHaveBeenCalledWith('shared', 'composer-1');
     expect(mocks.authState.current.setActiveServer).not.toHaveBeenCalled();
   });
 

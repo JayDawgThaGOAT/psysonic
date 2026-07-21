@@ -11,6 +11,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const orbitMocks = vi.hoisted(() => ({
+  role: null as 'host' | null,
+  allowsTrackServer: vi.fn((_serverId?: string) => true),
+  showToast: vi.fn(),
+}));
+
 // `playerStore` pulls `savePlayQueue` from `@/lib/api/subsonic`, which talks to a
 // real server. Override only what the queue path touches; everything else
 // stays as the actual module so unrelated imports don't break.
@@ -29,8 +35,15 @@ vi.mock('@/lib/api/subsonic', async () => {
 vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/store/orbitRuntime')>()),
   orbitBulkGuard: vi.fn(async () => true),
-  orbitAllowsTrackServer: vi.fn(() => true),
+  orbitAllowsTrackServer: orbitMocks.allowsTrackServer,
+  orbitSnapshot: () => ({
+    role: orbitMocks.role,
+    phase: orbitMocks.role ? 'active' : 'idle',
+    state: null,
+    serverId: orbitMocks.role ? 'srv-a' : null,
+  }),
 }));
+vi.mock('@/lib/dom/toast', () => ({ showToast: orbitMocks.showToast }));
 
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import {
@@ -46,6 +59,10 @@ import { _resetRadioSessionStateForTest } from '@/features/playback/store/radioS
 beforeEach(() => {
   resetPlayerStore();
   _resetRadioSessionStateForTest();
+  orbitMocks.role = null;
+  orbitMocks.allowsTrackServer.mockReset();
+  orbitMocks.allowsTrackServer.mockReturnValue(true);
+  orbitMocks.showToast.mockReset();
   // `clearQueue` fires `invoke('audio_stop')`; every queue mutation triggers a
   // debounced `syncQueueToServer` we don't need to advance.
   onInvoke('audio_stop', () => undefined);
@@ -75,6 +92,18 @@ describe('enqueue', () => {
     const tracks = makeTracks(3);
     usePlayerStore.getState().enqueue(tracks, true);
     expect(usePlayerStore.getState().queueItems.map(r => r.trackId)).toEqual(tracks.map(t => t.id));
+  });
+
+  it('keeps allowed Orbit-host tracks and reports rejected server owners', () => {
+    orbitMocks.role = 'host';
+    orbitMocks.allowsTrackServer.mockImplementation(serverId => serverId === 'srv-a');
+    const allowed = makeTrack({ id: 'allowed', serverId: 'srv-a' });
+    const rejected = makeTrack({ id: 'rejected', serverId: 'srv-b' });
+
+    usePlayerStore.getState().enqueue([allowed, rejected], true);
+
+    expect(usePlayerStore.getState().queueItems.map(ref => ref.trackId)).toEqual(['allowed']);
+    expect(orbitMocks.showToast).toHaveBeenCalledWith(expect.any(String), 4000, 'error');
   });
 
   it('inserts before the first upcoming auto-added separator', () => {

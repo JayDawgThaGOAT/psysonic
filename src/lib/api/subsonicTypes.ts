@@ -250,6 +250,7 @@ export interface StatisticsLibraryAggregates {
   capped: boolean;
   genres: SubsonicGenre[];
   formats: { format: string; count: number }[];
+  formatTrackCount?: number;
 }
 
 export interface StatisticsOverviewData {

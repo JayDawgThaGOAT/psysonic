@@ -151,7 +151,7 @@ export default function InternetRadio() {
       try { return JSON.parse(localStorage.getItem('psysonic_radio_order') ?? '[]'); }
       catch { return []; }
     })();
-    const merged = migrateRadioStationKeys(saved, stations, activeServerId);
+    const merged = migrateRadioStationKeys(saved, stations);
     stations.forEach(s => {
       const key = radioStationKey(s);
       if (!merged.includes(key)) merged.push(key);
@@ -167,7 +167,7 @@ export default function InternetRadio() {
     // React Compiler set-state-in-effect rule: migrate persisted raw ids after owners load.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setFavorites(previous => {
-      const migrated = new Set(migrateRadioStationKeys([...previous], stations, activeServerId));
+      const migrated = new Set(migrateRadioStationKeys([...previous], stations));
       localStorage.setItem('psysonic_radio_favorites', JSON.stringify([...migrated]));
       return migrated;
     });

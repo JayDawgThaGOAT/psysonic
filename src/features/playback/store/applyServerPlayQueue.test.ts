@@ -68,7 +68,7 @@ describe('mergeQueueServerProjection', () => {
     ]);
   });
 
-  it('removes old surplus slots and inserts remote surplus after the last prior slot', () => {
+  it('preserves local surplus by default and inserts remote surplus after the last prior slot', () => {
     const b1 = { serverId: 'b', trackId: 'b1' };
     expect(mergeQueueServerProjection(
       [
@@ -93,6 +93,13 @@ describe('mergeQueueServerProjection', () => {
       [{ serverId: 'a', trackId: 'a1' }, b1, { serverId: 'a', trackId: 'a2' }],
       'a',
       [{ serverId: 'a', trackId: 'a3' }],
+    )).toEqual([{ serverId: 'a', trackId: 'a3' }, b1, { serverId: 'a', trackId: 'a2' }]);
+
+    expect(mergeQueueServerProjection(
+      [{ serverId: 'a', trackId: 'a1' }, b1, { serverId: 'a', trackId: 'a2' }],
+      'a',
+      [{ serverId: 'a', trackId: 'a3' }],
+      false,
     )).toEqual([{ serverId: 'a', trackId: 'a3' }, b1]);
   });
 });

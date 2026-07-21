@@ -54,6 +54,7 @@ import {
   hasPendingQueueSync,
   pushQueueOnPlaybackStart,
   syncQueueToServer,
+  syncAutomaticQueueMutationToServers,
   syncUserQueueClearToServers,
   syncUserQueueMutationToServer,
 } from '@/features/playback/store/queueSync';
@@ -191,6 +192,22 @@ describe('syncUserQueueMutationToServer (debounced)', () => {
   });
 });
 
+describe('syncAutomaticQueueMutationToServers', () => {
+  it('syncs every affected owner without suspending idle pull', async () => {
+    syncAutomaticQueueMutationToServers(
+      [ref('a1', 'a.test')],
+      [ref('b1', 'b.test')],
+      track('b1', 'srv-b'),
+      7,
+    );
+
+    expect(isIdleQueuePullSuspended()).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(savePlayQueueMock).toHaveBeenCalledWith([], undefined, undefined, 'srv-a');
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['b1'], 'b1', 7000, 'srv-b');
+  });
+});
+
 describe('syncUserQueueClearToServers', () => {
   it('clears every remote server queue represented by the previous mixed queue', async () => {
     syncUserQueueClearToServers([
@@ -237,6 +254,14 @@ describe('pushQueueOnPlaybackStart', () => {
 });
 
 describe('flushQueueSyncToServer failure', () => {
+  it('reports unreachable as failure and blocks stale idle pull', async () => {
+    isSubsonicServerReachableMock.mockReturnValue(false);
+    const ok = await flushQueueSyncToServer([ref('a')], track('a'), 12);
+    expect(ok).toBe(false);
+    expect(savePlayQueueMock).not.toHaveBeenCalled();
+    expect(isQueuePushFailed()).toBe(true);
+  });
+
   it('flags the failed push (blocking idle pull) without lighting the handoff LED', async () => {
     savePlayQueueMock.mockRejectedValueOnce(new Error('offline'));
     const ok = await flushQueueSyncToServer([ref('a')], track('a'), 12);

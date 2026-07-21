@@ -276,44 +276,41 @@ fn query_scope_candidates(
         .map_err(|error| error.to_string())
 }
 
-fn exists_in_higher_priority_scope(
+fn album_identity_priorities(
     store: &LibraryStore,
     scopes: &[LibraryScopePair],
-    priority: usize,
-    identity_key: &str,
-) -> Result<bool, String> {
-    if priority == 0 || identity_key.is_empty() {
-        return Ok(false);
-    }
-    let clauses = scopes
+    candidates: &[Vec<AlbumCandidate>],
+) -> Result<HashMap<String, usize>, String> {
+    let identities = candidates
         .iter()
-        .take(priority)
-        .map(|scope| {
-            if scope.library_id.is_some() {
-                "(server_id = ? AND library_id = ?)"
-            } else {
-                "(server_id = ?)"
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ");
-    let sql = format!(
-        "SELECT 1 FROM album_browse_projection \
-         WHERE identity_key = ? AND ({clauses}) LIMIT 1",
-    );
-    let mut binds = vec![SqlValue::Text(identity_key.to_string())];
-    for scope in scopes.iter().take(priority) {
-        binds.push(SqlValue::Text(scope.server_id.clone()));
-        if let Some(library_id) = &scope.library_id {
-            binds.push(SqlValue::Text(library_id.clone()));
-        }
+        .flatten()
+        .filter_map(|candidate| candidate.identity_key.clone())
+        .collect::<HashSet<_>>();
+    if identities.is_empty() {
+        return Ok(HashMap::new());
     }
+    let (scope_cte, mut binds) = crate::scope_merge::scope_cte_sql(scopes);
+    let placeholders = (0..identities.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "{scope_cte} SELECT projection.identity_key, MIN(scope.pr) \
+         FROM scope \
+         INNER JOIN album_browse_projection projection \
+           ON projection.server_id = scope.server_id \
+          AND projection.library_id = scope.library_id \
+         WHERE projection.identity_key IN ({placeholders}) \
+         GROUP BY projection.identity_key",
+    );
+    binds.extend(identities.into_iter().map(SqlValue::Text));
     store
         .with_read_conn(|conn| {
-            let present = conn
-                .query_row(&sql, params_from_iter(binds.iter()), |_| Ok(()))
-                .is_ok();
-            Ok(present)
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(binds.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })?;
+            rows.collect::<rusqlite::Result<HashMap<_, _>>>()
         })
         .map_err(|error| error.to_string())
 }
@@ -343,6 +340,7 @@ fn browse_albums(
         stream_exhausted.push(stream.len() < candidate_limit);
         candidates.push(stream);
     }
+    let mut identity_priorities = album_identity_priorities(store, &request.scopes, &candidates)?;
 
     let mut albums = Vec::with_capacity(limit.saturating_add(1));
     let mut offsets = vec![0usize; candidates.len()];
@@ -365,6 +363,7 @@ fn browse_albums(
             stream_exhausted[scope_index] = stream.len() < candidate_limit;
             candidates[scope_index] = stream;
             offsets[scope_index] = 0;
+            identity_priorities = album_identity_priorities(store, &request.scopes, &candidates)?;
         }
         let next_scope = candidates
             .iter()
@@ -383,7 +382,10 @@ fn browse_albums(
         offsets[scope_index] += 1;
         positions[scope_index] = Some(cursor_position(candidate));
         if let Some(identity_key) = candidate.identity_key.as_deref() {
-            if exists_in_higher_priority_scope(store, &request.scopes, candidate.priority, identity_key)? {
+            if identity_priorities
+                .get(identity_key)
+                .is_some_and(|priority| *priority < candidate.priority)
+            {
                 continue;
             }
         }
@@ -778,6 +780,23 @@ mod tests {
             response.albums.iter().map(|album| album.id.as_str()).collect::<Vec<_>>(),
             vec!["low-unique", "high-dup"],
         );
+    }
+
+    #[test]
+    fn album_priority_dedup_holds_across_cursor_pages() {
+        let store = LibraryStore::open_in_memory();
+        insert_projection(&store, "high", "lib", "high-dup", "Zulu", Some("same"));
+        insert_projection(&store, "low", "lib", "low-dup", "Alpha", Some("same"));
+        insert_projection(&store, "low", "lib", "low-unique", "Bravo", Some("other"));
+        let scopes = vec![
+            LibraryScopePair { server_id: "high".into(), library_id: Some("lib".into()) },
+            LibraryScopePair { server_id: "low".into(), library_id: Some("lib".into()) },
+        ];
+
+        let first = browse(&store, &request(scopes.clone(), 1, None)).unwrap();
+        assert_eq!(first.albums.iter().map(|album| album.id.as_str()).collect::<Vec<_>>(), vec!["low-unique"]);
+        let second = browse(&store, &request(scopes, 1, first.next_cursor)).unwrap();
+        assert_eq!(second.albums.iter().map(|album| album.id.as_str()).collect::<Vec<_>>(), vec!["high-dup"]);
     }
 
     #[test]

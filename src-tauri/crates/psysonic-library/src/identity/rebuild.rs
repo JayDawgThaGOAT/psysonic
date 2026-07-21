@@ -668,22 +668,38 @@ pub fn ensure_cluster_keys_built(store: &LibraryStore, server_id: &str) -> Resul
     })
 }
 
+fn pending_identity_server_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "WITH RECURSIVE track_server(server_id) AS ( \
+           SELECT MIN(server_id) FROM track INDEXED BY idx_track_album WHERE deleted = 0 \
+           UNION ALL \
+           SELECT ( \
+             SELECT MIN(server_id) FROM track INDEXED BY idx_track_album \
+             WHERE deleted = 0 AND server_id > track_server.server_id \
+           ) FROM track_server WHERE server_id IS NOT NULL \
+         ) \
+         SELECT server_id FROM track_server WHERE server_id IS NOT NULL \
+         UNION SELECT server_id FROM sync_state \
+         UNION SELECT server_id FROM identity_invalidation \
+         UNION SELECT substr(key, length(?1) + 1) FROM cluster.cluster_meta \
+               WHERE key LIKE ?2 \
+         ORDER BY server_id",
+    )?;
+    let server_ids = statement
+        .query_map(
+            params![DIRTY_META_PREFIX, format!("{DIRTY_META_PREFIX}%")],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect();
+    server_ids
+}
+
 /// Drain persisted invalidations at process start. This runs off the Tauri main
-/// thread; normal healthy starts perform only one distinct-server query plus
-/// O(1) journal checks per server.
+/// thread; normal healthy starts use prefix seeks over the track index plus
+/// compact metadata tables, then perform O(1) journal checks per server.
 pub fn ensure_pending_cluster_keys(store: &LibraryStore) -> Result<u64, String> {
     let server_ids = store
-        .with_read_conn(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT server_id FROM track WHERE deleted = 0 \
-                 UNION SELECT server_id FROM identity_invalidation \
-                 ORDER BY server_id",
-            )?;
-            let server_ids = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(server_ids)
-        })
+        .with_read_conn(pending_identity_server_ids)
         .map_err(|error| error.to_string())?;
     let mut refreshed = 0u64;
     for server_id in server_ids {
@@ -811,6 +827,46 @@ mod tests {
         row.artist_id = Some(artist_id.into());
         row.album_id = Some(album_id.into());
         row
+    }
+
+    #[test]
+    fn pending_identity_servers_include_indexed_tracks_and_compact_metadata() {
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn_mut("test.identity.pending_servers", |conn| {
+                conn.execute(
+                    "INSERT INTO track (server_id, id, title, album, synced_at, raw_json) \
+                     VALUES ('track-server', 'track', 'Track', 'Album', 1, '{}'), \
+                            ('deleted-server', 'deleted', 'Deleted', 'Album', 1, '{}')",
+                    [],
+                )?;
+                conn.execute(
+                    "UPDATE track SET deleted = 1 WHERE server_id = 'deleted-server'",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope) \
+                     VALUES ('sync-server', ''), ('track-server', '')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO identity_invalidation (server_id, kind, entity_id) \
+                     VALUES ('journal-server', 'server', '')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO cluster.cluster_meta (key, value) VALUES (?1, '1')",
+                    params![dirty_meta_key("dirty-server")],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let server_ids = store.with_read_conn(pending_identity_server_ids).unwrap();
+        assert_eq!(
+            server_ids,
+            vec!["dirty-server", "journal-server", "sync-server", "track-server"]
+        );
     }
 
     #[test]

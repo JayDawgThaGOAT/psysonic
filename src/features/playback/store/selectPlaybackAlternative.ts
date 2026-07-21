@@ -49,7 +49,7 @@ export async function selectPlaybackAlternative(source: LibraryEntitySourceDto):
       setPlaybackAlternativeActionError();
       return false;
     }
-    if (!latest.replaceQueueItemSource(failure.queueIndex, failure.expectedRef, nextRef)) {
+    if (!latest.replaceQueueItemSource(failure.queueIndex, failure.expectedRef, nextRef, false)) {
       setPlaybackAlternativeActionError();
       return false;
     }

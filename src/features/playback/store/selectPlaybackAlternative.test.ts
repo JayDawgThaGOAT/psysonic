@@ -19,6 +19,11 @@ import { resetAuthStore, resetPlayerStore } from '@/test/helpers/storeReset';
 import { makeServer, makeTrack } from '@/test/helpers/factories';
 import { useAuthStore } from '@/store/authStore';
 import type { PlaybackAlternativeSource } from '@/features/playback/utils/playback/availablePlaybackAlternativeSources';
+import {
+  _resetQueuePlaybackIdleForTest,
+  isIdleQueuePullSuspended,
+} from '@/features/playback/store/queuePlaybackIdle';
+import { _resetQueueSyncForTest } from '@/features/playback/store/queueSync';
 
 const serverA = makeServer({ id: 'srv-a', url: 'https://a.test' });
 const serverB = makeServer({ id: 'srv-b', url: 'https://b.test' });
@@ -60,6 +65,8 @@ beforeEach(() => {
   resetAuthStore();
   resetPlayerStore();
   _resetEngineStateForTest();
+  _resetQueuePlaybackIdleForTest();
+  _resetQueueSyncForTest();
   Object.values(mocks).forEach(mock => mock.mockReset());
   mocks.resolveBatch.mockResolvedValue(undefined);
   useAuthStore.setState({ servers: [serverA, serverB], activeServerId: serverA.id });
@@ -133,5 +140,6 @@ describe('selectPlaybackAlternative', () => {
       1,
     );
     expect(usePlaybackAlternativeStore.getState().failure).toBeNull();
+    expect(isIdleQueuePullSuspended()).toBe(false);
   });
 });

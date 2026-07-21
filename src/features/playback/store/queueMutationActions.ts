@@ -7,6 +7,7 @@ import { toQueueItemRefs } from '@/features/playback/store/queueItemRef';
 import { seedQueueResolver } from '@/features/playback/store/queueTrackResolver';
 import { pushQueueUndoFromGetter } from '@/features/playback/store/queueUndo';
 import {
+  syncAutomaticQueueMutationToServers,
   syncUserQueueClearToServers,
   syncUserQueueMutationToServer,
 } from '@/features/playback/store/queueSync';
@@ -41,6 +42,8 @@ import {
   sameQueueItemRef,
 } from '@/features/playback/utils/playback/queueIdentity';
 import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
+import i18n from '@/lib/i18n';
+import { showToast } from '@/lib/dom/toast';
 
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
@@ -89,7 +92,7 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
   | 'replaceQueueItemSource'
 > {
   return {
-    replaceQueueItemSource: (index, expected, replacement) => {
+    replaceQueueItemSource: (index, expected, replacement, userInitiated = true) => {
       const state = get();
       const current = state.queueItems[index];
       if (!current || !sameQueueItemRef(current, expected)) return false;
@@ -98,12 +101,10 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
       const nextItems = [...state.queueItems];
       nextItems[index] = { ...replacement };
       set({ queueItems: nextItems });
-      syncUserQueueMutationToServer(
-        state.queueItems,
-        nextItems,
-        state.currentTrack,
-        state.currentTime,
-      );
+      const sync = userInitiated
+        ? syncUserQueueMutationToServer
+        : syncAutomaticQueueMutationToServers;
+      sync(state.queueItems, nextItems, state.currentTrack, state.currentTime);
       return true;
     },
 
@@ -152,7 +153,11 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
 
     enqueue: (tracks, _orbitConfirmed = false, skipQueueUndo = false) => {
       if (orbitSnapshot().role === 'host') {
-        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        const allowed = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        if (allowed.length !== tracks.length) {
+          showToast(i18n.t('queue.crossServerEnqueueBlocked'), 4000, 'error');
+        }
+        tracks = allowed;
         if (tracks.length === 0) return;
       }
       if (!_orbitConfirmed && tracks.length > 1) {
@@ -189,7 +194,11 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
 
     enqueueRadio: (tracks, artistId, serverId) => {
       if (orbitSnapshot().role === 'host') {
-        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        const allowed = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        if (allowed.length !== tracks.length) {
+          showToast(i18n.t('queue.crossServerEnqueueBlocked'), 4000, 'error');
+        }
+        tracks = allowed;
         if (tracks.length === 0) return;
       }
       if (artistId !== undefined) {
@@ -250,7 +259,11 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
 
     enqueueAt: (tracks, insertIndex, _orbitConfirmed = false) => {
       if (orbitSnapshot().role === 'host') {
-        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        const allowed = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        if (allowed.length !== tracks.length) {
+          showToast(i18n.t('queue.crossServerEnqueueBlocked'), 4000, 'error');
+        }
+        tracks = allowed;
         if (tracks.length === 0) return;
       }
       if (!_orbitConfirmed && tracks.length > 1) {
@@ -278,7 +291,11 @@ export function createQueueMutationActions(set: SetState, get: GetState): Pick<
 
     playNext: (tracks) => {
       if (orbitSnapshot().role === 'host') {
-        tracks = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        const allowed = tracks.filter(track => orbitAllowsTrackServer(track.serverId));
+        if (allowed.length !== tracks.length) {
+          showToast(i18n.t('queue.crossServerEnqueueBlocked'), 4000, 'error');
+        }
+        tracks = allowed;
       }
       if (tracks.length === 0) return;
       ensureQueueServerPinned(tracks);

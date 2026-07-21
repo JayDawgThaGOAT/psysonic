@@ -122,7 +122,7 @@ function scheduleQueueSyncToServer(
   syncTimeoutByServer.set(serverId, timeout);
 }
 
-function scheduleUserQueueSyncByServer(
+function scheduleQueueSyncByServer(
   previousQueue: QueueItemRef[],
   nextQueue: QueueItemRef[],
   currentTrack: Track | null,
@@ -175,7 +175,17 @@ export function syncUserQueueMutationToServer(
   currentTime: number,
 ): void {
   touchQueueMutationClock();
-  scheduleUserQueueSyncByServer(previousQueue, nextQueue, currentTrack, currentTime);
+  scheduleQueueSyncByServer(previousQueue, nextQueue, currentTrack, currentTime);
+}
+
+/** Debounced multi-owner sync for automatic queue repairs; does not suspend idle pull. */
+export function syncAutomaticQueueMutationToServers(
+  previousQueue: QueueItemRef[],
+  nextQueue: QueueItemRef[],
+  currentTrack: Track | null,
+  currentTime: number,
+): void {
+  scheduleQueueSyncByServer(previousQueue, nextQueue, currentTrack, currentTime);
 }
 
 /** Debounced remote clear for every server represented by the removed local refs. */
@@ -194,7 +204,12 @@ export function flushQueueSyncToServer(
 ): Promise<boolean> {
   const serverId = getPlaybackServerId();
   cancelPendingQueueSync(serverId);
-  if (!isPlaybackServerReachable()) return Promise.resolve(true);
+  if (!isPlaybackServerReachable()) {
+    if (serverId && serverId !== NAVIDROME_PUBLIC_SHARE_SERVER_ID) {
+      markQueuePushFailed(serverId);
+    }
+    return Promise.resolve(false);
+  }
   if (!currentTrack || queue.length === 0) return Promise.resolve(true);
   lastQueueHeartbeatAtByServer.set(serverId, Date.now());
   const refs = filterQueueRefsForPlaybackServer(queue);
@@ -207,7 +222,11 @@ export function flushQueueSyncToServer(
  */
 export function flushPlayQueueForServer(serverProfileId: string): Promise<boolean> {
   cancelPendingQueueSync(serverProfileId);
-  if (!serverProfileId || !isSubsonicServerReachable(serverProfileId)) return Promise.resolve(true);
+  if (!serverProfileId) return Promise.resolve(false);
+  if (!isSubsonicServerReachable(serverProfileId)) {
+    markQueuePushFailed(serverProfileId);
+    return Promise.resolve(false);
+  }
   const s = usePlayerStore.getState();
   if (s.currentRadio) return Promise.resolve(true);
   const refs = filterQueueRefsForServerProfile(s.queueItems, serverProfileId);

@@ -15,7 +15,9 @@ const { getPlaylistsForServer, deletePlaylist } = vi.hoisted(() => ({
 }));
 
 const { authState, orbitState } = vi.hoisted(() => ({
-  authState: { username: 'me' as string | undefined },
+  authState: {
+    servers: [{ id: 'srv-owner', username: 'me' }] as Array<{ id: string; username?: string }>,
+  },
   orbitState: { sessionId: null as string | null, serverId: 'srv-owner' as string | null },
 }));
 
@@ -23,7 +25,7 @@ vi.mock('@/lib/api/subsonicPlaylists', () => ({ getPlaylistsForServer, deletePla
 vi.mock('@/store/authStore', () => ({
   useAuthStore: {
     getState: () => ({
-      getActiveServer: () => (authState.username ? { id: 'srv-owner', username: authState.username } : undefined),
+      servers: authState.servers,
     }),
   },
 }));
@@ -55,7 +57,7 @@ function outboxComment(ageMs: number): string {
 }
 
 beforeEach(() => {
-  authState.username = 'me';
+  authState.servers = [{ id: 'srv-owner', username: 'me' }];
   orbitState.sessionId = null;
   orbitState.serverId = 'srv-owner';
   deletePlaylist.mockReset().mockResolvedValue(undefined);
@@ -170,5 +172,24 @@ describe('cleanupOrphanedOrbitPlaylists', () => {
       },
     ]);
     expect(deleted).toEqual([]);
+  });
+
+  it('sweeps stale owned playlists on every configured server', async () => {
+    authState.servers = [
+      { id: 'srv-owner', username: 'me' },
+      { id: 'srv-other', username: 'also-me' },
+    ];
+    getPlaylistsForServer.mockImplementation(async (serverId: string) => ([{
+      id: `${serverId}-stale`,
+      name: orbitSessionPlaylistName('abcd1234'),
+      owner: serverId === 'srv-owner' ? 'me' : 'also-me',
+      comment: sessionComment('abcd1234', ORBIT_ORPHAN_TTL_MS + 60_000),
+    }]));
+
+    await expect(cleanupOrphanedOrbitPlaylists()).resolves.toBe(2);
+    expect(getPlaylistsForServer).toHaveBeenCalledWith('srv-owner', true);
+    expect(getPlaylistsForServer).toHaveBeenCalledWith('srv-other', true);
+    expect(deletePlaylist).toHaveBeenCalledWith('srv-owner-stale', 'srv-owner');
+    expect(deletePlaylist).toHaveBeenCalledWith('srv-other-stale', 'srv-other');
   });
 });

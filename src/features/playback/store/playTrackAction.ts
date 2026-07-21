@@ -4,6 +4,8 @@ import { audioSeek } from '@/lib/api/audio';
 import { getMusicNetworkRuntimeOrNull } from '@/music-network';
 import { setDeferHotCachePrefetch } from '@/lib/cache/hotCacheGate';
 import { orbitAllowsTrackServer, orbitBulkGuard, orbitSnapshot } from '@/store/orbitRuntime';
+import i18n from '@/lib/i18n';
+import { showToast } from '@/lib/dom/toast';
 import {
   queueItemRefMatchesTrack,
   queueItemIdentityKey,
@@ -134,8 +136,13 @@ export function runPlayTrack(
   targetQueueIndex: number | undefined,
 ): void {
   if (orbitSnapshot().role === 'host') {
-    if (!orbitAllowsTrackServer(track.serverId)) return;
-    if (queue?.some(queueTrack => !orbitAllowsTrackServer(queueTrack.serverId))) return;
+    if (
+      !orbitAllowsTrackServer(track.serverId)
+      || queue?.some(queueTrack => !orbitAllowsTrackServer(queueTrack.serverId))
+    ) {
+      showToast(i18n.t('queue.crossServerEnqueueBlocked'), 4000, 'error');
+      return;
+    }
   }
 
   // Orbit bulk-gate: only gate when the `queue` argument *replaces*

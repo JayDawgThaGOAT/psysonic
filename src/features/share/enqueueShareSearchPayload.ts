@@ -1,15 +1,11 @@
 import type { TFunction } from 'i18next';
-import {
-  getAlbumWithCredentials,
-  getArtistWithCredentials,
-} from '@/lib/api/subsonicEntityWithCredentials';
 import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { songToTrack } from '@/lib/media/songToTrack';
 import type { Track } from '@/lib/media/trackTypes';
 import { orbitBulkGuard } from '@/features/orbit';
-import { connectBaseUrlForServer } from '@/lib/server/serverEndpoint';
+import { resolveAlbum, resolveArtist } from '@/store/mediaResolver';
 import type {
   AlbumShareSearchPayload,
   ArtistShareSearchPayload,
@@ -113,14 +109,10 @@ export async function resolveShareSearchAlbum(
   }
 
   try {
-    const { album } = await getAlbumWithCredentials(
-      connectBaseUrlForServer(lookup.server),
-      lookup.server.username,
-      lookup.server.password,
-      payload.id,
-      lookup.server,
-    );
-    return { type: 'ok', album: { ...album, serverId: lookup.serverId } };
+    const resolved = await resolveAlbum(lookup.serverId, payload.id);
+    return resolved
+      ? { type: 'ok', album: { ...resolved.album, serverId: lookup.serverId } }
+      : { type: 'unavailable' };
   } catch {
     return { type: 'unavailable' };
   }
@@ -138,14 +130,10 @@ export async function resolveShareSearchArtist(
   }
 
   try {
-    const { artist } = await getArtistWithCredentials(
-      connectBaseUrlForServer(lookup.server),
-      lookup.server.username,
-      lookup.server.password,
-      payload.id,
-      lookup.server,
-    );
-    return { type: 'ok', artist: { ...artist, serverId: lookup.serverId } };
+    const resolved = await resolveArtist(lookup.serverId, payload.id);
+    return resolved
+      ? { type: 'ok', artist: { ...resolved.artist, serverId: lookup.serverId } }
+      : { type: 'unavailable' };
   } catch {
     return { type: 'unavailable' };
   }
