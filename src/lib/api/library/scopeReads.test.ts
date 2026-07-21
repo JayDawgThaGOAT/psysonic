@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { onInvoke } from '@/test/mocks/tauri';
 import {
+  libraryResolveAlbumOverlay,
   libraryResolveEntitySources,
   libraryScopeAlbumDetail,
   libraryScopeArtistDetail,
@@ -278,6 +279,53 @@ describe('libraryResolveEntitySources', () => {
     });
     expect(response[0]?.serverId).toBe('profile-s2');
     expect(response[0]?.libraryId).toBe('');
+  });
+});
+
+describe('libraryResolveAlbumOverlay', () => {
+  it('maps candidate owners into index keys and representatives back to profiles', async () => {
+    let captured: unknown;
+    onInvoke('library_resolve_album_overlay', (args) => {
+      captured = args;
+      return [{
+        group: 0,
+        representativeServerId: 's2.example',
+        representativeId: 'canonical-album',
+      }];
+    });
+
+    const response = await libraryResolveAlbumOverlay({
+      scopes: [
+        { serverId: 'profile-s1', libraryId: 'lib-a' },
+        { serverId: 'profile-s2', libraryId: null },
+      ],
+      albums: [{
+        serverId: 'profile-s2',
+        id: 'physical-album',
+        name: 'Album',
+        artist: 'Artist',
+      }],
+    });
+
+    expect(captured).toEqual({
+      request: {
+        scopes: [
+          { serverId: 's1.example', libraryId: 'lib-a' },
+          { serverId: 's2.example', libraryId: null },
+        ],
+        albums: [{
+          serverId: 's2.example',
+          id: 'physical-album',
+          name: 'Album',
+          artist: 'Artist',
+        }],
+      },
+    });
+    expect(response).toEqual([{
+      group: 0,
+      representativeServerId: 'profile-s2',
+      representativeId: 'canonical-album',
+    }]);
   });
 });
 

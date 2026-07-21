@@ -9,6 +9,7 @@
 
 pub mod advanced_search;
 mod advanced_search_mood;
+pub mod album_overlay;
 pub mod album_compilation_filter;
 pub mod analysis_backfill;
 pub mod analysis_backfill_policy;

@@ -24,3 +24,4 @@ pub(crate) use rebuild::{
 };
 
 pub use keys::{build_track_cluster_keys, TrackClusterKeys};
+pub(crate) use keys::build_album_key;

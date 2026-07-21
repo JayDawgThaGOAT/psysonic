@@ -55,6 +55,7 @@ export const commands = {
 	/**  Ensure precomputed cluster identity keys are current without blocking Tauri's main thread. */
 	libraryClusterRebuild: (serverId: string | null) => typedError<number, string>(__TAURI_INVOKE("library_cluster_rebuild", { serverId })),
 	libraryResolveEntitySources: (request: LibraryResolveEntitySourcesRequest) => typedError<LibraryEntitySourceDto[], string>(__TAURI_INVOKE("library_resolve_entity_sources", { request })),
+	libraryResolveAlbumOverlay: (request: LibraryResolveAlbumOverlayRequest) => typedError<LibraryAlbumOverlayResolutionDto[], string>(__TAURI_INVOKE("library_resolve_album_overlay", { request })),
 	librarySyncBindSession: (serverId: string, baseUrl: string, username: string, password: string, libraryScope: string | null) => typedError<null, string>(__TAURI_INVOKE("library_sync_bind_session", { serverId, baseUrl, username, password, libraryScope })),
 	librarySyncClearSession: (serverId: string) => typedError<null, string>(__TAURI_INVOKE("library_sync_clear_session", { serverId })),
 	librarySetPlaybackHint: (hint: string) => typedError<null, string>(__TAURI_INVOKE("library_set_playback_hint", { hint })),
@@ -1033,6 +1034,28 @@ export type LegacyOfflineMigrationResult = {
 	skippedReason: string | null,
 };
 
+/**
+ *  One raw network album that the New Releases freshness overlay needs to
+ *  reconcile with the local scope identity graph.
+ */
+export type LibraryAlbumOverlayCandidateDto = {
+	serverId: string,
+	id: string,
+	name: string,
+	artist: string | null,
+};
+
+/**
+ *  Order-preserving overlay resolution. `group` is valid only within this
+ *  response and lets the frontend collapse logical copies without persisting
+ *  internal cluster identity keys.
+ */
+export type LibraryAlbumOverlayResolutionDto = {
+	group: number,
+	representativeServerId: string | null,
+	representativeId: string | null,
+};
+
 export type LibraryAnalysisBackfillBatchDto = {
 	trackIds: string[],
 	nextCursor: string | null,
@@ -1110,6 +1133,12 @@ export type LibraryMostPlayedResponse = {
 	albums: LibraryMostPlayedAlbumDto[],
 	artists: LibraryMostPlayedArtistDto[],
 	hasMore: boolean,
+};
+
+/**  Resolve a bounded network overlay batch against one ordered browse scope. */
+export type LibraryResolveAlbumOverlayRequest = {
+	scopes: LibraryScopePair[],
+	albums: LibraryAlbumOverlayCandidateDto[],
 };
 
 /**

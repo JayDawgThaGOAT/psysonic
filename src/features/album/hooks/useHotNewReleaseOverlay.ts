@@ -1,15 +1,20 @@
 import { useEffect, useState } from 'react';
-import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
-import { fetchHotNewReleases } from '@/features/album/utils/hotNewReleases';
+import {
+  fetchHotNewReleases,
+  type ResolvedHotNewRelease,
+} from '@/features/album/utils/hotNewReleases';
 
 /** Network-only first-page overlay; stale results are discarded when scope changes. */
 export function useHotNewReleaseOverlay(
   scopes: LibraryScopePair[],
   scopeFingerprint: string,
   active: boolean,
-): { scopeFingerprint: string; albums: SubsonicAlbum[] } {
-  const [result, setResult] = useState({ scopeFingerprint: '', albums: [] as SubsonicAlbum[] });
+): { scopeFingerprint: string; albums: ResolvedHotNewRelease[] } {
+  const [result, setResult] = useState({
+    scopeFingerprint: '',
+    albums: [] as ResolvedHotNewRelease[],
+  });
 
   useEffect(() => {
     let cancelled = false;

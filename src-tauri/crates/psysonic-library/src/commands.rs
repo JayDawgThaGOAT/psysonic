@@ -28,7 +28,8 @@ use crate::dto::{
     LibraryScopeArtistDetailRequest, LibraryScopeArtistDetailResponse, LibraryScopeBrowseRequest,
     LibraryScopeBrowseResponse, LibraryScopeComposerDetailRequest,
     LibraryScopeComposerDetailResponse, LibraryScopeListRequest, LibraryScopeSearchRequest,
-    LibraryEntitySourceDto, LibraryResolveEntitySourcesRequest, LibraryStatisticsDto,
+    LibraryAlbumOverlayResolutionDto, LibraryEntitySourceDto,
+    LibraryResolveAlbumOverlayRequest, LibraryResolveEntitySourcesRequest, LibraryStatisticsDto,
     LibraryStatisticsRequest, LibraryTrackDto, LibraryTracksEnvelope,
     OfflinePathDto, PlaySessionDayDetailDto, PlaySessionHeatmapDayDto, PlaySessionInputDto,
     PlaySessionRecentDayDto, PlaySessionRecentTrackDto, PlaySessionYearBoundsDto,
@@ -836,6 +837,17 @@ pub async fn library_resolve_entity_sources(
 ) -> Result<Vec<LibraryEntitySourceDto>, String> {
     let store = Arc::clone(&runtime.store);
     library_spawn_blocking(move || scope_merge::resolve_entity_sources(&store, &request)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn library_resolve_album_overlay(
+    runtime: State<'_, LibraryRuntime>,
+    request: LibraryResolveAlbumOverlayRequest,
+) -> Result<Vec<LibraryAlbumOverlayResolutionDto>, String> {
+    let store = Arc::clone(&runtime.store);
+    library_spawn_blocking(move || crate::album_overlay::resolve_album_overlay(&store, &request))
+        .await
 }
 
 // NOT specta-collected: returns a DTO carrying `raw_json: Value` (LibraryTrack/Album/ArtistDto) — specta rc.25 can't export serde_json::Value. Stays hand-written on generate_handler!.

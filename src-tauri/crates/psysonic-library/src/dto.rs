@@ -759,6 +759,36 @@ pub struct LibraryEntitySourceDto {
     pub user_rating: Option<i64>,
 }
 
+/// One raw network album that the New Releases freshness overlay needs to
+/// reconcile with the local scope identity graph.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryAlbumOverlayCandidateDto {
+    pub server_id: String,
+    pub id: String,
+    pub name: String,
+    pub artist: Option<String>,
+}
+
+/// Resolve a bounded network overlay batch against one ordered browse scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryResolveAlbumOverlayRequest {
+    pub scopes: Vec<LibraryScopePair>,
+    pub albums: Vec<LibraryAlbumOverlayCandidateDto>,
+}
+
+/// Order-preserving overlay resolution. `group` is valid only within this
+/// response and lets the frontend collapse logical copies without persisting
+/// internal cluster identity keys.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryAlbumOverlayResolutionDto {
+    pub group: u32,
+    pub representative_server_id: Option<String>,
+    pub representative_id: Option<String>,
+}
+
 /// One selected server and its optional music-folder filter for aggregate index reads.
 /// An empty `library_ids` list includes every indexed folder on that server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]

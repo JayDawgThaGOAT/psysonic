@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Large fresh libraries now refresh SQLite's query-planner statistics after bulk indexing. Restarting after an interrupted multi-server sync no longer enters a minutes-long single-core identity rebuild, and existing affected databases repair their stale statistics automatically.
 
+### New Releases — remove duplicate albums from the freshness overlay
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* The first New Releases page now keeps the local catalogue's logical album de-duplication when fresh network results arrive, including alternate physical copies on one server and matching copies across several servers.
+
 
 ## [1.50.0]
 

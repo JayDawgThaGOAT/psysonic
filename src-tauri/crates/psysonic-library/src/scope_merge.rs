@@ -1638,7 +1638,7 @@ pub fn search_tracks(
     })
 }
 
-fn lookup_album_key(
+pub(crate) fn lookup_album_key(
     conn: &rusqlite::Connection,
     server_id: &str,
     album_id: &str,

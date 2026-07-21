@@ -17,7 +17,7 @@ fn album_identity_source<'a>(album_artist: Option<&'a str>, artist: Option<&'a s
         .or_else(|| artist.map(str::trim).filter(|s| !s.is_empty()))
 }
 
-pub(super) fn build_album_key(artist: Option<&str>, album: &str) -> Option<String> {
+pub(crate) fn build_album_key(artist: Option<&str>, album: &str) -> Option<String> {
     join_norm_parts([norm_part(artist.unwrap_or("")), norm_part(album)])
 }
 

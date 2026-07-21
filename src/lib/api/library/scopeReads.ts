@@ -8,7 +8,9 @@ import {
   type LibraryMostPlayedAlbumDto as LibraryScopeMostPlayedAlbum,
   type LibraryMostPlayedArtistDto as LibraryScopeMostPlayedArtist,
   type LibraryMostPlayedResponse as LibraryScopeMostPlayedResponse,
+  type LibraryAlbumOverlayResolutionDto,
   type LibraryEntitySourceDto,
+  type LibraryResolveAlbumOverlayRequest,
   type LibraryResolveEntitySourcesRequest,
   type LibrarySourceEntityType,
 } from '@/generated/bindings';
@@ -59,13 +61,41 @@ export interface LibraryScopeMostPlayedRequest {
 }
 
 export type {
+  LibraryAlbumOverlayResolutionDto,
   LibraryEntitySourceDto,
+  LibraryResolveAlbumOverlayRequest,
   LibraryResolveEntitySourcesRequest,
   LibraryScopeMostPlayedAlbum,
   LibraryScopeMostPlayedArtist,
   LibraryScopeMostPlayedResponse,
   LibrarySourceEntityType,
 };
+
+export async function libraryResolveAlbumOverlay(
+  request: LibraryResolveAlbumOverlayRequest,
+): Promise<LibraryAlbumOverlayResolutionDto[]> {
+  const ownerByIndexKey = new Map(
+    request.scopes.map(scope => [serverIndexKeyForId(scope.serverId), scope.serverId]),
+  );
+  const result = await commands.libraryResolveAlbumOverlay({
+    scopes: request.scopes.map(scope => ({
+      ...scope,
+      serverId: serverIndexKeyForId(scope.serverId),
+    })),
+    albums: request.albums.map(album => ({
+      ...album,
+      serverId: serverIndexKeyForId(album.serverId),
+    })),
+  });
+  if (result.status === 'error') throw new Error(result.error);
+  return result.data.map(resolution => ({
+    ...resolution,
+    representativeServerId: resolution.representativeServerId
+      ? ownerByIndexKey.get(resolution.representativeServerId)
+        ?? mapServerIdFromIndexKey(resolution.representativeServerId)
+      : null,
+  }));
+}
 
 export interface LibraryScopeSearchRequest {
   scopes: LibraryScopePair[];
