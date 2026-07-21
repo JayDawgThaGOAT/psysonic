@@ -31,7 +31,9 @@ use super::mapping::{
 };
 use super::progress::{IngestBatchMetrics, NoopProgress, Progress, ProgressEvent};
 use super::strategy::IngestStrategy;
-use crate::bulk_ingest::{restore_track_secondary_indexes, suspend_track_secondary_indexes};
+use crate::bulk_ingest::{
+    refresh_track_planner_stats, restore_track_secondary_indexes, suspend_track_secondary_indexes,
+};
 use crate::repos::{RemapStats, SyncStateRepository, TrackRepository, TrackRow};
 use crate::store::LibraryStore;
 use crate::store::WriteOpTiming;
@@ -132,6 +134,7 @@ impl<'a> BulkIngestGuard<'a> {
                     restore_track_secondary_indexes(&tx)?;
                     rebuild_track_fts_from_content(&tx)?;
                     restore_track_fts_triggers(&tx)?;
+                    refresh_track_planner_stats(&tx)?;
                     tx.commit()
                 })(),
             );
@@ -1589,6 +1592,17 @@ mod tests {
         let bulk = BulkIngestGuard::begin(&store).unwrap();
         assert!(store.bulk_ingest_active());
         assert_eq!(current_bulk_pragmas(&store).cache_size, -128_000);
+        store
+            .with_conn_mut("test.bulk_track", |conn| {
+                conn.execute(
+                    "INSERT INTO track (server_id, id, title, album, album_id, artist_id, \
+                     duration_sec, deleted, synced_at, raw_json) \
+                     VALUES ('s1', 't1', 'T', 'Al', 'al1', 'ar1', 1, 0, 1, '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
         bulk.finish().unwrap();
 
         let after = current_bulk_pragmas(&store);
@@ -1596,6 +1610,17 @@ mod tests {
         assert_eq!(after.wal_autocheckpoint, before.wal_autocheckpoint);
         assert_eq!(after.cache_size, before.cache_size);
         assert!(!store.bulk_ingest_active());
+        let album_index_stat: String = store
+            .with_conn("test.bulk_track_stats", |conn| {
+                conn.query_row(
+                    "SELECT stat FROM sqlite_stat1 \
+                     WHERE tbl = 'track' AND idx = 'idx_track_album'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(album_index_stat.split_whitespace().next(), Some("1"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

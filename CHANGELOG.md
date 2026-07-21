@@ -77,6 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * The header Live icon keeps its pulsing state while listeners are present, but confines the animation to an isolated 10 FPS layer and pauses it while the window is unfocused or reduced motion is requested.
 
+### Library startup — recover interrupted large syncs without a CPU spin
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Large fresh libraries now refresh SQLite's query-planner statistics after bulk indexing. Restarting after an interrupted multi-server sync no longer enters a minutes-long single-core identity rebuild, and existing affected databases repair their stale statistics automatically.
+
 
 ## [1.50.0]
 
