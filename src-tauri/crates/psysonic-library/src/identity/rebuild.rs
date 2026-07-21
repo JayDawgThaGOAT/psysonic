@@ -261,7 +261,7 @@ fn capture_invalidated_rank_partitions(
            UNION \
            SELECT DISTINCT t.album_id FROM invalidated_artist ia \
            CROSS JOIN track t \
-           WHERE t.server_id = ?1 AND t.artist_id = ia.entity_id \
+           WHERE t.server_id = ?1 AND t.deleted = 0 AND t.artist_id = ia.entity_id \
              AND t.album_id IS NOT NULL AND t.album_id != '' \
          ), \
          candidate_track AS MATERIALIZED ( \
@@ -270,11 +270,11 @@ fn capture_invalidated_rank_partitions(
            UNION \
            SELECT t.id FROM invalidated_album ia \
            CROSS JOIN track t \
-           WHERE t.server_id = ?1 AND t.album_id = ia.entity_id \
+           WHERE t.server_id = ?1 AND t.deleted = 0 AND t.album_id = ia.entity_id \
            UNION \
            SELECT t.id FROM invalidated_artist ia \
            CROSS JOIN track t \
-           WHERE t.server_id = ?1 AND t.artist_id = ia.entity_id \
+           WHERE t.server_id = ?1 AND t.deleted = 0 AND t.artist_id = ia.entity_id \
          ) \
          INSERT OR IGNORE INTO temp.identity_rank_partition(cluster_key, duration_bucket) \
          SELECT ck.cluster_key, ck.duration_sec / 5 \
