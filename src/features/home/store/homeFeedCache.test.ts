@@ -4,8 +4,10 @@ import {
   patchHomeFeedCache,
   readHomeFeedCache,
   readHomeFeedCacheStale,
+  shouldCacheColdHomeFeed,
   writeHomeFeedCache,
 } from '@/features/home/store/homeFeedCache';
+import type { HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
 
 function write(scopeKey: string, scopeVersion: number) {
   writeHomeFeedCache({
@@ -21,6 +23,23 @@ function write(scopeKey: string, scopeVersion: number) {
     starred: [], recent: [], random: [], heroAlbums: [], mostPlayed: [],
     recentlyPlayed: [], randomArtists: [], discoverSongs: [],
   });
+}
+
+function emptySnapshot(): HomeFeedSnapshot {
+  return {
+    scopeKey: 'scope',
+    scopeVersion: 1,
+    savedAt: 1,
+    offsets: {
+      starred: {},
+      recent: { offset: 0, hasMore: false },
+      random: {},
+      mostPlayed: {},
+      recentlyPlayed: { offset: 0, hasMore: false },
+    },
+    starred: [], recent: [], random: [], heroAlbums: [], mostPlayed: [],
+    recentlyPlayed: [], randomArtists: [], discoverSongs: [],
+  };
 }
 
 describe('homeFeedCache', () => {
@@ -71,5 +90,18 @@ describe('homeFeedCache', () => {
     }));
     expect(patched?.recent.map(album => album.id)).toEqual(['new']);
     expect(readHomeFeedCache('scope', 1)?.offsets.recent).toEqual({ offset: 1, hasMore: true });
+  });
+
+  it('rejects only unreliable cold empty snapshots', () => {
+    const empty = emptySnapshot();
+    expect(shouldCacheColdHomeFeed(empty, false, false)).toBe(false);
+    expect(shouldCacheColdHomeFeed(empty, true, false)).toBe(true);
+    expect(shouldCacheColdHomeFeed(empty, true, true)).toBe(false);
+    expect(shouldCacheColdHomeFeed({
+      ...empty,
+      heroAlbums: [{
+        id: 'album', name: 'Album', artist: 'Artist', artistId: 'artist', songCount: 1, duration: 1,
+      }],
+    }, false, false)).toBe(true);
   });
 });

@@ -352,7 +352,6 @@ impl<'a> TrackRepository<'a> {
                         params![server_id, track_id],
                     )?;
                 }
-                crate::identity::delete_cluster_keys_for_tracks(&tx, server_id, deleted_ids)?;
                 crate::identity::record_tracks(
                     &tx,
                     deleted_ids.iter().map(|track_id| (server_id, track_id.as_str())),

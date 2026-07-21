@@ -8,7 +8,7 @@ use rusqlite::Connection;
 pub const CLUSTER_SCHEMA: &str = "cluster";
 
 pub const CLUSTER_DB_FILENAME: &str = "library-cluster.db";
-const CLUSTER_SCHEMA_VERSION: i64 = 1;
+const CLUSTER_SCHEMA_VERSION: i64 = 2;
 
 const CLUSTER_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS cluster.track_cluster_key (
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS cluster.track_cluster_key (
   album_key    TEXT,
   artist_key   TEXT,
   duration_sec INTEGER,
+  occurrence_rank INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (server_id, track_id)
 );
 CREATE INDEX IF NOT EXISTS cluster.idx_ck_scope_album
@@ -26,13 +27,13 @@ CREATE INDEX IF NOT EXISTS cluster.idx_ck_scope_album
 CREATE INDEX IF NOT EXISTS cluster.idx_ck_scope_artist
   ON track_cluster_key(server_id, library_id, artist_key);
 CREATE INDEX IF NOT EXISTS cluster.idx_ck_scope_track
-  ON track_cluster_key(server_id, library_id, cluster_key);
+  ON track_cluster_key(server_id, library_id, cluster_key, duration_sec, occurrence_rank);
 CREATE INDEX IF NOT EXISTS cluster.idx_ck_server_album
   ON track_cluster_key(server_id, album_key);
 CREATE INDEX IF NOT EXISTS cluster.idx_ck_server_artist
   ON track_cluster_key(server_id, artist_key);
 CREATE INDEX IF NOT EXISTS cluster.idx_ck_server_track
-  ON track_cluster_key(server_id, cluster_key);
+  ON track_cluster_key(server_id, cluster_key, duration_sec, occurrence_rank);
 CREATE TABLE IF NOT EXISTS cluster.cluster_meta (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -336,6 +337,44 @@ mod tests {
         assert_eq!(key_count, 0);
         assert_eq!(obsolete_count, 0);
         assert_eq!(version, CLUSTER_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_one_sidecar_is_recreated_with_occurrence_rank() {
+        let directory = TestDirectory::new("version-one");
+        let library_path = directory.library_path();
+        let cluster_path = cluster_db_path_for_library(&library_path);
+        {
+            let conn = Connection::open(&cluster_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE track_cluster_key ( \
+                   server_id TEXT NOT NULL, library_id TEXT NOT NULL, track_id TEXT NOT NULL, \
+                   cluster_key TEXT, album_key TEXT, artist_key TEXT, duration_sec INTEGER, \
+                   PRIMARY KEY (server_id, track_id) \
+                 ); \
+                 CREATE TABLE cluster_meta (key TEXT PRIMARY KEY, value TEXT); \
+                 INSERT INTO track_cluster_key(server_id, library_id, track_id) \
+                 VALUES ('s1', 'lib', 'old'); \
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+
+        let conn = Connection::open_in_memory().unwrap();
+        attach_cluster_write_file(&conn, &library_path).unwrap();
+        let key_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cluster.track_cluster_key", [], |row| row.get(0))
+            .unwrap();
+        let rank_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('track_cluster_key', 'cluster') \
+                 WHERE name = 'occurrence_rank'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(key_count, 0);
+        assert_eq!(rank_columns, 1);
     }
 
     #[test]

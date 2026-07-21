@@ -16,6 +16,7 @@ import {
   deriveHomeFeedScope,
   loadHomeChronologicalFeed,
   loadHomeFeed,
+  loadHomeFeedWithStatus,
   loadMoreHomeAlbums,
   patchHomeChronologicalFeed,
   preserveHomeChronologicalFeeds,
@@ -107,6 +108,89 @@ describe('homeFeedLoader pure helpers', () => {
 });
 
 describe('homeFeedLoader failure isolation', () => {
+  it('distinguishes failed all-empty loads from successful empty libraries', async () => {
+    const base = {
+      serverIds: ['a'], scopeKey: 'scope', scopeVersion: 1, randomSize: 0,
+      anchorServerId: 'a', scopes: [], showArtists: false, showSongs: false, mixConfig,
+      enabledSections: {
+        starred: true,
+        mostPlayed: false,
+        hero: false,
+        discover: false,
+        discoverArtists: false,
+        discoverSongs: false,
+      },
+    };
+    const failed = await loadHomeFeedWithStatus({
+      ...base,
+      deps: {
+        getAlbumListForServer: vi.fn(async () => { throw new Error('offline'); }) as never,
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+      },
+    });
+    const successfulEmpty = await loadHomeFeedWithStatus({
+      ...base,
+      deps: {
+        getAlbumListForServer: vi.fn(async () => []) as never,
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+      },
+    });
+
+    expect(failed.snapshot.starred).toEqual([]);
+    expect(failed.emptySnapshotReliable).toBe(false);
+    expect(successfulEmpty.snapshot.starred).toEqual([]);
+    expect(successfulEmpty.emptySnapshotReliable).toBe(true);
+  });
+
+  it('marks an all-timeout empty load as unreliable', async () => {
+    vi.useFakeTimers();
+    const result = loadHomeFeedWithStatus({
+      serverIds: ['a'], scopeKey: 'scope', scopeVersion: 1, randomSize: 0,
+      anchorServerId: 'a', scopes: [], showArtists: false, showSongs: false, mixConfig,
+      enabledSections: {
+        starred: true,
+        mostPlayed: false,
+        hero: false,
+        discover: false,
+        discoverArtists: false,
+        discoverSongs: false,
+      },
+      deps: {
+        getAlbumListForServer: vi.fn(() => new Promise<never>(() => undefined)) as never,
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(HOME_REQUEST_TIMEOUT_MS);
+    await expect(result).resolves.toMatchObject({ emptySnapshotReliable: false });
+    vi.useRealTimers();
+  });
+
+  it('does not trust an empty snapshot when only some requested servers respond', async () => {
+    const result = await loadHomeFeedWithStatus({
+      serverIds: ['a', 'b'], scopeKey: 'scope', scopeVersion: 1, randomSize: 0,
+      anchorServerId: 'a', scopes: [], showArtists: false, showSongs: false, mixConfig,
+      enabledSections: {
+        starred: true,
+        mostPlayed: false,
+        hero: false,
+        discover: false,
+        discoverArtists: false,
+        discoverSongs: false,
+      },
+      deps: {
+        getAlbumListForServer: vi.fn(async serverId => {
+          if (serverId === 'b') throw new Error('offline');
+          return [];
+        }) as never,
+        filterAlbumsByMixRatingsAcrossServers: vi.fn(async albums => albums),
+      },
+    });
+
+    expect(result.snapshot.starred).toEqual([]);
+    expect(result.emptySnapshotReliable).toBe(false);
+  });
+
   it('reuses a timed-out chronological invoke until the native read settles', async () => {
     vi.useFakeTimers();
     const libraryScopeListMainstageAlbums = vi.fn(() => new Promise<never>(() => {}));

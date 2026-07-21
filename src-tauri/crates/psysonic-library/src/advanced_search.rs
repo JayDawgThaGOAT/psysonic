@@ -4099,7 +4099,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_scope_text_fts_dedupes_tracks() {
+    fn multi_scope_text_fts_preserves_same_server_track_occurrences() {
         let store = LibraryStore::open_in_memory();
         seed_and_rebuild(
             &store,
@@ -4134,8 +4134,9 @@ mod tests {
         r.library_scopes = Some(vec![scope_pair("s1", "lib-a"), scope_pair("s1", "lib-b")]);
         r.query = Some("aurora".into());
         let resp = run_advanced_search(&store, &r).unwrap();
-        assert_eq!(resp.tracks.len(), 1);
+        assert_eq!(resp.tracks.len(), 2);
         assert_eq!(resp.tracks[0].id, "t-a");
+        assert_eq!(resp.tracks[1].id, "t-b");
     }
 
     #[test]

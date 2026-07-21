@@ -32,14 +32,22 @@ pub(crate) const ALBUM_DEDUP_KEY: &str = "CASE WHEN ck.album_key IS NOT NULL THE
 const ARTIST_DEDUP_KEY: &str = "CASE WHEN ck.artist_key IS NOT NULL THEN ck.artist_key \
     ELSE ('null:' || t.server_id || ':' || COALESCE(NULLIF(t.artist_id, ''), t.id)) END";
 
-/// Track dedup: `cluster_key` + a fixed 5-second duration bucket (`duration_sec / 5`).
+/// Track dedup combines `cluster_key`, a fixed 5-second duration bucket
+/// (`duration_sec / 5`), and a deterministic per-server occurrence rank. The
+/// rank preserves repeated same-server tracks while still pairing corresponding
+/// copies across servers.
+///
 /// This is a bucket, not a symmetric ±5 s window: two rips whose durations straddle
 /// a bucket edge (e.g. 314 s → bucket 62, 316 s → bucket 63) stay separate, while
 /// two up to ~4 s apart inside a bucket merge. Kept as a single GROUP BY key for
 /// speed; a true tolerance window would need a self-join. Encoder-padding drift at
 /// boundaries is the known trade-off.
+pub(crate) const TRACK_CLUSTER_PARTITION_KEY: &str = "ck.cluster_key || ':' \
+    || CAST((ck.duration_sec / 5) AS TEXT) || ':' || CAST(ck.occurrence_rank AS TEXT)";
+
 pub(crate) const TRACK_DEDUP_KEY: &str = "CASE WHEN ck.cluster_key IS NOT NULL \
     THEN ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT) \
+         || ':' || CAST(ck.occurrence_rank AS TEXT) \
     ELSE ('null:' || t.server_id || ':' || t.id) END";
 
 /// Sortable representative key so a single `MIN()` (SQLite bare-column rule) picks the
@@ -204,7 +212,7 @@ fn keyed_detail_track_source(
              detail_key(value) AS (VALUES (?)), \
              detail_tracks AS MATERIALIZED ( \
                 SELECT ck.server_id, ck.library_id, ck.track_id, ck.cluster_key, \
-                       ck.album_key, ck.artist_key, ck.duration_sec, s.pr \
+                       ck.album_key, ck.artist_key, ck.duration_sec, ck.occurrence_rank, s.pr \
                 FROM exact_scope s \
                 CROSS JOIN detail_key key \
                 CROSS JOIN cluster.track_cluster_key ck INDEXED BY {scope_index} \
@@ -213,7 +221,7 @@ fn keyed_detail_track_source(
                  AND ck.{key_column} = key.value \
                 UNION ALL \
                 SELECT ck.server_id, ck.library_id, ck.track_id, ck.cluster_key, \
-                       ck.album_key, ck.artist_key, ck.duration_sec, s.pr \
+                       ck.album_key, ck.artist_key, ck.duration_sec, ck.occurrence_rank, s.pr \
                 FROM whole_scope s \
                 CROSS JOIN detail_key key \
                 CROSS JOIN cluster.track_cluster_key ck INDEXED BY {server_index} \
@@ -1669,13 +1677,13 @@ fn lookup_track_partition(
     conn: &rusqlite::Connection,
     server_id: &str,
     track_id: &str,
-) -> rusqlite::Result<Option<(Option<String>, i64)>> {
+) -> rusqlite::Result<Option<(Option<String>, i64, i64)>> {
     conn.query_row(
-        "SELECT ck.cluster_key, ck.duration_sec / 5 FROM track t \
+        "SELECT ck.cluster_key, ck.duration_sec / 5, ck.occurrence_rank FROM track t \
          INNER JOIN cluster.track_cluster_key ck ON ck.server_id = t.server_id AND ck.track_id = t.id \
          WHERE t.server_id = ? AND t.id = ? AND t.deleted = 0 LIMIT 1",
         rusqlite::params![server_id, track_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
     .optional()
 }
@@ -1701,6 +1709,7 @@ fn fetch_track_sources(
     scopes: &[LibraryScopePair],
     cluster_key: Option<&str>,
     duration_bucket: i64,
+    occurrence_rank: i64,
     anchor_server: &str,
     anchor_id: &str,
 ) -> rusqlite::Result<Vec<LibraryEntitySourceDto>> {
@@ -1711,7 +1720,7 @@ fn fetch_track_sources(
         "AND t.server_id = ? AND t.id = ?",
     );
     let bucket_filter = if cluster_key.is_some() {
-        "AND ck.duration_sec / 5 = ?"
+        "AND ck.duration_sec / 5 = ? AND ck.occurrence_rank = ?"
     } else {
         ""
     };
@@ -1725,6 +1734,7 @@ fn fetch_track_sources(
     if let Some(key) = cluster_key {
         binds.push(SqlValue::Text(key.to_string()));
         binds.push(SqlValue::Integer(duration_bucket));
+        binds.push(SqlValue::Integer(occurrence_rank));
     } else {
         binds.push(SqlValue::Text(anchor_server.to_string()));
         binds.push(SqlValue::Text(anchor_id.to_string()));
@@ -1815,7 +1825,7 @@ pub fn resolve_entity_sources(
 
     store.with_scope_detail_read_conn(|conn| match request.entity_type {
         LibrarySourceEntityType::Track => {
-            let Some((cluster_key, duration_bucket)) =
+            let Some((cluster_key, duration_bucket, occurrence_rank)) =
                 lookup_track_partition(conn, anchor_server, anchor_id)?
             else {
                 return Ok(Vec::new());
@@ -1825,6 +1835,7 @@ pub fn resolve_entity_sources(
                 scopes,
                 cluster_key.as_deref(),
                 duration_bucket,
+                occurrence_rank,
                 anchor_server,
                 anchor_id,
             )
@@ -2995,7 +3006,7 @@ mod tests {
     }
 
     #[test]
-    fn dedup_collapses_same_album_and_priority_winner_flips() {
+    fn album_merge_preserves_same_server_track_multiplicity_and_priority_winner_flips() {
         let store = LibraryStore::open_in_memory();
         let rows = [
             track(
@@ -3040,8 +3051,8 @@ mod tests {
         assert_eq!(albums_a[0].id, "alb-a");
         assert_eq!(albums_a[0].year, Some(2001));
         assert_eq!(albums_a[0].genre.as_deref(), Some("Rock"));
-        assert_eq!(albums_a[0].song_count, Some(1));
-        assert_eq!(albums_a[0].duration_sec, Some(200));
+        assert_eq!(albums_a[0].song_count, Some(2));
+        assert_eq!(albums_a[0].duration_sec, Some(400));
 
         let req_b_first = LibraryScopeListRequest {
             scopes: vec![scope_pair("s1", "lib-b"), scope_pair("s1", "lib-a")],
@@ -3053,8 +3064,8 @@ mod tests {
         assert_eq!(albums_b.len(), 1);
         assert_eq!(albums_b[0].id, "alb-b");
         assert_eq!(albums_b[0].year, Some(1999));
-        assert_eq!(albums_b[0].song_count, Some(1));
-        assert_eq!(albums_b[0].duration_sec, Some(200));
+        assert_eq!(albums_b[0].song_count, Some(2));
+        assert_eq!(albums_b[0].duration_sec, Some(400));
     }
 
     #[test]
@@ -3146,6 +3157,73 @@ mod tests {
         };
         let hits = search_tracks(&store, &req).unwrap();
         assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn same_server_occurrences_survive_and_cross_server_sources_pair_by_rank() {
+        let store = LibraryStore::open_in_memory();
+        let mut rows = vec![
+            track(
+                "s1", "a1", "Tyrion", Some("Narrator"), "Book", "album-a",
+                Some("narrator"), 300, "lib-a", None, None, None,
+            ),
+            track(
+                "s1", "a2", "Tyrion", Some("Narrator"), "Book", "album-a",
+                Some("narrator"), 300, "lib-a", None, None, None,
+            ),
+            track(
+                "s2", "b1", "Tyrion", Some("Narrator"), "Book", "album-b",
+                Some("narrator"), 300, "lib-b", None, None, None,
+            ),
+            track(
+                "s2", "b2", "Tyrion", Some("Narrator"), "Book", "album-b",
+                Some("narrator"), 300, "lib-b", None, None, None,
+            ),
+            track(
+                "s3", "c1", "Tyrion", Some("Narrator"), "Book", "album-c",
+                Some("narrator"), 300, "lib-c", None, None, None,
+            ),
+        ];
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.track_number = Some((index % 2 + 1) as i64);
+            row.server_path = Some(format!("chapter-{}.mp3", index % 2 + 1));
+        }
+        seed_and_rebuild(&store, &rows);
+        let scopes = vec![whole_scope("s1"), whole_scope("s2"), whole_scope("s3")];
+
+        let detail = album_detail(
+            &store,
+            &LibraryScopeAlbumDetailRequest {
+                scopes: scopes.clone(),
+                album_id: "album-a".into(),
+                server_id: "s1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            detail.tracks.iter().map(|track| track.id.as_str()).collect::<Vec<_>>(),
+            vec!["a1", "a2"]
+        );
+
+        for (anchor_id, expected_ids) in [
+            ("a1", vec!["a1", "b1", "c1"]),
+            ("a2", vec!["a2", "b2"]),
+        ] {
+            let sources = resolve_entity_sources(
+                &store,
+                &LibraryResolveEntitySourcesRequest {
+                    entity_type: LibrarySourceEntityType::Track,
+                    anchor_server_id: "s1".into(),
+                    anchor_id: anchor_id.into(),
+                    scopes: scopes.clone(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(),
+                expected_ids
+            );
+        }
     }
 
     #[test]
@@ -3287,7 +3365,7 @@ mod tests {
         assert_eq!(detail.album.year, Some(2001));
         assert_eq!(detail.album.genre, None);
         assert_eq!(detail.album.cover_art_id, None);
-        assert_eq!(detail.tracks.len(), 1);
+        assert_eq!(detail.tracks.len(), 2);
     }
 
     #[test]
@@ -3933,4 +4011,5 @@ mod tests {
         bench("1 lib", &[scopes[0].clone()]);
         bench("2 libs", &scopes);
     }
+
 }

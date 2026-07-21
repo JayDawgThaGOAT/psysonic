@@ -395,11 +395,12 @@ fn inspect_album(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto
 pub fn inspect(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto, String> {
     let album = inspect_album(store)?;
     let composer = crate::composer_projection::inspect(store)?;
+    let identity_needed = crate::identity::identity_maintenance_needed(store)?;
     let pending = [album.clone(), composer.clone()]
         .into_iter()
         .filter(|item| item.needed)
         .collect::<Vec<_>>();
-    if pending.is_empty() {
+    if pending.is_empty() && !identity_needed {
         return Ok(ScopeBrowseProjectionInspectDto {
             needed: false,
             total_tracks: album.total_tracks.max(composer.total_tracks),
@@ -408,8 +409,16 @@ pub fn inspect(store: &LibraryStore) -> Result<ScopeBrowseProjectionInspectDto, 
     }
     Ok(ScopeBrowseProjectionInspectDto {
         needed: true,
-        total_tracks: pending.iter().map(|item| item.total_tracks).max().unwrap_or(0),
-        done_tracks: pending.iter().map(|item| item.done_tracks).min().unwrap_or(0),
+        total_tracks: pending
+            .iter()
+            .map(|item| item.total_tracks)
+            .max()
+            .unwrap_or_else(|| album.total_tracks.max(composer.total_tracks)),
+        done_tracks: if identity_needed {
+            0
+        } else {
+            pending.iter().map(|item| item.done_tracks).min().unwrap_or(0)
+        },
     })
 }
 
@@ -429,11 +438,34 @@ pub fn is_ready(store: &LibraryStore) -> Result<bool, String> {
 }
 
 pub fn run_backfill(store: &LibraryStore, app: &AppHandle) -> Result<(), String> {
-    run_backfill_impl(store, Some(app))?;
-    crate::composer_projection::run_backfill(store, Some(app))
+    run_backfill_impl(store, Some(app))
 }
 
 fn run_backfill_impl(store: &LibraryStore, app: Option<&AppHandle>) -> Result<(), String> {
+    // Projection batches intentionally write physical fallback identities. Persist
+    // a server rebuild request first so a crash can never leave a completed
+    // projection marker without a later canonical reconcile.
+    store.with_conn_mut("browse_projection.mark_identity_dirty", |conn| {
+        let server_ids = {
+            let mut statement = conn.prepare(
+                "SELECT DISTINCT server_id FROM track WHERE deleted = 0 ORDER BY server_id",
+            )?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let tx = conn.transaction()?;
+        crate::identity::mark_cluster_keys_dirty(&tx, server_ids.iter().map(String::as_str))?;
+        tx.commit()
+    })?;
+    run_album_backfill_impl(store, app)?;
+    crate::composer_projection::run_backfill(store, app)?;
+    crate::identity::ensure_pending_cluster_keys(store)?;
+    Ok(())
+}
+
+fn run_album_backfill_impl(store: &LibraryStore, app: Option<&AppHandle>) -> Result<(), String> {
     let inspect_result = inspect_album(store)?;
     if !inspect_result.needed {
         return Ok(());
@@ -472,7 +504,17 @@ fn run_backfill_impl(store: &LibraryStore, app: Option<&AppHandle>) -> Result<()
                 for (_, server_id, library_id, album_id) in rows {
                     add_scope(&mut scopes, &server_id, Some(library_id), album_id);
                 }
+                let server_ids = scopes
+                    .iter()
+                    .map(|(server_id, _, _)| server_id.clone())
+                    .collect::<HashSet<_>>();
                 refresh_album_scopes(&tx, scopes)?;
+                // Keep the reconcile request atomic with every physical-key batch.
+                // An unrelated read may drain an earlier request while migration runs.
+                crate::identity::mark_cluster_keys_dirty(
+                    &tx,
+                    server_ids.iter().map(String::as_str),
+                )?;
                 tx.execute(
                     "UPDATE library_data_migration SET cursor_rowid = ?2 WHERE id = ?1",
                     params![MIGRATION_ID, last_rowid],
@@ -774,6 +816,51 @@ mod tests {
             })
             .unwrap();
         assert_eq!(keys.len(), 1);
+    }
+
+    #[test]
+    fn completed_backfill_reconciles_physical_projection_keys_before_readiness() {
+        let store = LibraryStore::open_in_memory();
+        insert_artist(&store, "s1", "artist-1", "Artist");
+        insert_artist(&store, "s2", "artist-2", "Artist");
+        TrackRepository::new(&store)
+            .upsert_batch(&[
+                album_track(
+                    "s1", "t1", "Artist", "artist-1", "album-1", "Shared", "Artist", "lib-a",
+                ),
+                album_track(
+                    "s2", "t2", "Artist", "artist-2", "album-2", "Shared", "Artist", "lib-b",
+                ),
+            ])
+            .unwrap();
+        crate::identity::rebuild_cluster_keys(&store, None).unwrap();
+        store
+            .with_conn_mut("test.reset_projection", |conn| {
+                conn.execute("DELETE FROM album_browse_projection", [])?;
+                conn.execute(
+                    "DELETE FROM library_data_migration WHERE id = ?1",
+                    params![MIGRATION_ID],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        run_backfill_impl(&store, None).unwrap();
+
+        assert!(is_ready(&store).unwrap());
+        let keys = store
+            .with_read_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT DISTINCT identity_key FROM album_browse_projection ORDER BY identity_key",
+                )?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(keys.len(), 1);
+        assert!(!keys[0].starts_with("physical:"));
     }
 
     #[test]

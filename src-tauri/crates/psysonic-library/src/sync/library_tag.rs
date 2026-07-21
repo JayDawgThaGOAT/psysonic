@@ -208,8 +208,12 @@ pub async fn tag_library_membership(
     let untagged = tracks
         .count_untagged_tracks(server_id)
         .map_err(SyncError::Storage)?;
+    let cursor = read_tag_cursor(store, server_id)?;
 
     if require_untagged && untagged == 0 {
+        if let Some(cursor) = cursor.as_ref() {
+            write_tag_completion(store, server_id, &cursor.folders_hash, 0)?;
+        }
         return Ok(TagReport {
             folders_processed: 0,
             albums_processed: 0,
@@ -239,7 +243,6 @@ pub async fn tag_library_membership(
     folders.sort_by(|a, b| a.id.cmp(&b.id));
     let hash = folders_hash(&folders);
     let prior = read_tag_state(store, server_id)?;
-    let cursor = read_tag_cursor(store, server_id)?;
     let active_cursor = cursor.as_ref().filter(|cursor| cursor.folders_hash == hash);
     if !should_run_tagging_pass(untagged, prior.as_ref(), active_cursor.is_some(), &hash) {
         return Ok(TagReport {

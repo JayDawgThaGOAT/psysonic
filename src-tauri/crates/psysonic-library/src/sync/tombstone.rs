@@ -676,6 +676,7 @@ mod tests {
             .reconcile_chunk(10)
             .await
             .unwrap();
+        crate::identity::ensure_cluster_keys_built(&store, "s1").unwrap();
 
         let (projection, identity): (i64, i64) = store
             .with_read_conn(|conn| {

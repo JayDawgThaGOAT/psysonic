@@ -79,6 +79,15 @@ export function isHomeFeedSnapshotEmpty(snap: HomeFeedSnapshot): boolean {
     && snap.randomArtists.length === 0;
 }
 
+export function shouldCacheColdHomeFeed(
+  snap: HomeFeedSnapshot,
+  emptySnapshotReliable: boolean,
+  offlineBrowseActive: boolean,
+): boolean {
+  if (!isHomeFeedSnapshotEmpty(snap)) return true;
+  return !offlineBrowseActive && emptySnapshotReliable;
+}
+
 export function writeHomeFeedCache(data: Omit<HomeFeedSnapshot, 'savedAt'>): void {
   const snapshot = { ...data, savedAt: Date.now() };
   const key = cacheKey(snapshot.scopeKey, snapshot.scopeVersion);

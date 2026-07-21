@@ -40,20 +40,6 @@ pub(crate) fn mark_cluster_keys_dirty<'a>(
     super::invalidation::record_servers(tx, server_ids)
 }
 
-pub(crate) fn delete_cluster_keys_for_tracks(
-    tx: &Transaction<'_>,
-    server_id: &str,
-    track_ids: &[String],
-) -> rusqlite::Result<()> {
-    let mut statement = tx.prepare_cached(
-        "DELETE FROM cluster.track_cluster_key WHERE server_id = ?1 AND track_id = ?2",
-    )?;
-    for track_id in track_ids {
-        statement.execute(params![server_id, track_id])?;
-    }
-    Ok(())
-}
-
 pub(crate) fn prune_cluster_keys_for_scope(
     tx: &Transaction<'_>,
     server_id: &str,
@@ -134,6 +120,29 @@ pub fn cluster_rebuild_needed(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(stored.as_deref() != Some(NORM_VERSION))
 }
 
+pub fn identity_maintenance_needed(store: &LibraryStore) -> Result<bool, String> {
+    store.with_read_conn(|conn| {
+        let has_sources: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM track WHERE deleted = 0) \
+             OR EXISTS(SELECT 1 FROM identity_invalidation)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_sources {
+            return Ok(false);
+        }
+        if cluster_rebuild_needed(conn)? {
+            return Ok(true);
+        }
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM identity_invalidation) \
+             OR EXISTS(SELECT 1 FROM cluster.cluster_meta WHERE key LIKE ?1)",
+            params![format!("{DIRTY_META_PREFIX}%")],
+            |row| row.get(0),
+        )
+    })
+}
+
 fn set_cluster_meta(conn: &Connection) -> rusqlite::Result<()> {
     let now = now_unix().to_string();
     conn.execute(
@@ -170,6 +179,150 @@ type SourceTrackRow = (
 
 pub(crate) fn concrete_physical_album_key(server_id: &str, album_id: &str) -> String {
     format!("physical:{}:{server_id}:{album_id}", server_id.len())
+}
+
+fn occurrence_rank_order_sql() -> &'static str {
+    "CASE WHEN t.disc_number IS NULL THEN 1 ELSE 0 END, t.disc_number, \
+     CASE WHEN t.track_number IS NULL THEN 1 ELSE 0 END, t.track_number, \
+     COALESCE(t.server_path, ''), ck.track_id"
+}
+
+fn recompute_all_occurrence_ranks(
+    tx: &Transaction<'_>,
+    server_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    let server_filter = if server_id.is_some() {
+        " AND ck.server_id = ?1"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "WITH ranked AS MATERIALIZED ( \
+           SELECT ck.server_id, ck.track_id, \
+                  ROW_NUMBER() OVER ( \
+                    PARTITION BY ck.server_id, ck.cluster_key, ck.duration_sec / 5 \
+                    ORDER BY {} \
+                  ) - 1 AS occurrence_rank \
+           FROM cluster.track_cluster_key ck \
+           INNER JOIN track t ON t.server_id = ck.server_id AND t.id = ck.track_id \
+           WHERE t.deleted = 0 AND ck.cluster_key IS NOT NULL{server_filter} \
+         ) \
+         UPDATE cluster.track_cluster_key AS ck \
+         SET occurrence_rank = ranked.occurrence_rank \
+         FROM ranked \
+         WHERE ck.server_id = ranked.server_id AND ck.track_id = ranked.track_id \
+           AND ck.occurrence_rank IS NOT ranked.occurrence_rank",
+        occurrence_rank_order_sql(),
+    );
+    match server_id {
+        Some(server_id) => {
+            tx.execute(&sql, params![server_id])?;
+            tx.execute(
+                "UPDATE cluster.track_cluster_key SET occurrence_rank = 0 \
+                 WHERE server_id = ?1 AND cluster_key IS NULL AND occurrence_rank != 0",
+                params![server_id],
+            )?;
+        }
+        None => {
+            tx.execute(&sql, [])?;
+            tx.execute(
+                "UPDATE cluster.track_cluster_key SET occurrence_rank = 0 \
+                 WHERE cluster_key IS NULL AND occurrence_rank != 0",
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn reset_affected_rank_partitions(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS identity_rank_partition ( \
+           cluster_key TEXT NOT NULL, \
+           duration_bucket INTEGER NOT NULL, \
+           PRIMARY KEY (cluster_key, duration_bucket) \
+         ) WITHOUT ROWID; \
+         DELETE FROM temp.identity_rank_partition;",
+    )
+}
+
+fn capture_invalidated_rank_partitions(
+    tx: &Transaction<'_>,
+    server_id: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "WITH invalidated_artist AS MATERIALIZED ( \
+           SELECT entity_id FROM identity_invalidation \
+           WHERE server_id = ?1 AND kind = 'artist' \
+         ), \
+         invalidated_album AS MATERIALIZED ( \
+           SELECT entity_id FROM identity_invalidation \
+           WHERE server_id = ?1 AND kind = 'album' \
+           UNION \
+           SELECT DISTINCT t.album_id FROM invalidated_artist ia \
+           CROSS JOIN track t \
+           WHERE t.server_id = ?1 AND t.artist_id = ia.entity_id \
+             AND t.album_id IS NOT NULL AND t.album_id != '' \
+         ), \
+         candidate_track AS MATERIALIZED ( \
+           SELECT entity_id FROM identity_invalidation \
+           WHERE server_id = ?1 AND kind = 'track' \
+           UNION \
+           SELECT t.id FROM invalidated_album ia \
+           CROSS JOIN track t \
+           WHERE t.server_id = ?1 AND t.album_id = ia.entity_id \
+           UNION \
+           SELECT t.id FROM invalidated_artist ia \
+           CROSS JOIN track t \
+           WHERE t.server_id = ?1 AND t.artist_id = ia.entity_id \
+         ) \
+         INSERT OR IGNORE INTO temp.identity_rank_partition(cluster_key, duration_bucket) \
+         SELECT ck.cluster_key, ck.duration_sec / 5 \
+         FROM candidate_track candidate \
+         INNER JOIN cluster.track_cluster_key ck \
+           ON ck.server_id = ?1 AND ck.track_id = candidate.entity_id \
+         WHERE ck.cluster_key IS NOT NULL",
+        params![server_id],
+    )?;
+    Ok(())
+}
+
+fn recompute_affected_occurrence_ranks(
+    tx: &Transaction<'_>,
+    server_id: &str,
+) -> rusqlite::Result<()> {
+    let sql = format!(
+        "WITH ranked AS MATERIALIZED ( \
+           SELECT ck.server_id, ck.track_id, \
+                  ROW_NUMBER() OVER ( \
+                    PARTITION BY ck.server_id, ck.cluster_key, ck.duration_sec / 5 \
+                    ORDER BY {} \
+                  ) - 1 AS occurrence_rank \
+           FROM temp.identity_rank_partition affected \
+           CROSS JOIN cluster.track_cluster_key ck \
+             ON ck.server_id = ?1 AND ck.cluster_key = affected.cluster_key \
+            AND ck.duration_sec / 5 = affected.duration_bucket \
+           INNER JOIN track t ON t.server_id = ck.server_id AND t.id = ck.track_id \
+           WHERE t.deleted = 0 \
+         ) \
+         UPDATE cluster.track_cluster_key AS ck \
+         SET occurrence_rank = ranked.occurrence_rank \
+         FROM ranked \
+         WHERE ck.server_id = ranked.server_id AND ck.track_id = ranked.track_id \
+           AND ck.occurrence_rank IS NOT ranked.occurrence_rank",
+        occurrence_rank_order_sql(),
+    );
+    tx.execute(&sql, params![server_id])?;
+    tx.execute(
+        "UPDATE cluster.track_cluster_key SET occurrence_rank = 0 \
+         WHERE server_id = ?1 AND cluster_key IS NULL AND track_id IN ( \
+           SELECT entity_id FROM identity_invalidation \
+           WHERE server_id = ?1 AND kind = 'track' \
+         )",
+        params![server_id],
+    )?;
+    tx.execute("DELETE FROM temp.identity_rank_partition", [])?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +492,7 @@ fn rebuild_cluster_keys_on_conn(
             [],
         )?;
     }
+    recompute_all_occurrence_ranks(&tx, server_id)?;
     crate::browse_projection::reconcile_identity_keys(&tx, server_id)?;
     match server_id {
         Some(server_id) => {
@@ -365,6 +519,8 @@ fn apply_identity_invalidations_on_conn(
     server_id: &str,
 ) -> rusqlite::Result<u64> {
     let tx = conn.transaction()?;
+    reset_affected_rank_partitions(&tx)?;
+    capture_invalidated_rank_partitions(&tx, server_id)?;
     let select = "WITH invalidated_artist AS MATERIALIZED ( \
                     SELECT entity_id FROM identity_invalidation \
                     WHERE server_id = ?1 AND kind = 'artist' \
@@ -429,6 +585,8 @@ fn apply_identity_invalidations_on_conn(
     drop(statement);
     drop(upsert);
 
+    capture_invalidated_rank_partitions(&tx, server_id)?;
+
     tx.execute(
         "DELETE FROM cluster.track_cluster_key AS ck \
          WHERE ck.server_id = ?1 \
@@ -442,6 +600,7 @@ fn apply_identity_invalidations_on_conn(
            )",
         params![server_id],
     )?;
+    recompute_affected_occurrence_ranks(&tx, server_id)?;
     set_cluster_meta(&tx)?;
     tx.commit()?;
 
@@ -692,6 +851,53 @@ mod tests {
             .unwrap();
         assert!(empty_artist.0.is_none());
         assert!(empty_artist.2.is_none());
+    }
+
+    #[test]
+    fn incremental_tombstone_reranks_remaining_track_occurrence() {
+        let store = LibraryStore::open_in_memory();
+        let mut first = track_row(
+            "s1", "t1", "Tyrion", Some("Narrator"), "Book", Some("Narrator"), 300, "lib",
+        );
+        first.track_number = Some(1);
+        let mut second = first.clone();
+        second.id = "t2".into();
+        second.track_number = Some(2);
+        TrackRepository::new(&store)
+            .upsert_batch(&[first, second])
+            .unwrap();
+        rebuild_cluster_keys(&store, Some("s1")).unwrap();
+
+        let before = store
+            .with_read_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT track_id, occurrence_rank FROM cluster.track_cluster_key \
+                     WHERE server_id = 's1' ORDER BY track_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(before, vec![("t1".into(), 0), ("t2".into(), 1)]);
+
+        TrackRepository::new(&store)
+            .apply_tombstone_results("s1", "", &[], &["t1".into()])
+            .unwrap();
+        ensure_cluster_keys_built(&store, "s1").unwrap();
+
+        let after = store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT track_id, occurrence_rank FROM cluster.track_cluster_key \
+                     WHERE server_id = 's1'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!(after, ("t2".into(), 0));
     }
 
     #[test]

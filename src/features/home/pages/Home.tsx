@@ -26,6 +26,7 @@ import {
   readHomeFeedCache,
   readHomeFeedCacheStale,
   patchHomeFeedCache,
+  shouldCacheColdHomeFeed,
   writeHomeFeedCache,
   type HomeFeedSnapshot,
 } from '@/features/home/store/homeFeedCache';
@@ -39,7 +40,7 @@ import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 import {
   deriveHomeFeedScope,
   loadHomeChronologicalFeed,
-  loadHomeFeed,
+  loadHomeFeedWithStatus,
   loadMoreHomeAlbums,
   patchHomeChronologicalFeed,
   preserveHomeChronologicalFeeds,
@@ -67,6 +68,7 @@ import {
   type MainstageEnabledSections,
 } from '@/features/home/pages/homeDiagnosticHelpers';
 import { scheduleStartupSplashDismiss } from '@/app/startupSplash';
+import { useMigrationStore } from '@/store/migrationStore';
 
 /** Match Random Albums overshoot when mix filter uses album/artist axes so hero + discover row can still fill. */
 const HOME_RANDOM_FETCH = 100;
@@ -147,6 +149,7 @@ export default function Home() {
     ],
   );
   const connStatus = useConnectionStatus().status;
+  const migrationReady = useMigrationStore(s => s.phase === 'completed');
   const devForceOffline = useDevOfflineBrowseStore(s => s.forceOffline);
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const offlineBrowseReloadTs = useOfflineBrowseReloadToken();
@@ -225,7 +228,7 @@ export default function Home() {
   );
 
   useEffect(() => {
-    if (serverIds.length === 0 || !scopeKey || !anchorServerId) return;
+    if (!migrationReady || serverIds.length === 0 || !scopeKey || !anchorServerId) return;
     let cancelled = false;
     const loadVersion = ++feedLoadVersionRef.current;
     const isCurrentLoad = () => !cancelled && feedLoadVersionRef.current === loadVersion;
@@ -236,7 +239,7 @@ export default function Home() {
       const albumMix =
         mixCfg.enabled && (mixCfg.minAlbum > 0 || mixCfg.minArtist > 0);
       const randomSize = albumMix ? HOME_RANDOM_FETCH : HOME_DISCOVER_SLICE;
-      const snapshot = loadHomeFeed({
+      const feed = loadHomeFeedWithStatus({
         serverIds,
         scopeKey,
         anchorServerId,
@@ -291,7 +294,7 @@ export default function Home() {
       };
       if (mainstageDiagnosticsEnabled && chronological.recent) startDiagnostic('recent');
       if (mainstageDiagnosticsEnabled && chronological.recentlyPlayed) startDiagnostic('recentlyPlayed');
-      return { snapshot, chronological };
+      return { feed, chronological };
     };
     const applyChronologicalResult = (
       section: 'recent' | 'recentlyPlayed',
@@ -362,10 +365,10 @@ export default function Home() {
         void (async () => {
           try {
             const freshLoad = startFreshHomeFeed();
-            const loaded = await freshLoad.snapshot;
+            const loaded = await freshLoad.feed;
             if (!isCurrentLoad()) return;
             const fresh = preserveDisabledHomeSections(
-              preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current),
+              preserveHomeChronologicalFeeds(loaded.snapshot, displayedSnapshotRef.current),
               displayedSnapshotRef.current,
               getEffectiveEnabledSections(),
             );
@@ -398,15 +401,17 @@ export default function Home() {
     (async () => {
       try {
         const freshLoad = startFreshHomeFeed();
-        const loaded = await freshLoad.snapshot;
+        const loaded = await freshLoad.feed;
         if (!isCurrentLoad()) return;
         const snap = preserveDisabledHomeSections(
-          preserveHomeChronologicalFeeds(loaded, displayedSnapshotRef.current),
+          preserveHomeChronologicalFeeds(loaded.snapshot, displayedSnapshotRef.current),
           displayedSnapshotRef.current,
           getEffectiveEnabledSections(),
         );
         if (offlineBrowseActive && isHomeFeedSnapshotEmpty(snap)) return;
-        writeHomeFeedCache(snap);
+        if (shouldCacheColdHomeFeed(snap, loaded.emptySnapshotReliable, false)) {
+          writeHomeFeedCache(snap);
+        }
         applyFeedSnapshot(snap);
         await patchChronologicalFeeds(freshLoad.chronological);
         if (!cancelled) setLoading(false);
@@ -437,6 +442,8 @@ export default function Home() {
     offlineBrowseActive,
     offlineBrowseReloadTs,
     librarySyncRevision,
+    migrationReady,
+    connStatus,
   ]);
 
   /** When offline toggles without a library-filter bump, re-apply stale cache if the feed was cleared. */

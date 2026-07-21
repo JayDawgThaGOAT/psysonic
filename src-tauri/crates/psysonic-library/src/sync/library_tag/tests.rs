@@ -59,6 +59,28 @@ fn test_client(base: &str) -> SubsonicClient {
     )
 }
 
+async fn mount_bounded_full_album_pages(server: &MockServer) {
+    for page_index in 0..MAX_ALBUM_LIST_REQUESTS_PER_PASS {
+        let offset = page_index * ALBUM_PAGE_SIZE;
+        let albums = (0..ALBUM_PAGE_SIZE)
+            .map(|index| json!({ "id": format!("album-{}", offset + index), "name": "A" }))
+            .collect::<Vec<_>>();
+        Mock::given(method("GET"))
+            .and(path("/rest/getAlbumList2.view"))
+            .and(query_param("musicFolderId", "1"))
+            .and(query_param("offset", offset.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": {
+                    "status": "ok",
+                    "albumList2": { "album": albums }
+                }
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+}
+
 #[test]
 fn folders_hash_is_order_independent() {
     let a = vec![
@@ -234,25 +256,7 @@ async fn tag_library_membership_resumes_from_persisted_page_cursor() {
         .mount(&server)
         .await;
 
-    for page_index in 0..MAX_ALBUM_LIST_REQUESTS_PER_PASS {
-        let offset = page_index * ALBUM_PAGE_SIZE;
-        let albums = (0..ALBUM_PAGE_SIZE)
-            .map(|index| json!({ "id": format!("album-{}", offset + index), "name": "A" }))
-            .collect::<Vec<_>>();
-        Mock::given(method("GET"))
-            .and(path("/rest/getAlbumList2.view"))
-            .and(query_param("musicFolderId", "1"))
-            .and(query_param("offset", offset.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "subsonic-response": {
-                    "status": "ok",
-                    "albumList2": { "album": albums }
-                }
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-    }
+    mount_bounded_full_album_pages(&server).await;
     let resume_offset = MAX_ALBUM_LIST_REQUESTS_PER_PASS * ALBUM_PAGE_SIZE;
     Mock::given(method("GET"))
         .and(path("/rest/getAlbumList2.view"))
@@ -321,4 +325,55 @@ async fn tag_library_membership_resumes_from_persisted_page_cursor() {
         .await
         .unwrap();
     assert!(third.skipped);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tag_library_membership_finalizes_cursor_when_no_untagged_tracks_remain() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/getMusicFolders.view"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "subsonic-response": {
+                "status": "ok",
+                "musicFolders": { "musicFolder": { "id": 1, "name": "Main" } }
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_bounded_full_album_pages(&server).await;
+
+    let store = LibraryStore::open_in_memory();
+    TrackRepository::new(&store)
+        .upsert_batch(&[track_row("srv", "tagged-on-first-page", "album-0")])
+        .unwrap();
+    let client = test_client(&server.uri());
+    let progress = Arc::new(super::super::progress::NoopProgress);
+
+    let first = tag_library_membership(
+        &store,
+        &client,
+        "srv",
+        None,
+        progress.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!first.completed);
+    assert_eq!(first.tracks_tagged, 1);
+    assert_eq!(first.untagged_remaining, 0);
+    assert!(read_tag_cursor(&store, "srv").unwrap().is_some());
+
+    let second = tag_library_membership(&store, &client, "srv", None, progress, true)
+        .await
+        .unwrap();
+    assert!(second.skipped);
+    assert!(second.completed);
+    assert_eq!(second.untagged_remaining, 0);
+    assert!(read_tag_cursor(&store, "srv").unwrap().is_none());
+
+    let completion = read_tag_state(&store, "srv").unwrap().unwrap();
+    assert_eq!(completion.folders_hash, "1:Main");
+    assert_eq!(completion.last_untagged_count, 0);
 }

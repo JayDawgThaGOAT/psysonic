@@ -42,6 +42,11 @@ export interface HomeSectionResult {
   detail?: string;
 }
 
+export interface HomeFeedLoadResult {
+  snapshot: HomeFeedSnapshot;
+  emptySnapshotReliable: boolean;
+}
+
 type OwnedAlbum = SubsonicAlbum & { serverId: string };
 type OwnedArtist = SubsonicArtist & { serverId: string };
 type OwnedSong = SubsonicSong & { serverId: string };
@@ -352,7 +357,7 @@ export function preserveHomeChronologicalFeeds(
 type TimedServerItems<T> = {
   items: T[];
   durationMs: number;
-  outcome: 'rows' | 'empty' | 'timeout' | 'error';
+  outcome: 'rows' | 'empty' | 'timeout' | 'error' | 'skipped';
   source?: 'local' | 'network';
 };
 
@@ -363,7 +368,7 @@ async function loadServerAlbums(
   deps: HomeFeedLoaderDeps,
 ): Promise<TimedServerItems<OwnedAlbum>> {
   const startedAt = nowMs();
-  if (size <= 0) return { items: [], durationMs: 0, outcome: 'empty' };
+  if (size <= 0) return { items: [], durationMs: 0, outcome: 'skipped' };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const request = deps.getAlbumListForServer(serverId, type, size, 0, {}, HOME_REQUEST_TIMEOUT_MS)
     .then(albums => ({ albums, outcome: albums.length > 0 ? 'rows' as const : 'empty' as const }))
@@ -389,7 +394,7 @@ async function loadServerArtists(
   deps: HomeFeedLoaderDeps,
 ): Promise<TimedServerItems<OwnedArtist>> {
   const startedAt = nowMs();
-  if (size <= 0) return { items: [], durationMs: 0, outcome: 'empty' };
+  if (size <= 0) return { items: [], durationMs: 0, outcome: 'skipped' };
   const request: Promise<{
     artists: SubsonicArtist[];
     source: 'local' | 'network';
@@ -436,27 +441,44 @@ async function loadServerSongs(
   size: number,
   scopeFlightKey: string,
   deps: HomeFeedLoaderDeps,
-): Promise<OwnedSong[]> {
-  if (size <= 0) return [];
+): Promise<TimedServerItems<OwnedSong>> {
+  if (size <= 0) return { items: [], durationMs: 0, outcome: 'skipped' };
   const startedAt = nowMs();
-  const songs = await withinHomeDeadline(
-    isolated(async () => {
-      const local = await withinDeadline(
-        runLibraryLocalReadSingleFlight(
-          JSON.stringify(['home-songs', scopeFlightKey, serverId, size]),
-          () => deps.runLocalRandomSongs(serverId, size),
-        ),
-        null,
-        Math.min(HOME_LOCAL_READ_TIMEOUT_MS, remainingHomeDeadline(startedAt)),
-      );
-      if (local != null) return local;
-      const remainingMs = remainingHomeDeadline(startedAt);
-      if (remainingMs <= 0) return [];
-      return deps.getRandomSongsForServer(serverId, size, undefined, remainingMs);
-    }, [] as SubsonicSong[]),
-    [] as SubsonicSong[],
+  const request: Promise<{
+    songs: SubsonicSong[];
+    source: 'local' | 'network';
+    outcome: TimedServerItems<OwnedSong>['outcome'];
+  }> = (async () => {
+    const local = await withinDeadline(
+      runLibraryLocalReadSingleFlight(
+        JSON.stringify(['home-songs', scopeFlightKey, serverId, size]),
+        () => deps.runLocalRandomSongs(serverId, size),
+      ),
+      null,
+      Math.min(HOME_LOCAL_READ_TIMEOUT_MS, remainingHomeDeadline(startedAt)),
+    );
+    if (local != null) {
+      return { songs: local, source: 'local' as const, outcome: local.length > 0 ? 'rows' as const : 'empty' as const };
+    }
+    const remainingMs = remainingHomeDeadline(startedAt);
+    if (remainingMs <= 0) {
+      return { songs: [] as SubsonicSong[], source: 'network' as const, outcome: 'timeout' as const };
+    }
+    const songs = await deps.getRandomSongsForServer(serverId, size, undefined, remainingMs);
+    return { songs, source: 'network' as const, outcome: songs.length > 0 ? 'rows' as const : 'empty' as const };
+  })();
+  const result = await withinHomeDeadline(
+    isolated(() => request, {
+      songs: [] as SubsonicSong[], source: 'local' as const, outcome: 'error' as const,
+    }),
+    { songs: [] as SubsonicSong[], source: 'local' as const, outcome: 'timeout' as const },
   );
-  return songs.map(song => ({ ...song, serverId }));
+  return {
+    items: result.songs.map(song => ({ ...song, serverId })),
+    durationMs: elapsedMs(startedAt),
+    outcome: result.outcome,
+    source: result.source,
+  };
 }
 
 function formatServerTimings<T>(
@@ -469,7 +491,7 @@ function formatServerTimings<T>(
   }).join(', ');
 }
 
-export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFeedSnapshot> {
+export async function loadHomeFeedWithStatus(options: LoadHomeFeedOptions): Promise<HomeFeedLoadResult> {
   const deps = { ...defaultDeps, ...options.deps };
   const enabled: HomeFeedEnabledSections = {
     starred: true,
@@ -499,7 +521,6 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
     options.scopeVersion,
     options.syncRevision ?? 0,
   ]);
-  const emptyGroups = () => options.serverIds.map(() => [] as OwnedAlbum[]);
   const loadAlbumGroups = (type: Parameters<typeof getAlbumListForServer>[1], quotas: number[]) => (
     Promise.all(options.serverIds.map((serverId, index) => (
       loadServerAlbums(serverId, type, quotas[index] ?? 0, deps)
@@ -514,9 +535,9 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
           status: 'success', durationMs: elapsedMs(starredStartedAt), itemCount: items.length,
           detail: formatServerTimings(options.serverIds, groups),
         });
-        return { groups: groups.map(group => group.items), items };
+        return { groups, items };
       })
-    : Promise.resolve({ groups: emptyGroups(), items: [] as OwnedAlbum[] });
+    : Promise.resolve({ groups: [] as TimedServerItems<OwnedAlbum>[], items: [] as OwnedAlbum[] });
 
   const mostPlayedStartedAt = nowMs();
   const mostPlayedPromise = enabled.mostPlayed
@@ -526,9 +547,9 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
           status: 'success', durationMs: elapsedMs(mostPlayedStartedAt), itemCount: items.length,
           detail: formatServerTimings(options.serverIds, groups),
         });
-        return { groups: groups.map(group => group.items), items };
+        return { groups, items };
       })
-    : Promise.resolve({ groups: emptyGroups(), items: [] as OwnedAlbum[] });
+    : Promise.resolve({ groups: [] as TimedServerItems<OwnedAlbum>[], items: [] as OwnedAlbum[] });
 
   const randomEnabled = enabled.hero || enabled.discover;
   const randomStartedAt = nowMs();
@@ -559,9 +580,13 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
             formatServerTimings(options.serverIds, groups),
           ].join('; '),
         });
-        return { groups: groups.map(group => group.items), heroAlbums, random };
+        return { groups, heroAlbums, random };
       })
-    : Promise.resolve({ groups: emptyGroups(), heroAlbums: [] as OwnedAlbum[], random: [] as OwnedAlbum[] });
+    : Promise.resolve({
+        groups: [] as TimedServerItems<OwnedAlbum>[],
+        heroAlbums: [] as OwnedAlbum[],
+        random: [] as OwnedAlbum[],
+      });
 
   const artistsStartedAt = nowMs();
   const artistsPromise = enabled.discoverArtists
@@ -576,22 +601,22 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
           status: 'success', durationMs: elapsedMs(artistsStartedAt), itemCount: items.length,
           detail: formatServerTimings(options.serverIds, groups),
         });
-        return items;
+        return { groups, items };
       })
-    : Promise.resolve([] as OwnedArtist[]);
+    : Promise.resolve({ groups: [] as TimedServerItems<OwnedArtist>[], items: [] as OwnedArtist[] });
 
   const songsStartedAt = nowMs();
   const songsPromise = enabled.discoverSongs
     ? Promise.all(options.serverIds.map((serverId, index) => (
         loadServerSongs(serverId, songQuotas[index] ?? 0, scopeFlightKey, deps)
       ))).then(groups => {
-        const items = dedupeOwned(stableRoundRobin(groups, HOME_DISCOVER_SONGS_SIZE));
+        const items = dedupeOwned(stableRoundRobin(groups.map(group => group.items), HOME_DISCOVER_SONGS_SIZE));
         report('discoverSongs', {
           status: 'success', durationMs: elapsedMs(songsStartedAt), itemCount: items.length,
         });
-        return items;
+        return { groups, items };
       })
-    : Promise.resolve([] as OwnedSong[]);
+    : Promise.resolve({ groups: [] as TimedServerItems<OwnedSong>[], items: [] as OwnedSong[] });
 
   const [starredResult, mostPlayedResult, randomResult, artists, songs] = await Promise.all([
     starredPromise,
@@ -607,11 +632,11 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
       options.serverIds.map((serverId, index) => [serverId, groups[index]?.length ?? 0]),
     ));
   };
-  advanceInitial('starred', starredResult.groups);
-  advanceInitial('random', randomResult.groups);
-  advanceInitial('mostPlayed', mostPlayedResult.groups);
+  advanceInitial('starred', starredResult.groups.map(group => group.items));
+  advanceInitial('random', randomResult.groups.map(group => group.items));
+  advanceInitial('mostPlayed', mostPlayedResult.groups.map(group => group.items));
 
-  return {
+  const snapshot = {
     scopeKey: options.scopeKey,
     scopeVersion: options.scopeVersion,
     savedAt: Date.now(),
@@ -622,9 +647,26 @@ export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFe
     random: randomResult.random,
     mostPlayed: mostPlayedResult.items,
     recentlyPlayed: [],
-    randomArtists: artists,
-    discoverSongs: songs,
+    randomArtists: artists.items,
+    discoverSongs: songs.items,
   };
+  const attemptedGroups = [
+    ...(enabled.starred ? starredResult.groups : []),
+    ...(enabled.mostPlayed ? mostPlayedResult.groups : []),
+    ...(randomEnabled ? randomResult.groups : []),
+    ...(enabled.discoverArtists ? artists.groups : []),
+    ...(enabled.discoverSongs ? songs.groups : []),
+  ];
+  const requestedGroups = attemptedGroups.filter(group => group.outcome !== 'skipped');
+  return {
+    snapshot,
+    emptySnapshotReliable: requestedGroups.length === 0
+      || requestedGroups.every(group => group.outcome === 'rows' || group.outcome === 'empty'),
+  };
+}
+
+export async function loadHomeFeed(options: LoadHomeFeedOptions): Promise<HomeFeedSnapshot> {
+  return (await loadHomeFeedWithStatus(options)).snapshot;
 }
 
 export async function loadMoreHomeAlbums(options: LoadMoreHomeAlbumsOptions): Promise<HomeFeedSnapshot> {

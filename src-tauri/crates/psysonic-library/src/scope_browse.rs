@@ -14,6 +14,7 @@ use crate::dto::{
     LibraryScopeBrowseResponse, LibraryScopePair, LibrarySortClause, LibraryTrackDto,
 };
 use crate::repos::{row_to_track_row, TrackRow};
+use crate::scope_merge::TRACK_CLUSTER_PARTITION_KEY;
 use crate::store::LibraryStore;
 
 const CANDIDATE_PAGE_SIZE: usize = 64;
@@ -457,7 +458,7 @@ fn query_track_scope_candidates(
     };
     let sql = format!(
         "SELECT {columns}, CASE WHEN ck.cluster_key IS NOT NULL \
-         THEN ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT) END \
+         THEN {TRACK_CLUSTER_PARTITION_KEY} END \
          FROM track t \
          LEFT JOIN cluster.track_cluster_key ck ON ck.server_id = t.server_id AND ck.track_id = t.id \
          WHERE t.server_id = ? {library_filter} AND t.deleted = 0 {seek} \
@@ -515,15 +516,14 @@ fn track_identity_priorities(
         .map(|_| "?")
         .collect::<Vec<_>>()
         .join(", ");
-    let identity_sql = "ck.cluster_key || ':' || CAST((ck.duration_sec / 5) AS TEXT)";
     let sql = format!(
-        "{scope_cte} SELECT {identity_sql}, MIN(scope.pr) \
+        "{scope_cte} SELECT {TRACK_CLUSTER_PARTITION_KEY}, MIN(scope.pr) \
          FROM scoped_track scope \
          INNER JOIN track t ON t.rowid = scope.rowid \
          INNER JOIN cluster.track_cluster_key ck \
            ON ck.server_id = t.server_id AND ck.track_id = t.id \
-         WHERE t.deleted = 0 AND {identity_sql} IN ({placeholders}) \
-         GROUP BY {identity_sql}",
+          WHERE t.deleted = 0 AND {TRACK_CLUSTER_PARTITION_KEY} IN ({placeholders}) \
+          GROUP BY {TRACK_CLUSTER_PARTITION_KEY}",
     );
     binds.extend(identities.into_iter().map(SqlValue::Text));
     store
@@ -859,12 +859,38 @@ mod tests {
             query_track_scope_candidates(&store, &scopes[0], 0, None, 10).unwrap(),
             query_track_scope_candidates(&store, &scopes[1], 1, None, 10).unwrap(),
         ];
-        assert_eq!(track_identity_priorities(&store, &scopes, &candidates).unwrap().get("same:20"), Some(&0));
+        assert_eq!(track_identity_priorities(&store, &scopes, &candidates).unwrap().get("same:20:0"), Some(&0));
 
         let first = browse(&store, &track_request(scopes.clone(), 1, None)).unwrap();
         assert_eq!(first.tracks.iter().map(|track| track.id.as_str()).collect::<Vec<_>>(), vec!["high-dup"]);
         let second = browse(&store, &track_request(scopes, 1, first.next_cursor)).unwrap();
         assert!(second.tracks.is_empty());
         assert!(!second.has_more);
+    }
+
+    #[test]
+    fn same_server_occurrence_ranks_survive_across_cursor_pages() {
+        let store = LibraryStore::open_in_memory();
+        insert_track(&store, "s1", "lib-a", "chapter-1", "Tyrion", Some("tyrion"));
+        insert_track(&store, "s1", "lib-b", "chapter-2", "Tyrion", Some("tyrion"));
+        store
+            .with_conn_mut("test.scope_browse.rank", |conn| {
+                conn.execute(
+                    "UPDATE cluster.track_cluster_key SET occurrence_rank = 1 \
+                     WHERE server_id = 's1' AND track_id = 'chapter-2'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let scopes = vec![
+            LibraryScopePair { server_id: "s1".into(), library_id: Some("lib-a".into()) },
+            LibraryScopePair { server_id: "s1".into(), library_id: Some("lib-b".into()) },
+        ];
+
+        let first = browse(&store, &track_request(scopes.clone(), 1, None)).unwrap();
+        assert_eq!(first.tracks.iter().map(|track| track.id.as_str()).collect::<Vec<_>>(), vec!["chapter-1"]);
+        let second = browse(&store, &track_request(scopes, 1, first.next_cursor)).unwrap();
+        assert_eq!(second.tracks.iter().map(|track| track.id.as_str()).collect::<Vec<_>>(), vec!["chapter-2"]);
     }
 }

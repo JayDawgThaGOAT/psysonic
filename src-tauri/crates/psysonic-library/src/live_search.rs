@@ -829,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_scope_live_search_dedupes_album_and_artist_with_priority() {
+    fn multi_scope_live_search_dedupes_album_and_artist_but_preserves_tracks() {
         use crate::dto::LibraryScopePair;
         use crate::identity::rebuild_cluster_keys;
 
@@ -902,8 +902,9 @@ mod tests {
         assert_eq!(resp.artists[0].id, "ar-a");
         assert_eq!(resp.albums.len(), 1);
         assert_eq!(resp.albums[0].id, "alb-a");
-        assert_eq!(resp.tracks.len(), 1);
+        assert_eq!(resp.tracks.len(), 2);
         assert_eq!(resp.tracks[0].id, "t-a");
+        assert_eq!(resp.tracks[1].id, "t-b");
     }
 
     /// Manual: `cargo test -p psysonic-library bench_disk_live_search --release -- --ignored --nocapture`
