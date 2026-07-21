@@ -8,6 +8,7 @@ export async function loadLocalNewReleases(
   limit: number,
   offset = 0,
   genres: string[] = [],
+  includeGenreCounts = true,
 ): Promise<{ albums: ReturnType<typeof albumToAlbum>[]; hasMore: boolean; genreCounts: GenreAlbumCountRow[] }> {
   if (!anchorServerId || scopes.length === 0) return { albums: [], hasMore: false, genreCounts: [] };
   const response = await libraryScopeListMainstageAlbums(anchorServerId, {
@@ -16,7 +17,7 @@ export async function loadLocalNewReleases(
     limit,
     offset,
     genres,
-    includeGenreCounts: true,
+    includeGenreCounts,
   });
   return {
     albums: response.albums.map(albumToAlbum),

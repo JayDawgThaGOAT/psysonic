@@ -10,6 +10,9 @@ import {
   newReleasesSeenStorageKey as buildNewReleasesSeenStorageKey,
 } from '@/features/sidebar/utils/sidebarHelpers';
 
+// Coalesce burst refreshes (mount + scope/pathname change + StrictMode) into one.
+const NEW_RELEASES_UNREAD_DEBOUNCE_MS = 400;
+
 interface Args {
   anchorServerId: string | null;
   scopes: LibraryScopePair[];
@@ -66,6 +69,12 @@ export function useSidebarNewReleasesUnread({
         anchorServerId,
         scopes,
         NEW_RELEASES_UNREAD_SAMPLE_SIZE,
+        0,
+        [],
+        // Badge only reads album ids; skip the ~3s genre-count aggregation that
+        // otherwise monopolizes the single mainstage read connection on every
+        // poll and starves the Home New/Latest rails.
+        false,
       );
       const newestIds = newest.albums.map(a => a.id).filter(Boolean);
       const seenIds = readSeenNewReleaseIds();
@@ -100,6 +109,25 @@ export function useSidebarNewReleasesUnread({
     writeSeenNewReleaseIds,
   ]);
 
+  // Mount + pathname/scope changes + StrictMode + poll can each fire a refresh
+  // within a few ms. Every fire runs a mainstage read that serializes on the one
+  // mainstage connection, so a burst needlessly delays the Home rails behind it.
+  // Coalesce bursts into a single trailing run, OR-ing the mark-as-seen intent.
+  const refreshDebounceRef = useRef<number | null>(null);
+  const pendingMarkAsSeenRef = useRef(false);
+  const scheduleRefreshNewReleasesUnread = useCallback((markAsSeen = false) => {
+    pendingMarkAsSeenRef.current = pendingMarkAsSeenRef.current || markAsSeen;
+    if (refreshDebounceRef.current != null) {
+      window.clearTimeout(refreshDebounceRef.current);
+    }
+    refreshDebounceRef.current = window.setTimeout(() => {
+      refreshDebounceRef.current = null;
+      const mark = pendingMarkAsSeenRef.current;
+      pendingMarkAsSeenRef.current = false;
+      void refreshNewReleasesUnread(mark);
+    }, NEW_RELEASES_UNREAD_DEBOUNCE_MS);
+  }, [refreshNewReleasesUnread]);
+
   useEffect(() => {
     const onNewReleasesPage = pathname.startsWith('/new-releases');
     if (newReleasesResetTimerRef.current != null) {
@@ -113,17 +141,17 @@ export function useSidebarNewReleasesUnread({
       }
       const elapsed = Date.now() - newReleasesPageEnteredAtRef.current;
       const shouldMarkAsSeen = elapsed >= NEW_RELEASES_RESET_DELAY_MS;
-      void refreshNewReleasesUnread(shouldMarkAsSeen);
+      scheduleRefreshNewReleasesUnread(shouldMarkAsSeen);
       if (!shouldMarkAsSeen) {
         const remaining = NEW_RELEASES_RESET_DELAY_MS - elapsed;
         newReleasesResetTimerRef.current = window.setTimeout(() => {
           newReleasesResetTimerRef.current = null;
-          void refreshNewReleasesUnread(true);
+          scheduleRefreshNewReleasesUnread(true);
         }, remaining);
       }
     } else {
       newReleasesPageEnteredAtRef.current = null;
-      void refreshNewReleasesUnread(false);
+      scheduleRefreshNewReleasesUnread(false);
     }
 
     const timer = window.setInterval(() => {
@@ -133,7 +161,7 @@ export function useSidebarNewReleasesUnread({
         activeOnNewReleases &&
         enteredAt != null &&
         Date.now() - enteredAt >= NEW_RELEASES_RESET_DELAY_MS;
-      void refreshNewReleasesUnread(delayedSeenReached);
+      scheduleRefreshNewReleasesUnread(delayedSeenReached);
     }, NEW_RELEASES_UNREAD_POLL_MS);
     return () => {
       window.clearInterval(timer);
@@ -141,8 +169,12 @@ export function useSidebarNewReleasesUnread({
         window.clearTimeout(newReleasesResetTimerRef.current);
         newReleasesResetTimerRef.current = null;
       }
+      if (refreshDebounceRef.current != null) {
+        window.clearTimeout(refreshDebounceRef.current);
+        refreshDebounceRef.current = null;
+      }
     };
-  }, [pathname, refreshNewReleasesUnread]);
+  }, [pathname, scheduleRefreshNewReleasesUnread]);
 
   return newReleasesUnreadCount;
 }
