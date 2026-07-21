@@ -16,6 +16,7 @@ import { useListReorderDnd } from '@/lib/hooks/useListReorderDnd';
 import { applyListReorderById } from '@/lib/util/listReorder';
 import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
 import { useUnavailableServerIds } from '@/lib/network/serverReachability';
+import { ServerChoiceWarning } from '@/ui/ServerChoiceList';
 
 interface Props {
   status: ConnectionStatus;
@@ -247,6 +248,9 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
               const finalIncluded = included && libraryBrowseServerIds.length === 1;
               const busy = switchingId === srv.id;
               const labelText = serverListDisplayLabel(srv, servers);
+              const warning = unavailableServerIds.has(srv.id)
+                ? t('connection.offlineSubtitle', { server: labelText })
+                : undefined;
               const edge = isDragging ? dropEdge(srv.id) : null;
               return (
                 <div
@@ -259,10 +263,14 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
                     type="button"
                     role="menuitem"
                     className="connection-indicator-server-main"
+                    aria-label={warning ? `${labelText}. ${warning}` : undefined}
                     disabled={busy}
                     onClick={() => onPickServer(srv)}
                   >
-                    <span className="nav-library-dropdown-item-label">{labelText}</span>
+                    <span className="connection-indicator-server-label">
+                      <span className="nav-library-dropdown-item-label">{labelText}</span>
+                      <ServerChoiceWarning warning={warning} />
+                    </span>
                     {switchingId === srv.id ? (
                       <div className="spinner" style={{ width: 14, height: 14, flexShrink: 0 }} aria-hidden />
                     ) : (

@@ -6,7 +6,10 @@ import { resetAuthStore } from '@/test/helpers/storeReset';
 import { useAuthStore } from '@/store/authStore';
 import { DragDropProvider } from '@/lib/dnd/DragDropContext';
 import ConnectionIndicator from './ConnectionIndicator';
-import { setServerReachability } from '@/lib/network/serverReachability';
+import {
+  resetServerReachabilitySnapshot,
+  setServerReachability,
+} from '@/lib/network/serverReachability';
 
 const switchActiveServerMock = vi.fn();
 
@@ -46,6 +49,7 @@ function renderIndicator() {
 
 beforeEach(() => {
   resetAuthStore();
+  resetServerReachabilitySnapshot();
   switchActiveServerMock.mockReset();
   switchActiveServerMock.mockResolvedValue(true);
 });
@@ -103,5 +107,20 @@ describe('ConnectionIndicator Library server selection', () => {
 
     expect(screen.getByText('3 servers').tagName).toBe('SPAN');
     expect(screen.queryByText('3→2 servers')).not.toBeInTheDocument();
+  });
+
+  it('marks an unavailable server in the switch menu with an explanatory warning', async () => {
+    const user = userEvent.setup();
+    const { b } = setupServers();
+    setServerReachability(b, 'unavailable');
+    renderIndicator();
+
+    await user.click(screen.getByText('Home'));
+
+    const remote = screen.getByRole('menuitem', { name: /Remote.*Cannot reach Remote/ });
+    expect(remote.querySelector('.server-choice-warning')).toHaveAttribute(
+      'data-tooltip',
+      'Cannot reach Remote. Check your network or server.',
+    );
   });
 });

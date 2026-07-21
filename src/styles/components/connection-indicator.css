@@ -39,6 +39,13 @@
   background: var(--menu-item-hover);
 }
 
+.connection-indicator-server-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .connection-indicator-server-row .sidebar-customizer-grip {
   flex-shrink: 0;
   cursor: grab;
