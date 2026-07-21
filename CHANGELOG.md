@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Playlist creation, smart-playlist editing, radio actions and other destination-sensitive flows select the target server explicitly instead of silently using the active server.
 * Context menus, ratings, favourites, sharing, offline pins, device sync and Orbit carry the item's owner through the complete action. Creating an Orbit session from a multi-server scope now asks which server should host it, temporarily keeps only that server in the library scope and shared queue, then restores the previous scope when the session ends.
-* Sharing a mixed-server queue asks which server's tracks to include in the link; single-server queues still copy immediately without an extra prompt.
+* Sharing a mixed-server queue opens a compact server picker directly below the share button; choosing a server copies its tracks immediately, while single-server queues still copy without an extra prompt. Unavailable servers are marked with an explanatory warning.
 
 ## Changed
 

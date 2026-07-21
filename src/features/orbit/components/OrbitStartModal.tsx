@@ -16,6 +16,7 @@ import { isLanUrl, serverShareBaseUrl } from '@/lib/server/serverEndpoint';
 import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 import { ORBIT_DEFAULT_MAX_USERS } from '@/features/orbit/api/orbit';
 import ServerChoiceList from '@/ui/ServerChoiceList';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 
 interface Props { onClose: () => void; }
 
@@ -40,6 +41,7 @@ export default function OrbitStartModal({ onClose }: Props) {
 
   const servers = useAuthStore(state => state.servers);
   const libraryBrowseServerIds = useAuthStore(state => state.libraryBrowseServerIds);
+  const unavailableServerIds = useUnavailableServerIds();
   const [serverId, setServerId] = useState(() => {
     const auth = useAuthStore.getState();
     return auth.libraryBrowseServerIds.includes(auth.activeServerId ?? '')
@@ -48,7 +50,16 @@ export default function OrbitStartModal({ onClose }: Props) {
   });
   const serverOptions = servers
     .filter(server => libraryBrowseServerIds.includes(server.id))
-    .map(server => ({ id: server.id, label: serverListDisplayLabel(server, servers) }));
+    .map(server => {
+      const label = serverListDisplayLabel(server, servers);
+      return {
+        id: server.id,
+        label,
+        warning: unavailableServerIds.has(server.id)
+          ? t('connection.offlineSubtitle', { server: label })
+          : undefined,
+      };
+    });
   const server = servers.find(candidate => candidate.id === serverId);
   // Orbit links go to remote guests — use the share URL (public by default
   // when both are set; LAN only if shareUsesLocalUrl is on). The LAN warning

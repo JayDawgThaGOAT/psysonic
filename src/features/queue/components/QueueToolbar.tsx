@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Blend, Check, FolderOpen, Infinity as InfinityIcon, ListMusic, MoveRight, Save, Share2, Shuffle, Trash2, Waves,
+  Blend, Check, FolderOpen, Infinity as InfinityIcon, ListMusic, MoveRight, Save, Shuffle, Trash2, Waves,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import type { QueueItemRef } from '@/lib/media/trackTypes';
@@ -10,6 +10,8 @@ import type {
 } from '@/store/queueToolbarStore';
 import { getTransitionMode, setTransitionMode } from '@/features/playback/utils/playback/playbackTransition';
 import { useOrbitStore } from '@/features/orbit';
+import { QueueShareButton } from '@/features/queue/components/QueueShareButton';
+import type { ServerChoiceOption } from '@/ui/ServerChoiceList';
 
 interface Props {
   queue: QueueItemRef[];
@@ -20,6 +22,11 @@ interface Props {
   handleSave: () => void;
   handleLoad: () => void;
   handleCopyQueueShare: () => void;
+  sharePickerOpen: boolean;
+  queueServerOptions: ServerChoiceOption[];
+  defaultQueueServerId: string;
+  shareForServer: (serverId: string) => Promise<void>;
+  closeSharePicker: () => void;
   handleClear: () => void;
   publicShareQueueActive: boolean;
   gaplessEnabled: boolean;
@@ -34,7 +41,9 @@ interface Props {
 
 export function QueueToolbar({
   queue, activePlaylist, saveState, toolbarButtons, shuffleQueue,
-  handleSave, handleLoad, handleCopyQueueShare, handleClear,
+  handleSave, handleLoad, handleCopyQueueShare,
+  sharePickerOpen, queueServerOptions, defaultQueueServerId, shareForServer, closeSharePicker,
+  handleClear,
   publicShareQueueActive,
   gaplessEnabled, crossfadeEnabled, crossfadeTrimSilence,
   crossfadeSecs, setCrossfadeSecs,
@@ -126,15 +135,20 @@ export function QueueToolbar({
             );
           case 'share':
             return (
-              <button
+              <QueueShareButton
                 key={btn.id}
-                className="queue-round-btn"
-                onClick={() => void handleCopyQueueShare()}
-                data-tooltip={publicShareQueueActive ? t('queue.shareNavidromePublic') : t('queue.shareQueue')}
-                aria-label={publicShareQueueActive ? t('queue.shareNavidromePublic') : t('queue.shareQueue')}
-              >
-                <Share2 size={13} />
-              </button>
+                label={publicShareQueueActive ? t('queue.shareNavidromePublic') : t('queue.shareQueue')}
+                open={sharePickerOpen}
+                options={queueServerOptions}
+                initialServerId={defaultQueueServerId}
+                onTrigger={() => {
+                  setShowCrossfadePopover(false);
+                  setShowPlaylistMenu(false);
+                  handleCopyQueueShare();
+                }}
+                onClose={closeSharePicker}
+                onShare={shareForServer}
+              />
             );
           case 'clear':
             return (

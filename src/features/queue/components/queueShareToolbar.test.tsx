@@ -8,6 +8,10 @@ import { resetAllStores } from '@/test/helpers/storeReset';
 import { makeTrack, seedQueue } from '@/test/helpers/factories';
 import { onInvoke, registerDefaultCoverInvokeHandlers } from '@/test/mocks/tauri';
 import { decodeSharePayloadFromText } from '@/lib/share/shareLink';
+import {
+  resetServerReachabilitySnapshot,
+  setServerReachability,
+} from '@/lib/network/serverReachability';
 
 const copyTextToClipboardMock = vi.fn(async (_text: string) => true);
 
@@ -48,6 +52,7 @@ function seedPublicShareQueue(pageUrl: string) {
 describe('QueuePanel share toolbar', () => {
   beforeEach(() => {
     resetAllStores();
+    resetServerReachabilitySnapshot();
     copyTextToClipboardMock.mockClear();
     const id = useAuthStore.getState().addServer({
       name: 'T', url: 'https://x.test', username: 'u', password: 'p',
@@ -100,7 +105,7 @@ describe('QueuePanel share toolbar', () => {
     });
   });
 
-  it('prompts for a server when the queue is mixed and shares only that server\'s tracks', async () => {
+  it('opens a compact server menu for a mixed queue and copies as soon as a server is clicked', async () => {
     const activeServerId = useAuthStore.getState().activeServerId!;
     const secondServerId = useAuthStore.getState().addServer({
       name: 'Second', url: 'https://second.test', username: 'u2', password: 'p2',
@@ -112,17 +117,37 @@ describe('QueuePanel share toolbar', () => {
     const { getByLabelText, getByRole, queryByRole } = renderWithProviders(<QueuePanel />);
     fireEvent.click(getByLabelText('Copy queue share link'));
 
-    const dialog = getByRole('dialog');
+    const menu = getByRole('menu', { name: 'Copy queue share link' });
     expect(copyTextToClipboardMock).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('radio', { name: 'Second' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy queue share link' }));
+    expect(queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Second' }));
 
     await waitFor(() => expect(copyTextToClipboardMock).toHaveBeenCalledOnce());
-    expect(queryByRole('dialog')).not.toBeInTheDocument();
+    expect(queryByRole('menu', { name: 'Copy queue share link' })).not.toBeInTheDocument();
     expect(decodeSharePayloadFromText(copyTextToClipboardMock.mock.calls[0]![0])).toEqual({
       srv: 'https://second.test',
       k: 'queue',
       ids: ['second-track'],
     });
+  });
+
+  it('marks an unavailable server with an explanatory warning tooltip', () => {
+    const activeServerId = useAuthStore.getState().activeServerId!;
+    const secondServerId = useAuthStore.getState().addServer({
+      name: 'Second', url: 'https://second.test', username: 'u2', password: 'p2',
+    });
+    const activeTrack = makeTrack({ id: 'active-track', serverId: activeServerId });
+    const secondTrack = makeTrack({ id: 'second-track', serverId: secondServerId });
+    seedQueue([activeTrack, secondTrack], { currentTrack: activeTrack, serverId: activeServerId });
+    setServerReachability(secondServerId, 'unavailable');
+
+    const { getByLabelText, getByRole } = renderWithProviders(<QueuePanel />);
+    fireEvent.click(getByLabelText('Copy queue share link'));
+
+    const item = getByRole('menuitem', { name: /Second.*Cannot reach Second/ });
+    expect(item.querySelector('.server-choice-warning')).toHaveAttribute(
+      'data-tooltip',
+      'Cannot reach Second. Check your network or server.',
+    );
   });
 });

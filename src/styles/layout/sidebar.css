@@ -288,6 +288,33 @@
   text-overflow: ellipsis;
 }
 
+.server-choice-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.server-choice-label__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.server-choice-warning {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--warning, #f59e0b);
+}
+
+.server-choice-check {
+  pointer-events: none;
+}
+
+.server-choice-check:hover {
+  background: transparent;
+}
+
 .nav-section-label {
   font-size: 10px;
   font-weight: 600;

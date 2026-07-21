@@ -19,7 +19,6 @@ import { NowPlayingInfo } from '@/features/nowPlaying';
 import { useLuckyMixStore } from '@/features/randomMix';
 import { useQueueToolbarStore } from '@/store/queueToolbarStore';
 import { SavePlaylistModal } from '@/features/queue/components/SavePlaylistModal';
-import { ShareQueueModal } from '@/features/queue/components/ShareQueueModal';
 import { LoadPlaylistModal } from '@/features/queue/components/LoadPlaylistModal';
 import { QueueHeader } from '@/features/queue/components/QueueHeader';
 import { QueueCurrentTrack } from '@/features/queue/components/QueueCurrentTrack';
@@ -183,10 +182,10 @@ function QueuePanelHostOrSolo() {
   const {
     serverOptions: queueServerOptions,
     defaultServerId: defaultQueueServerId,
-    shareModalOpen,
+    sharePickerOpen,
     handleCopy: handleCopyQueueShare,
     shareForServer,
-    closeShareModal,
+    closeSharePicker,
   } = useQueueShare({
     queueItems,
     servers,
@@ -249,7 +248,7 @@ function QueuePanelHostOrSolo() {
     clearQueue();
     setActivePlaylist(null);
     setSaveModalOpen(false);
-    closeShareModal();
+    closeSharePicker();
   };
 
   // Queue mode shows upcoming tracks only — the current track lives in the
@@ -369,6 +368,11 @@ function QueuePanelHostOrSolo() {
             handleSave={handleSave}
             handleLoad={handleLoad}
             handleCopyQueueShare={handleCopyQueueShare}
+            sharePickerOpen={sharePickerOpen}
+            queueServerOptions={queueServerOptions}
+            defaultQueueServerId={defaultQueueServerId}
+            shareForServer={shareForServer}
+            closeSharePicker={closeSharePicker}
             handleClear={handleClear}
             publicShareQueueActive={publicShareQueueActive}
             gaplessEnabled={gaplessEnabled}
@@ -451,15 +455,6 @@ function QueuePanelHostOrSolo() {
               console.error('Failed to save playlist', e);
             }
           }}
-        />
-      )}
-
-      {shareModalOpen && (
-        <ShareQueueModal
-          onClose={closeShareModal}
-          serverOptions={queueServerOptions}
-          initialServerId={defaultQueueServerId}
-          onShare={shareForServer}
         />
       )}
 

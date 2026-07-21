@@ -5,10 +5,15 @@ import { renderWithProviders } from '@/test/helpers/renderWithProviders';
 import { resetAuthStore } from '@/test/helpers/storeReset';
 import { makeServer } from '@/test/helpers/factories';
 import { useAuthStore } from '@/store/authStore';
+import {
+  resetServerReachabilitySnapshot,
+  setServerReachability,
+} from '@/lib/network/serverReachability';
 
 const mocks = vi.hoisted(() => ({
   startOrbitSession: vi.fn(),
 }));
+let secondServerId = '';
 
 vi.mock('@/features/orbit/utils/orbit', () => ({
   buildOrbitShareLink: (serverBase: string, sid: string) => `psysonic2-orbit:${serverBase}:${sid}`,
@@ -23,9 +28,11 @@ import OrbitStartModal from '@/features/orbit/components/OrbitStartModal';
 
 beforeEach(() => {
   resetAuthStore();
+  resetServerReachabilitySnapshot();
   mocks.startOrbitSession.mockReset().mockResolvedValue({});
   const first = makeServer({ id: 'srv-a', name: 'Server A', url: 'https://a.example' });
   const second = makeServer({ id: 'srv-b', name: 'Server B', url: 'https://b.example' });
+  secondServerId = second.id;
   useAuthStore.setState({
     servers: [first, second],
     activeServerId: first.id,
@@ -47,5 +54,18 @@ describe('OrbitStartModal', () => {
       serverId: 'srv-b',
       clearQueue: false,
     }));
+  });
+
+  it('shows unavailable servers with a warning and no empty checkbox squares', () => {
+    setServerReachability(secondServerId, 'unavailable');
+
+    const { container } = renderWithProviders(<OrbitStartModal onClose={vi.fn()} />);
+
+    const unavailable = screen.getByRole('radio', { name: /Server B.*Cannot reach Server B/ });
+    expect(unavailable.querySelector('.server-choice-warning')).toHaveAttribute(
+      'data-tooltip',
+      'Cannot reach Server B. Check your network or server.',
+    );
+    expect(container.querySelector('.nav-library-dropdown-item-toggle-box')).toBeNull();
   });
 });

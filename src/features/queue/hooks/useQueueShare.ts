@@ -8,6 +8,8 @@ import { serverShareBaseUrl } from '@/lib/server/serverEndpoint';
 import { copyTextToClipboard } from '@/lib/server/serverMagicString';
 import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 import { showToast } from '@/lib/dom/toast';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
+import type { ServerChoiceOption } from '@/ui/ServerChoiceList';
 
 interface Options {
   queueItems: QueueItemRef[];
@@ -25,10 +27,20 @@ export function useQueueShare({
   navidromePublicSharePageUrl,
 }: Options) {
   const { t } = useTranslation();
-  const [shareModalOpen, setShareModalOpen] = useState(false);
-  const serverOptions = useMemo(() => servers
+  const unavailableServerIds = useUnavailableServerIds();
+  const [sharePickerOpen, setSharePickerOpen] = useState(false);
+  const serverOptions = useMemo<ServerChoiceOption[]>(() => servers
     .filter(server => queueTrackIdsForServerProfile(queueItems, server.id).length > 0)
-    .map(server => ({ id: server.id, label: serverListDisplayLabel(server, servers) })), [queueItems, servers]);
+    .map(server => {
+      const label = serverListDisplayLabel(server, servers);
+      return {
+        id: server.id,
+        label,
+        warning: unavailableServerIds.has(server.id)
+          ? t('connection.offlineSubtitle', { server: label })
+          : undefined,
+      };
+    }), [queueItems, servers, t, unavailableServerIds]);
   const defaultServerId = activeServerId && serverOptions.some(server => server.id === activeServerId)
     ? activeServerId
     : serverOptions[0]?.id ?? '';
@@ -67,7 +79,7 @@ export function useQueueShare({
       return;
     }
     if (serverOptions.length > 1) {
-      setShareModalOpen(true);
+      setSharePickerOpen(open => !open);
       return;
     }
     await copyForServer(serverOptions[0]!.id);
@@ -77,16 +89,16 @@ export function useQueueShare({
     try {
       if (serverOptions.some(server => server.id === serverId)) await copyForServer(serverId);
     } finally {
-      setShareModalOpen(false);
+      setSharePickerOpen(false);
     }
   };
 
   return {
     serverOptions,
     defaultServerId,
-    shareModalOpen,
+    sharePickerOpen,
     handleCopy,
     shareForServer,
-    closeShareModal: () => setShareModalOpen(false),
+    closeSharePicker: () => setSharePickerOpen(false),
   };
 }
