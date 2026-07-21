@@ -15,6 +15,12 @@ import { shuffleArray } from '@/lib/util/shuffleArray';
 import type { HomeFeedOffsets, HomeFeedSnapshot } from '@/features/home/store/homeFeedCache';
 
 export const HOME_REQUEST_TIMEOUT_MS = 4000;
+// The New/Latest rails are non-blocking: the main feed renders without them and
+// they patch in on arrival. A busy backend (cluster rebuild holding the mainstage
+// read connection) can make these local reads resolve correct data ~15s late; a
+// tight 4s deadline discarded that correct result and left the rails permanently
+// empty. Give them a generous safety cap instead of the shared request timeout.
+export const HOME_CHRONOLOGICAL_TIMEOUT_MS = 30000;
 export const HOME_LOCAL_READ_TIMEOUT_MS = 1000;
 export const HOME_PAGE_SIZE = 12;
 export const HOME_HERO_COUNT = 8;
@@ -312,7 +318,7 @@ export async function loadHomeChronologicalFeed(
         timer = setTimeout(() => resolve({
           status: 'timeout',
           durationMs: elapsedMs(startedAt),
-        }), HOME_REQUEST_TIMEOUT_MS);
+        }), HOME_CHRONOLOGICAL_TIMEOUT_MS);
       }),
     ]);
   } finally {

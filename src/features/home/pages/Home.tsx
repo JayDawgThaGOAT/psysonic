@@ -61,6 +61,7 @@ import {
 } from '@/features/home/store/mainstageDiagnosticStore';
 import type { HomeSectionId } from '@/features/home/store/homeStore';
 import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
+import { useLibraryIndexStore } from '@/store/libraryIndexStore';
 import {
   homeSnapshotForEnabledCoverWarm,
   preserveDisabledHomeSections,
@@ -154,6 +155,11 @@ export default function Home() {
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const offlineBrowseReloadTs = useOfflineBrowseReloadToken();
   const librarySyncRevision = useLibraryScopeSyncRevision(serverIds);
+  // Re-run the home feed once the local index becomes ready: the chronological
+  // (recent / recentlyPlayed) loaders gate on `readyLibraryServerKeys`, whose only
+  // reactive input is masterEnabled. Without this dep the feed loads once at mount
+  // while masterEnabled is still false and never retriggers -> empty New/Latest rails.
+  const libraryMasterEnabled = useLibraryIndexStore(s => s.masterEnabled);
   const isVisible = (id: string) => homeSections.find(s => s.id === id)?.visible ?? true;
   const sectionEnabled = (id: HomeSectionId) => (
     isVisible(id) && (!mainstageDiagnosticsEnabled || diagnosticEnabled[id])
@@ -413,8 +419,11 @@ export default function Home() {
           writeHomeFeedCache(snap);
         }
         applyFeedSnapshot(snap);
-        await patchChronologicalFeeds(freshLoad.chronological);
         if (!cancelled) setLoading(false);
+        // New/Latest rails patch in whenever their (independent) query resolves.
+        // Do not gate the Hero/loading state on them, and do not discard a correct
+        // result just because a busy backend made it late (see chronological timeout).
+        void patchChronologicalFeeds(freshLoad.chronological);
         const effectiveEnabled = getEffectiveEnabledSections();
         void warmHomeMainstageCovers(homeSnapshotForEnabledCoverWarm(snap, effectiveEnabled));
         const becauseSnap = readBecauseYouLikeCache(scopeKey, scopeVersion);
@@ -442,6 +451,7 @@ export default function Home() {
     offlineBrowseActive,
     offlineBrowseReloadTs,
     librarySyncRevision,
+    libraryMasterEnabled,
     migrationReady,
     connStatus,
   ]);
