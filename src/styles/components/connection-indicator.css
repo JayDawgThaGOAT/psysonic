@@ -188,7 +188,6 @@
   display: inline-flex;
   min-width: 0;
   align-items: center;
-  gap: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -197,10 +196,6 @@
 .connection-server-count--unavailable {
   opacity: 0.65;
   text-decoration-thickness: 1px;
-}
-
-.connection-server-count-arrow {
-  opacity: 0.75;
 }
 
 /* Server card actions collapse to icon-only on narrow viewports — labels

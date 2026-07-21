@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Check, ChevronDown, RefreshCw } from 'lucide-react';
 import type { ConnectionStatus } from '@/lib/hooks/useConnectionStatus';
@@ -147,13 +147,16 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
   const label = multiLibraryScope ? t('connection.multiServer') : (isLan ? 'LAN' : t('connection.extern'));
   const displayedServerName = multiLibraryScope ? (
     unavailableSelection ? (
-      <>
-        <del className="connection-server-count--unavailable">
-          {t('sidebar.serverSelectionCount', { count: libraryBrowseServerIds.length })}
-        </del>
-        <span className="connection-server-count-arrow" aria-hidden>→</span>
-        <span>{t('sidebar.serverSelectionCount', { count: effectiveLibraryServerIds.length })}</span>
-      </>
+      <Trans
+        i18nKey="sidebar.serverAvailabilityCount"
+        values={{
+          total: libraryBrowseServerIds.length,
+          available: effectiveLibraryServerIds.length,
+        }}
+        components={{
+          unavailable: <del className="connection-server-count--unavailable" />,
+        }}
+      />
     ) : t('sidebar.serverSelectionCount', { count: libraryBrowseServerIds.length })
   ) : serverName;
   const tooltip = pullInFlight

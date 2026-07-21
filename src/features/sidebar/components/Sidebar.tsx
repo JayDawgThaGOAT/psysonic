@@ -145,16 +145,6 @@ export default function Sidebar({
     if (legacy === undefined || legacy === 'all') return EMPTY_LIBRARY_IDS;
     return [legacy];
   }, [serverId, musicLibrarySelectionByServer, musicLibraryFilterByServer]);
-  const selectionSummary = useMemo(() => {
-    if (libraryGroups.length > 1) return t('sidebar.serverSelectionCount', { count: libraryGroups.length });
-    const group = libraryGroups[0];
-    if (!group || group.selectedLibraryIds.length === 0) return null;
-    if (group.selectedLibraryIds.length === 1) {
-      return group.folders.find(folder => folder.id === group.selectedLibraryIds[0])?.name ?? null;
-    }
-    return t('sidebar.librarySelectionCount', { count: group.selectedLibraryIds.length });
-  }, [libraryGroups, t]);
-
   const libraryItemsForReorder = useMemo(
     () => getLibraryItemsForReorder(sidebarItems, randomNavMode),
     [sidebarItems, randomNavMode],
@@ -314,7 +304,6 @@ export default function Sidebar({
           isCollapsed={isCollapsed}
           showLibraryPicker={showLibraryPicker}
           libraryGroups={libraryGroups}
-          selectionSummary={selectionSummary}
           libraryDropdownOpen={libraryDropdownOpen}
           setLibraryDropdownOpen={setLibraryDropdownOpen}
           dropdownRect={dropdownRect}

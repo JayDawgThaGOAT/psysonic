@@ -37,6 +37,7 @@ export const sidebar = {
   libraryDeselect: 'Исключить {{name}}',
   librarySelectionCount: '{{count}} библиотек',
   serverSelectionCount: '{{count}} серверов',
+  serverAvailabilityCount: '<unavailable>{{total}}</unavailable>→{{available}} серверов',
   expandPlaylists: 'Развернуть плейлисты',
   collapsePlaylists: 'Свернуть плейлисты',
   more: 'Ещё',

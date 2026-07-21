@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Psysonic tracks readiness, sync progress and reachability independently for every configured server. Available servers remain browsable while another selected server is offline, still indexing or recovering from an interrupted sync.
 * Full and delta sync preserve source ownership through remaps, deletions and tombstones; no-op syncs avoid unnecessary catalogue refreshes, and stale multi-server state is repaired automatically.
+* Scope indicators retain the total server count when one is unavailable, while the Library picker reports selected music libraries instead of server profiles.
 
 ## Fixed
 

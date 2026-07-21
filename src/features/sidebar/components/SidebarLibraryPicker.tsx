@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Check, ChevronDown, Music2 } from 'lucide-react';
@@ -13,7 +13,6 @@ export interface SidebarLibraryGroup {
 
 interface Props {
   groups: SidebarLibraryGroup[];
-  selectionSummary: string | null;
   libraryDropdownOpen: boolean;
   setLibraryDropdownOpen: (open: boolean) => void;
   dropdownRect: { top: number; left: number; width: number };
@@ -23,7 +22,6 @@ interface Props {
 
 export default function SidebarLibraryPicker({
   groups,
-  selectionSummary,
   libraryDropdownOpen,
   setLibraryDropdownOpen,
   dropdownRect,
@@ -35,6 +33,21 @@ export default function SidebarLibraryPicker({
   const [panelWidth, setPanelWidth] = useState<number | null>(null);
   const folderCount = groups.reduce((count, group) => count + group.folders.length, 0);
   const hasExplicitSelection = groups.some(group => group.selectedLibraryIds.length > 0);
+  const selectionSummary = useMemo(() => {
+    if (groups.length === 0) return null;
+    if (!hasExplicitSelection) return t('sidebar.allLibraries');
+    if (groups.length === 1) {
+      const group = groups[0];
+      if (group.selectedLibraryIds.length === 1) {
+        return group.folders.find(folder => folder.id === group.selectedLibraryIds[0])?.name ?? null;
+      }
+    }
+    const selectedLibraryCount = groups.reduce(
+      (count, group) => count + (group.selectedLibraryIds.length || group.folders.length),
+      0,
+    );
+    return t('sidebar.librarySelectionCount', { count: selectedLibraryCount });
+  }, [groups, hasExplicitSelection, t]);
 
   useLayoutEffect(() => {
     if (!libraryDropdownOpen) {

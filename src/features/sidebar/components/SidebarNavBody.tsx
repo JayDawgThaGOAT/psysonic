@@ -22,7 +22,6 @@ interface Props {
   isCollapsed: boolean;
   showLibraryPicker: boolean;
   libraryGroups: SidebarLibraryGroup[];
-  selectionSummary: string | null;
   libraryDropdownOpen: boolean;
   setLibraryDropdownOpen: (open: boolean) => void;
   dropdownRect: { top: number; left: number; width: number };
@@ -57,7 +56,7 @@ interface Props {
 
 export default function SidebarNavBody(props: Props) {
   const {
-    isCollapsed, showLibraryPicker, libraryGroups, selectionSummary,
+    isCollapsed, showLibraryPicker, libraryGroups,
     libraryDropdownOpen, setLibraryDropdownOpen, dropdownRect, libraryTriggerRef,
     onLibrarySelectionChange,
     visibleLibraryConfigs,
@@ -94,7 +93,6 @@ export default function SidebarNavBody(props: Props) {
         {!isCollapsed && (showLibraryPicker ? (
           <SidebarLibraryPicker
             groups={libraryGroups}
-            selectionSummary={selectionSummary}
             libraryDropdownOpen={libraryDropdownOpen}
             setLibraryDropdownOpen={setLibraryDropdownOpen}
             dropdownRect={dropdownRect}

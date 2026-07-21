@@ -17,7 +17,6 @@ const baseProps = () => ({
     ],
     selectedLibraryIds: [] as string[],
   }],
-  selectionSummary: null as string | null,
   libraryDropdownOpen: false,
   setLibraryDropdownOpen: vi.fn(),
   dropdownRect: { top: 0, left: 0, width: 240 },

@@ -87,18 +87,21 @@ describe('ConnectionIndicator Library server selection', () => {
 
   it('crosses out the selected count while an unavailable server is outside the effective scope', () => {
     const { a, b } = setupServers();
-    useAuthStore.setState({ libraryBrowseServerIds: [a, b] });
+    const c = useAuthStore.getState().addServer({
+      name: 'Backup', url: 'https://backup.test', username: 'u', password: 'p',
+    });
+    useAuthStore.setState({ libraryBrowseServerIds: [a, b, c] });
     setServerReachability(b, 'unavailable');
 
     renderIndicator();
 
-    expect(screen.getByText('2 servers').tagName).toBe('DEL');
-    expect(screen.getByText('1 servers')).toBeInTheDocument();
-    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b]);
+    expect(screen.getByText('3').tagName).toBe('DEL');
+    expect(screen.getByText('3').closest('.connection-server-count')).toHaveTextContent('3→2 servers');
+    expect(useAuthStore.getState().libraryBrowseServerIds).toEqual([a, b, c]);
 
     act(() => setServerReachability(b, 'available'));
 
-    expect(screen.getByText('2 servers').tagName).toBe('SPAN');
-    expect(screen.queryByText('1 servers')).not.toBeInTheDocument();
+    expect(screen.getByText('3 servers').tagName).toBe('SPAN');
+    expect(screen.queryByText('3→2 servers')).not.toBeInTheDocument();
   });
 });

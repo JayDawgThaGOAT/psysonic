@@ -28,7 +28,6 @@ function renderPicker(
       folders,
       selectedLibraryIds: [] as string[],
     }],
-    selectionSummary: null as string | null,
     libraryDropdownOpen: true,
     setLibraryDropdownOpen,
     dropdownRect: { top: 0, left: 0, width: 240 },
@@ -46,7 +45,6 @@ describe('SidebarLibraryPicker', () => {
   it('shows the folder name when exactly one library is selected', () => {
     renderPicker({
       groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-b'] }],
-      selectionSummary: 'Jazz',
       libraryDropdownOpen: false,
     });
 
@@ -56,11 +54,41 @@ describe('SidebarLibraryPicker', () => {
   it('shows the multi-library count summary', () => {
     renderPicker({
       groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-a', 'lib-c'] }],
-      selectionSummary: '2 libraries',
       libraryDropdownOpen: false,
     });
 
     expect(screen.getByText('2 libraries')).toBeInTheDocument();
+  });
+
+  it('shows All libraries when every server uses its complete library scope', () => {
+    renderPicker({
+      groups: [
+        { serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: [] },
+        { serverId: 'server-b', serverLabel: 'Remote', folders: [{ id: 'lib-d', name: 'Live' }], selectedLibraryIds: [] },
+      ],
+      libraryDropdownOpen: false,
+    });
+
+    expect(screen.getByText('All libraries')).toBeInTheDocument();
+    expect(screen.queryByText('2 servers')).not.toBeInTheDocument();
+  });
+
+  it('counts selected libraries across servers instead of counting servers', () => {
+    renderPicker({
+      groups: [
+        { serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: [] },
+        {
+          serverId: 'server-b',
+          serverLabel: 'Remote',
+          folders: [{ id: 'lib-d', name: 'Live' }, { id: 'lib-e', name: 'Archive' }],
+          selectedLibraryIds: ['lib-d', 'lib-e'],
+        },
+      ],
+      libraryDropdownOpen: false,
+    });
+
+    expect(screen.getByText('5 libraries')).toBeInTheDocument();
+    expect(screen.queryByText('2 servers')).not.toBeInTheDocument();
   });
 
   it('clears the selection when All libraries is chosen', async () => {
