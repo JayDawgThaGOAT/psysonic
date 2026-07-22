@@ -34,33 +34,34 @@ impl<'a> FactRepository<'a> {
         fact_kinds: &[String],
         now: i64,
     ) -> Result<Vec<TrackFactDto>, String> {
-        if self.store.bulk_ingest_active() {
-            return self.get_readonly(server_id, track_id, fact_kinds);
-        }
-        self.store
-            .with_conn_mut("fact.get_gc", |conn| {
-                // Lazy TTL cleanup for this track.
-                conn.execute(
-                    "DELETE FROM track_fact \
+        let (facts, has_expired) = self
+            .store
+            .with_read_conn(|conn| {
+                let facts = Self::query_facts(conn, server_id, track_id, fact_kinds, now)?;
+                let has_expired = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM track_fact \
                      WHERE server_id = ?1 AND track_id = ?2 \
-                       AND expires_at IS NOT NULL AND expires_at < ?3",
+                       AND expires_at IS NOT NULL AND expires_at < ?3)",
                     params![server_id, track_id, now],
+                    |row| row.get::<_, bool>(0),
                 )?;
-
-                Self::query_facts(conn, server_id, track_id, fact_kinds)
+                Ok((facts, has_expired))
             })
-            .map_err(|e| e.to_string())
-    }
-
-    fn get_readonly(
-        &self,
-        server_id: &str,
-        track_id: &str,
-        fact_kinds: &[String],
-    ) -> Result<Vec<TrackFactDto>, String> {
-        self.store
-            .with_read_conn(|conn| Self::query_facts(conn, server_id, track_id, fact_kinds))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if has_expired && !self.store.bulk_ingest_active() {
+            self.store
+                .with_conn_mut("fact.get_gc", |conn| {
+                    conn.execute(
+                        "DELETE FROM track_fact \
+                         WHERE server_id = ?1 AND track_id = ?2 \
+                           AND expires_at IS NOT NULL AND expires_at < ?3",
+                        params![server_id, track_id, now],
+                    )?;
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(facts)
     }
 
     fn query_facts(
@@ -68,16 +69,17 @@ impl<'a> FactRepository<'a> {
         server_id: &str,
         track_id: &str,
         fact_kinds: &[String],
+        now: i64,
     ) -> rusqlite::Result<Vec<TrackFactDto>> {
         if fact_kinds.is_empty() {
             let mut stmt = conn.prepare(SELECT_FACTS)?;
             let rows: rusqlite::Result<Vec<TrackFactDto>> = stmt
-                .query_map(params![server_id, track_id], row_to_fact_dto)?
+                .query_map(params![server_id, track_id, now], row_to_fact_dto)?
                 .collect();
             rows
         } else {
             let placeholders = (0..fact_kinds.len())
-                .map(|i| format!("?{}", i + 3))
+                .map(|i| format!("?{}", i + 4))
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
@@ -87,6 +89,7 @@ impl<'a> FactRepository<'a> {
             let mut bound: Vec<rusqlite::types::Value> = vec![
                 rusqlite::types::Value::Text(server_id.to_string()),
                 rusqlite::types::Value::Text(track_id.to_string()),
+                rusqlite::types::Value::Integer(now),
             ];
             for k in fact_kinds {
                 bound.push(rusqlite::types::Value::Text(k.clone()));
@@ -163,11 +166,13 @@ fn row_to_fact_dto(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackFactDto> {
 
 const SELECT_FACTS_BASE: &str = "SELECT server_id, track_id, fact_kind, value_real, value_int, \
   value_text, unit, source_kind, source_id, confidence, content_hash, fetched_at, expires_at \
-  FROM track_fact WHERE server_id = ?1 AND track_id = ?2";
+  FROM track_fact WHERE server_id = ?1 AND track_id = ?2 \
+    AND (expires_at IS NULL OR expires_at >= ?3)";
 
 const SELECT_FACTS: &str = "SELECT server_id, track_id, fact_kind, value_real, value_int, \
   value_text, unit, source_kind, source_id, confidence, content_hash, fetched_at, expires_at \
   FROM track_fact WHERE server_id = ?1 AND track_id = ?2 \
+    AND (expires_at IS NULL OR expires_at >= ?3) \
   ORDER BY fact_kind ASC, fetched_at DESC";
 
 const UPSERT_FACT: &str = "INSERT INTO track_fact \
@@ -187,6 +192,9 @@ const UPSERT_FACT: &str = "INSERT INTO track_fact \
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
 
     fn fact(kind: &str, source_kind: &str, value_int: Option<i64>, expires_at: Option<i64>) -> FactInputDto {
         FactInputDto {
@@ -246,6 +254,43 @@ mod tests {
             .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track_fact", [], |r| r.get(0)))
             .unwrap();
         assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn get_without_expired_rows_does_not_wait_for_writer_lock() {
+        let store = Arc::new(LibraryStore::open_in_memory());
+        seed_track(&store, "s1", "t1");
+        FactRepository::new(&store)
+            .put("s1", "t1", &fact("bpm", "analysis", Some(120), None), 100)
+            .unwrap();
+        let (writer_started_tx, writer_started_rx) = mpsc::channel();
+        let (release_writer_tx, release_writer_rx) = mpsc::channel();
+        let writer_store = Arc::clone(&store);
+        let writer = thread::spawn(move || {
+            writer_store
+                .with_conn_mut("test.hold_writer", |_conn| {
+                    writer_started_tx.send(()).unwrap();
+                    release_writer_rx.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        });
+        writer_started_rx.recv().unwrap();
+
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader_store = Arc::clone(&store);
+        let reader = thread::spawn(move || {
+            read_tx
+                .send(FactRepository::new(&reader_store).get("s1", "t1", &[], 200))
+                .unwrap();
+        });
+        let result = read_rx.recv_timeout(Duration::from_secs(2));
+        release_writer_tx.send(()).unwrap();
+        writer.join().unwrap();
+        reader.join().unwrap();
+
+        let facts = result.expect("read-only fact lookup blocked on writer").unwrap();
+        assert_eq!(facts.len(), 1);
     }
 
     #[test]

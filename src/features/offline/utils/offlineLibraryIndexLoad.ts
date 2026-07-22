@@ -1,4 +1,8 @@
-import { libraryAdvancedSearch, libraryGetTracksByAlbum } from '@/lib/api/library';
+import {
+  libraryAdvancedSearch,
+  libraryGetTracksByAlbum,
+  libraryScopeArtistDetail,
+} from '@/lib/api/library';
 import { libraryScopeForServer, libraryScopePairsForServer } from '@/lib/api/subsonicClient';
 import type {
   SubsonicAlbum,
@@ -11,10 +15,39 @@ import {
   trackToSong,
 } from '@/lib/library/advancedSearchLocal';
 
-export async function loadAlbumFromLibraryIndex(
+type ArtistIndexLoad = { artist: SubsonicArtist; albums: SubsonicAlbum[] } | null;
+type AlbumIndexLoad = { album: SubsonicAlbum; songs: SubsonicSong[] } | null;
+
+const albumIndexLoads = new Map<string, Promise<AlbumIndexLoad>>();
+const artistIndexLoads = new Map<string, Promise<ArtistIndexLoad>>();
+const artistTrackLoads = new Map<string, Promise<SubsonicSong[] | null>>();
+
+function artistScopes(serverId: string) {
+  const selectedScopes = libraryScopePairsForServer(serverId);
+  const fallbackScope = libraryScopeForServer(serverId);
+  return selectedScopes.length > 0
+    ? selectedScopes
+    : fallbackScope ? [{ serverId, libraryId: fallbackScope }] : [];
+}
+
+export function loadAlbumFromLibraryIndex(
   serverId: string,
   albumId: string,
-): Promise<{ album: SubsonicAlbum; songs: SubsonicSong[] } | null> {
+): Promise<AlbumIndexLoad> {
+  const key = `${serverId}\u0000${albumId}`;
+  const existing = albumIndexLoads.get(key);
+  if (existing) return existing;
+
+  const load = loadAlbumFromLibraryIndexImpl(serverId, albumId)
+    .finally(() => albumIndexLoads.delete(key));
+  albumIndexLoads.set(key, load);
+  return load;
+}
+
+async function loadAlbumFromLibraryIndexImpl(
+  serverId: string,
+  albumId: string,
+): Promise<AlbumIndexLoad> {
   const tracks = await libraryGetTracksByAlbum(serverId, albumId);
   if (tracks.length === 0) return null;
 
@@ -24,6 +57,7 @@ export async function loadAlbumFromLibraryIndex(
     entityTypes: ['album'],
     restrictAlbumIds: [albumId],
     limit: 1,
+    skipTotals: true,
   });
   const albumDto = albumSearch.albums[0];
   if (albumDto) {
@@ -61,13 +95,34 @@ export async function loadAlbumFromLibraryIndex(
 export async function loadArtistFromLibraryIndex(
   serverId: string,
   artistId: string,
-): Promise<{ artist: SubsonicArtist; albums: SubsonicAlbum[] } | null> {
+): Promise<ArtistIndexLoad> {
+  const scopes = artistScopes(serverId);
+
+  if (scopes.length > 0) {
+    const key = `${serverId}\u0000${artistId}\u0000${scopes.map(scope => `${scope.serverId}:${scope.libraryId}`).join(',')}`;
+    const existing = artistIndexLoads.get(key);
+    if (existing) return existing;
+
+    const load = libraryScopeArtistDetail(serverId, {
+      scopes,
+      artistId,
+      serverId,
+      includeTracks: false,
+    })
+      .then(response => response.artist.id ? {
+        artist: artistToArtist(response.artist),
+        albums: response.albums.map(albumToAlbum).map(album => ({ ...album, serverId })),
+      } : null)
+      .finally(() => artistIndexLoads.delete(key));
+    artistIndexLoads.set(key, load);
+    return load;
+  }
+
   const response = await libraryAdvancedSearch({
     serverId,
-    libraryScope: libraryScopeForServer(serverId) ?? undefined,
-    libraryScopes: libraryScopePairsForServer(serverId),
     entityTypes: ['album', 'artist'],
     limit: 10_000,
+    skipTotals: true,
   });
   const albums = response.albums
     .filter(a => a.artistId === artistId)
@@ -92,4 +147,28 @@ export async function loadArtistFromLibraryIndex(
     },
     albums,
   };
+}
+
+/** Scoped artist tracks for Now Playing. Avoids one indexed album read per discography entry. */
+export async function loadArtistTracksFromLibraryIndex(
+  serverId: string,
+  artistId: string,
+): Promise<SubsonicSong[] | null> {
+  const scopes = artistScopes(serverId);
+  if (scopes.length === 0) return null;
+
+  const key = `${serverId}\u0000${artistId}\u0000${scopes.map(scope => `${scope.serverId}:${scope.libraryId}`).join(',')}`;
+  const existing = artistTrackLoads.get(key);
+  if (existing) return existing;
+
+  const load = libraryScopeArtistDetail(serverId, {
+    scopes,
+    artistId,
+    serverId,
+    includeTracks: true,
+  })
+    .then(response => response.artist.id ? response.tracks.map(trackToSong) : null)
+    .finally(() => artistTrackLoads.delete(key));
+  artistTrackLoads.set(key, load);
+  return load;
 }

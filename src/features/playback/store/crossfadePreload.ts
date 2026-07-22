@@ -12,10 +12,20 @@ import {
   markPlannedCrossfade,
   setCrossfadeTransition,
 } from '@/features/playback/store/crossfadeTrimCache';
-import { getBytePreloadingId, setBytePreloadingId } from '@/features/playback/store/gaplessPreloadState';
+import {
+  getBytePreloadingId,
+  setBytePreloadingRequest,
+} from '@/features/playback/store/gaplessPreloadState';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { fetchWaveformBins } from '@/features/playback/store/waveformRefresh';
+import {
+  queueItemIdentityKey,
+  queueTrackIdentityKey,
+  queueTrackIdentityMatches,
+  sameQueueTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 // Crossfade pre-buffer budget: begin downloading the next track this many
 // seconds before it needs to play (the crossfade start), so a large lossless
@@ -39,7 +49,11 @@ export function isCrossfadeNextReady(
   cacheKey: string | null,
 ): boolean {
   if (!trackId) return false;
-  if (usePlayerStore.getState().enginePreloadedTrackId === trackId) return true;
+  if (queueTrackIdentityMatches(
+    usePlayerStore.getState().enginePreloadedTrackId,
+    trackId,
+    cacheKey || profileId,
+  )) return true;
   for (const sid of [profileId, cacheKey]) {
     if (!sid) continue;
     if (
@@ -69,11 +83,15 @@ export function kickEagerCrossfadePreload(
   cacheKey: string | null,
 ): void {
   if (isCrossfadeNextReady(track.id, profileId, cacheKey)) return;
-  if (track.id === getBytePreloadingId()) return;
   const serverId = cacheKey || profileId;
+  const preloadIdentity = queueTrackIdentityKey(track.id, serverId);
+  if (getBytePreloadingId() === preloadIdentity) return;
   const url = resolvePlaybackUrlForTrack(track, serverId ?? undefined);
-  setBytePreloadingId(track.id);
-  void refreshLoudnessForTrack(track.id, { syncPlayingEngine: false });
+  setBytePreloadingRequest(preloadIdentity, url);
+  void refreshLoudnessForTrack(
+    analysisTrackRef(track.id, serverId),
+    { syncPlayingEngine: false },
+  );
   audioPreload({
     url,
     durationHint: track.duration,
@@ -145,19 +163,23 @@ export function maybeCrossfadeBytePreload(currentTime: number, dur: number): voi
     : (repeatMode === 'all' && queueItems.length > 0 ? queueItems[0] : null);
   if (!nextRef) return;
   const nextTrack = resolveQueueTrack(nextRef);
-  if (!nextTrack || nextTrack.id === track.id) return;
+  if (!nextTrack || sameQueueTrack(nextTrack, track)) return;
 
   const serverId = playbackCacheKeyForRef(nextRef);
+  const nextIdentity = queueItemIdentityKey(nextRef);
   const nextUrl = resolvePlaybackUrlForTrack(nextTrack, serverId);
 
   // Byte pre-download — skipped when the hot cache is on (it already keeps the
   // upcoming queue on disk, which is also why hot cache makes the trim reliable:
   // the next track is local → seekable → starts instantly past its lead silence).
-  if (!hotCacheEnabled && nextTrack.id !== getBytePreloadingId()) {
-    setBytePreloadingId(nextTrack.id);
+  if (!hotCacheEnabled && nextIdentity !== getBytePreloadingId()) {
+    setBytePreloadingRequest(nextIdentity, nextUrl);
     // Loudness cache only — never refreshWaveformForTrack(next): it writes the
     // global waveformBins and would replace the current track's seekbar.
-    void refreshLoudnessForTrack(nextTrack.id, { syncPlayingEngine: false });
+    void refreshLoudnessForTrack(
+      analysisTrackRef(nextTrack.id, serverId),
+      { syncPlayingEngine: false },
+    );
     audioPreload({
       url: nextUrl,
       durationHint: nextTrack.duration,
@@ -177,18 +199,19 @@ export function maybeCrossfadeBytePreload(currentTime: number, dur: number): voi
   // so it runs regardless of hot cache (which otherwise skips the byte
   // pre-download). Cold/un-analysed tracks fall back to a fixed overlap + no
   // head trim → today's behaviour.
-  if (crossfadeTrimSilence && !hasPlannedCrossfade(nextTrack.id)) {
-    markPlannedCrossfade(nextTrack.id);
+  if (crossfadeTrimSilence && !hasPlannedCrossfade(nextIdentity)) {
+    markPlannedCrossfade(nextIdentity);
+    const planIdentity = nextIdentity;
     const planTrackId = nextTrack.id;
     const planDuration = nextTrack.duration;
     const curBins = store.waveformBins;
-    void fetchWaveformBins(planTrackId, serverId || null)
+    void fetchWaveformBins(analysisTrackRef(planTrackId, serverId))
       .then(nextBins => {
         // Overlap is derived purely from the audio (fade-out / buildup); the
         // user's crossfadeSecs is intentionally not a factor in this mode.
         const maxOverlapSec = autodjMaxOverlapCapSec(useAuthStore.getState());
         const plan = planCrossfadeTransition(curBins, dur, nextBins, planDuration, { maxOverlapSec });
-        setCrossfadeTransition(planTrackId, plan);
+        setCrossfadeTransition(planIdentity, plan);
       })
       .catch(() => {});
   }

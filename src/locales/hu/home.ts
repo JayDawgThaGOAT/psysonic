@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} szám',
   mainstageEmptyTitle: 'A Főszínpadod üres',
   mainstageEmptyBody: 'Minden szakasz ki van kapcsolva. Kapcsold vissza a szakaszokat, vagy rejtsd el a Főszínpadot az oldalsávból.',
-  mainstageEmptyCta: 'Személyre szabás beállításainak megnyitása'
+  mainstageEmptyCta: 'Személyre szabás beállításainak megnyitása',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: '{{section}} engedélyezése',
+    generationInfo: 'Generálási információk',
+    duration: 'Időtartam',
+    itemCount: 'Elemek',
+    status: 'Állapot',
+    detail: 'Részlet',
+    unavailable: 'N/A',
+    statuses: {
+      idle: 'Tétlen', loading: 'Betöltés', ready: 'Kész', empty: 'Üres',
+      error: 'Hiba', timeout: 'Időtúllépés', disabled: 'Letiltva'
+    }
+  }
 };

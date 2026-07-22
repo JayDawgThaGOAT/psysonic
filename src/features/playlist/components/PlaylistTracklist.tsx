@@ -23,6 +23,8 @@ import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/ContextM
 import { COVER_ARTIST_TOP_TRACK_CSS_PX } from '@/cover/layoutSizes';
 import { useWarmTrackListAlbumCovers } from '@/cover/useWarmTrackListAlbumCovers';
 import { useTrackListCoverArtEnabled } from '@/cover/useTrackListCoverArtSettings';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 
 const PL_CENTERED = new Set(['favorite', 'rating', 'duration', 'playCount', 'bpm']);
 
@@ -51,6 +53,7 @@ interface Props {
    *  scroll-to-list effect so sorting doesn't snap the viewport (issue #840). */
   hasActiveFilter: boolean;
   id: string | undefined;
+  serverId?: string;
 
   // Sort
   sortKey: PlaylistSortKey;
@@ -91,7 +94,7 @@ interface Props {
 export default function PlaylistTracklist({
   allColumns, visibleCols, gridStyle, colVisible, toggleColumn, resetColumns,
   pickerOpen, setPickerOpen, pickerRef, startResize, startFlexColumnResize, tracklistRef,
-  songs, displayedSongs, displayedTracks, isFiltered, hasActiveFilter, id,
+  songs, displayedSongs, displayedTracks, isFiltered, hasActiveFilter, id, serverId,
   sortKey, setSortKey, sortDir, setSortDir, sortClickCount, setSortClickCount,
   selectedIds, setSelectedIds, allSelected, toggleAll, toggleSelect,
   showBulkPlPicker, setShowBulkPlPicker, bulkRemove,
@@ -116,7 +119,7 @@ export default function PlaylistTracklist({
   const { orbitActive, queueHint, addTrackToOrbit } = useOrbitSongRowBehavior();
 
   const latestVals = {
-    selectedIds, orbitActive, displayedTracks, isFiltered, id,
+    selectedIds, orbitActive, displayedTracks, isFiltered, id, songs, serverId,
     toggleSelect, handleRowMouseDown, handleRowMouseEnter, handleToggleStar,
     handleRate, removeSong, playTrack, openContextMenu, setContextMenuSongId,
     navigate, queueHint, addTrackToOrbit,
@@ -133,17 +136,31 @@ export default function PlaylistTracklist({
       else if (L.orbitActive) L.queueHint();
       else L.playTrack(L.displayedTracks[index], L.displayedTracks);
     },
-    dblOrbit: (songId, e) => {
+    dblOrbit: (song, e) => {
       if ((e.target as HTMLElement).closest('button, a, input')) return;
       const L = latest.current;
       if (e.ctrlKey || e.metaKey || L.selectedIds.size > 0) return;
-      L.addTrackToOrbit(songId);
+      L.addTrackToOrbit(song.id, song.serverId);
     },
     context: (song, rIdx, e) => {
       e.preventDefault();
       const L = latest.current;
       L.setContextMenuSongId(song.id);
-      L.openContextMenu(e.clientX, e.clientY, songToTrack(song), 'album-song', undefined, L.id, rIdx);
+      L.openContextMenu(
+        e.clientX,
+        e.clientY,
+        songToTrack(song),
+        'album-song',
+        undefined,
+        L.id,
+        rIdx,
+        undefined,
+        undefined,
+        () => {
+          const sourceIndex = latest.current.songs.findIndex(candidate => candidate.id === song.id);
+          if (sourceIndex >= 0) latest.current.removeSong(sourceIndex);
+        },
+      );
     },
     mouseDownRow: (rIdx, e) => latest.current.handleRowMouseDown(e, rIdx),
     mouseEnterRow: (index, e) => { const L = latest.current; if (!L.isFiltered) L.handleRowMouseEnter(index, e); },
@@ -160,8 +177,10 @@ export default function PlaylistTracklist({
     toggleStar: (song, e) => latest.current.handleToggleStar(song, e),
     rate: (songId, r) => latest.current.handleRate(songId, r),
     remove: (rIdx) => latest.current.removeSong(rIdx),
-    navArtist: (artistId) => latest.current.navigate(`/artist/${artistId}`),
-    navAlbum: (albumId) => latest.current.navigate(`/album/${albumId}`),
+    navAlbum: (albumId) => {
+      const query = appendServerQuery(undefined, latest.current.serverId);
+      latest.current.navigate(`/album/${albumId}${query ? `?${query}` : ''}`);
+    },
   }), []);
 
   const listWrapRef = useRef<HTMLDivElement | null>(null);
@@ -285,6 +304,7 @@ export default function PlaylistTracklist({
             {showBulkPlPicker && (
               <AddToPlaylistSubmenu
                 songIds={[...selectedIds]}
+                serverId={serverId}
                 onDone={() => { setShowBulkPlPicker(false); setSelectedIds(new Set()); }}
                 dropDown
               />
@@ -476,8 +496,8 @@ export default function PlaylistTracklist({
             isContextActive={contextMenuSongId === song.id}
             isSelected={selectedIds.has(song.id)}
             inSelectMode={selectedIds.size > 0}
-            isStarred={song.id in starredOverrides ? !!starredOverrides[song.id] : starredSongs.has(song.id)}
-            ratingValue={ratings[song.id] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
+            isStarred={ownedOverrideValue(starredOverrides, song) ?? starredSongs.has(song.id)}
+            ratingValue={ratings[song.id] ?? ownedOverrideValue(userRatingOverrides, song) ?? song.userRating ?? 0}
             isPreviewing={previewingId === song.id}
             previewStarted={previewingId === song.id && previewAudioStarted}
             orbitActive={orbitActive}

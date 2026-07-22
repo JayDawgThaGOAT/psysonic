@@ -38,4 +38,5 @@ export const albums = {
   noFavorites: 'Aucun album favori ne correspond aux filtres actuels.',
   noCompilations: 'Aucune compilation ne correspond aux filtres actuels.',
   noMatchingFilters: 'Aucun album ne correspond aux filtres actuels.',
+  copyDiagnostics: 'Copier le rapport de temps',
 };

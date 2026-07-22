@@ -12,6 +12,12 @@ import {
   peekPersistedAdvancedSearchLeaveSnapshot,
   saveAdvancedSearchLeaveSnapshot,
 } from '@/lib/navigation/advancedSearchScrollSnapshot';
+import {
+  buildAlbumDetailPath,
+  buildArtistDetailPath,
+  buildComposerDetailPath,
+  type ArtistDetailPathOptions,
+} from '@/lib/navigation/detailServerScope';
 
 export type AlbumDetailLocationState = {
   returnTo?: string;
@@ -173,39 +179,39 @@ export function navigateToAlbumDetail(
   navigate: NavigateFunction,
   location: Pick<Location, 'pathname' | 'search' | 'hash' | 'state'>,
   albumId: string,
-  opts?: { search?: string },
+  opts?: ArtistDetailPathOptions,
 ): void {
   saveSearchLeaveIfNeeded(location);
   const returnTo = buildReturnTo(location);
-  const raw = opts?.search ?? '';
-  const qs = raw ? (raw.startsWith('?') ? raw : `?${raw}`) : '';
-  navigate(`/album/${albumId}${qs}`, { state: { returnTo } satisfies AlbumDetailLocationState });
+  navigate(buildAlbumDetailPath(albumId, opts), {
+    state: { returnTo } satisfies AlbumDetailLocationState,
+  });
 }
 
 export function navigateToArtistDetail(
   navigate: NavigateFunction,
   location: Pick<Location, 'pathname' | 'search' | 'hash' | 'state'>,
   artistId: string,
-  opts?: { search?: string },
+  opts?: ArtistDetailPathOptions,
 ): void {
   saveSearchLeaveIfNeeded(location);
   const returnTo = buildReturnTo(location);
-  const raw = opts?.search ?? '';
-  const qs = raw ? (raw.startsWith('?') ? raw : `?${raw}`) : '';
-  navigate(`/artist/${artistId}${qs}`, { state: { returnTo } satisfies AlbumDetailLocationState });
+  navigate(buildArtistDetailPath(artistId, opts), {
+    state: { returnTo } satisfies AlbumDetailLocationState,
+  });
 }
 
 export function navigateToComposerDetail(
   navigate: NavigateFunction,
   location: Pick<Location, 'pathname' | 'search' | 'hash' | 'state'>,
   composerId: string,
-  opts?: { search?: string },
+  opts?: ArtistDetailPathOptions,
 ): void {
   saveSearchLeaveIfNeeded(location);
   const returnTo = buildReturnTo(location);
-  const raw = opts?.search ?? '';
-  const qs = raw ? (raw.startsWith('?') ? raw : `?${raw}`) : '';
-  navigate(`/composer/${composerId}${qs}`, { state: { returnTo } satisfies AlbumDetailLocationState });
+  navigate(buildComposerDetailPath(composerId, opts), {
+    state: { returnTo } satisfies AlbumDetailLocationState,
+  });
 }
 
 /** Route any path; album detail links get a `returnTo` snapshot in location state. */

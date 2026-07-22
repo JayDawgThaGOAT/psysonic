@@ -6,10 +6,12 @@ import { showToast } from '@/lib/dom/toast';
 import { useAuthStore } from '@/store/authStore';
 import {
   bumpPlayGeneration,
+  getPlayGeneration,
   setIsAudioPaused,
 } from '@/features/playback/store/engineState';
 import { clearPreloadingIds } from '@/features/playback/store/gaplessPreloadState';
 import { reseedLoudnessForTrackId } from '@/features/playback/store/loudnessReseed';
+import { analysisTrackRefForTrack } from '@/features/playback/store/analysisTrackRef';
 import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackProgress';
 import { shouldRebindPlaybackToHotCache } from '@/features/playback/store/playbackUrlRouting';
 import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
@@ -31,6 +33,8 @@ import {
   setSeekFallbackVisualTarget,
 } from '@/features/playback/store/seekFallbackState';
 import { clearSeekTarget } from '@/features/playback/store/seekTargetState';
+import { sameQueueTrack } from '@/features/playback/utils/playback/queueIdentity';
+import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
@@ -70,7 +74,7 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
     playRadio: async (station) => {
       const { volume } = get();
       prepareRadioPlaybackFromUserGesture();
-      bumpPlayGeneration();
+      const generation = bumpPlayGeneration();
       clearAllPlaybackScheduleTimers();
       set({ scheduledPauseAtMs: null, scheduledPauseStartMs: null, scheduledResumeAtMs: null, scheduledResumeStartMs: null });
       setIsAudioPaused(false);
@@ -84,16 +88,19 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
       // to HTML5 <audio> — the browser cannot play playlist files directly.
       const streamUrl = await commands.resolveStreamUrl(station.streamUrl)
         .catch(() => station.streamUrl);
+      if (getPlayGeneration() !== generation) return;
       const { replayGainFallbackDb } = useAuthStore.getState();
       const fallbackFactor = replayGainFallbackDb !== 0 ? Math.pow(10, replayGainFallbackDb / 20) : 1;
       try {
         await playRadioStream(streamUrl, Math.min(1, volume * fallbackFactor));
       } catch (err: unknown) {
+        if (getPlayGeneration() !== generation) return;
         console.error('[psysonic] radio HTML5 play failed:', err);
         showToast('Radio stream error', 3000, 'error');
         set({ isPlaying: false, currentRadio: null });
         return;
       }
+      if (getPlayGeneration() !== generation) return;
       set({
         currentRadio: station,
         currentTrack: null,
@@ -117,8 +124,9 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
       const currentTime = getPlaybackProgressSnapshot().currentTime;
       if (currentTime > 3) {
         // Restart current track from the beginning.
-        const authState = useAuthStore.getState();
-        const sid = authState.activeServerId ?? '';
+        const sid = queueItems[queueIndex]?.serverId
+          ?? currentTrack?.serverId
+          ?? '';
         if (currentTrack && shouldRebindPlaybackToHotCache(currentTrack.id, sid)) {
           setSeekFallbackVisualTarget({ trackId: currentTrack.id, seconds: 0, setAtMs: Date.now() });
           // No-arg queue: keep the canonical refs, restart in place.
@@ -160,18 +168,23 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
       } catch {
         // no-op
       }
-      await reseedLoudnessForTrackId(trackId);
+      const state = get();
+      const track = state.currentTrack?.id === trackId ? state.currentTrack : null;
+      if (!track) return;
+      await reseedLoudnessForTrackId(
+        analysisTrackRefForTrack(track, state.queueItems[state.queueIndex]),
+      );
     },
 
     reseedQueueForInstantMix: (track) => {
       const s = get();
-      if (s.currentTrack?.id !== track.id) {
+      if (!sameQueueTrack(s.currentTrack, track)) {
         get().playTrack(track, [track]);
         return;
       }
       pushQueueUndoFromGetter(get);
       const wasPlaying = s.isPlaying;
-      const sid = s.queueServerId ?? '';
+      const sid = canonicalQueueServerKey(track.serverId ?? s.queueServerId ?? '');
       if (sid) seedQueueResolver(sid, [track]);
       const newItems = toQueueItemRefs(sid, [track]);
       set({
@@ -179,7 +192,7 @@ export function createMiscActions(set: SetState, get: GetState): Pick<
         queueIndex: 0,
         currentTrack: track,
       });
-      syncUserQueueMutationToServer(newItems, track, s.currentTime);
+      syncUserQueueMutationToServer(s.queueItems, newItems, track, s.currentTime);
       if (!wasPlaying) get().resume();
     },
   };

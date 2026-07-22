@@ -12,10 +12,6 @@ import { usePlaylistStore } from '@/features/playlist';
 import { useTranslation } from 'react-i18next';
 import { usePlaybackLibraryNavigate } from '@/features/playback/hooks/usePlaybackLibraryNavigate';
 import { useAuthStore } from '@/store/authStore';
-import { encodeSharePayload } from '@/lib/share/shareLink';
-import { serverShareBaseUrl } from '@/lib/server/serverEndpoint';
-import { copyTextToClipboard } from '@/lib/server/serverMagicString';
-import { showToast } from '@/lib/dom/toast';
 import { useThemeStore } from '@/store/themeStore';
 import { useLyricsStore } from '@/store/lyricsStore';
 import { LyricsPane } from '@/features/lyrics';
@@ -32,9 +28,10 @@ import { QueueToolbar } from '@/features/queue/components/QueueToolbar';
 import { QueueList } from '@/features/queue/components/QueueList';
 import { QueueTabBar } from '@/features/queue/components/QueueTabBar';
 import { useQueueAutoScroll } from '@/features/queue/hooks/useQueueAutoScroll';
+import { useQueueShare } from '@/features/queue/hooks/useQueueShare';
 import { useTimelineBootstrapOnMode, useTimelineHistoryResolver, useTimelinePlayHistory } from '@/features/playback/hooks/useTimelinePlayHistory';
 import { buildTimelineDisplayRows } from '@/features/playback/utils/buildTimelineDisplayRows';
-import { activeServerQueueTrackIds } from '@/features/playback/utils/playback/trackServerScope';
+import { queueTrackIdsForServerProfile } from '@/features/playback';
 import { isActivePublicShareQueue } from '@/lib/share/navidromePublicSharePlayback';
 
 export default function QueuePanel() {
@@ -80,6 +77,8 @@ function QueuePanelHostOrSolo() {
   // Track from the resolver. List, header, toolbar and id/length reads (save /
   // share / playlist) all read off the refs.
   const queueItems = usePlayerStore(s => s.queueItems);
+  const servers = useAuthStore(s => s.servers);
+  const activeServerId = useAuthStore(s => s.activeServerId);
   const queueServerId = usePlayerStore(s => s.queueServerId);
   const navidromePublicSharePageUrl = usePlayerStore(s => s.navidromePublicSharePageUrl);
   const publicShareQueueActive = isActivePublicShareQueue(queueServerId, queueItems);
@@ -180,26 +179,60 @@ function QueuePanelHostOrSolo() {
     suppressNextAutoScrollRef,
   });
 
-  const [activePlaylist, setActivePlaylist] = useState<{ id: string; name: string } | null>(null);
+  const {
+    serverOptions: queueServerOptions,
+    defaultServerId: defaultQueueServerId,
+    sharePickerOpen,
+    handleCopy: handleCopyQueueShare,
+    shareForServer,
+    closeSharePicker,
+  } = useQueueShare({
+    queueItems,
+    servers,
+    activeServerId,
+    publicShareQueueActive,
+    navidromePublicSharePageUrl,
+  });
+  const [activePlaylist, setActivePlaylist] = useState<{
+    id: string;
+    name: string;
+    serverId: string;
+    songCount: number;
+  } | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [loadModalOpen, setLoadModalOpen] = useState(false);
+  const playlistOperationGenerationRef = useRef(0);
+  const activePlaylistSaveGenerationRef = useRef(0);
 
   const handleSave = async () => {
     if (publicShareQueueActive) return;
-    const exportTrackIds = activeServerQueueTrackIds(queueItems);
-    if (exportTrackIds.length === 0) return;
     if (activePlaylist) {
+      const generation = ++activePlaylistSaveGenerationRef.current;
+      const exportTrackIds = queueTrackIdsForServerProfile(queueItems, activePlaylist.serverId);
+      if (exportTrackIds.length === 0) return;
       setSaveState('saving');
       try {
-        await updatePlaylist(activePlaylist.id, exportTrackIds);
+        await updatePlaylist(
+          activePlaylist.id,
+          exportTrackIds,
+          activePlaylist.songCount,
+          activePlaylist.serverId,
+        );
+        if (activePlaylistSaveGenerationRef.current !== generation) return;
+        setActivePlaylist(current => current?.id === activePlaylist.id && current.serverId === activePlaylist.serverId
+          ? { ...current, songCount: exportTrackIds.length }
+          : current);
         setSaveState('saved');
-        setTimeout(() => setSaveState('idle'), 1500);
+        setTimeout(() => {
+          if (activePlaylistSaveGenerationRef.current === generation) setSaveState('idle');
+        }, 1500);
       } catch (e) {
         console.error('Failed to update playlist', e);
-        setSaveState('idle');
+        if (activePlaylistSaveGenerationRef.current === generation) setSaveState('idle');
       }
     } else {
+      if (queueServerOptions.length === 0) return;
       setSaveModalOpen(true);
     }
   };
@@ -209,37 +242,13 @@ function QueuePanelHostOrSolo() {
   };
 
   const handleClear = () => {
+    playlistOperationGenerationRef.current += 1;
+    activePlaylistSaveGenerationRef.current += 1;
+    setSaveState('idle');
     clearQueue();
     setActivePlaylist(null);
-  };
-
-  const handleCopyQueueShare = async () => {
-    if (publicShareQueueActive) {
-      const pageUrl = navidromePublicSharePageUrl?.trim();
-      if (!pageUrl) {
-        showToast(t('queue.shareNavidromePublicMissing'), 4000, 'error');
-        return;
-      }
-      const ok = await copyTextToClipboard(pageUrl);
-      if (ok) showToast(t('contextMenu.shareCopied'));
-      else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
-      return;
-    }
-    const ids = activeServerQueueTrackIds(queueItems);
-    if (ids.length === 0) {
-      showToast(t('queue.shareQueueEmpty'), 3000, 'info');
-      return;
-    }
-    // Queue share goes to remote recipients — use the share URL, not the
-    // connect URL the active app is currently bound to (would leak the LAN
-    // host on a dual-address profile).
-    const active = useAuthStore.getState().getActiveServer();
-    if (!active) return;
-    const srv = serverShareBaseUrl(active);
-    if (!srv) return;
-    const ok = await copyTextToClipboard(encodeSharePayload({ srv, k: 'queue', ids }));
-    if (ok) showToast(t('contextMenu.shareCopied'));
-    else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
+    setSaveModalOpen(false);
+    closeSharePicker();
   };
 
   // Queue mode shows upcoming tracks only — the current track lives in the
@@ -359,6 +368,11 @@ function QueuePanelHostOrSolo() {
             handleSave={handleSave}
             handleLoad={handleLoad}
             handleCopyQueueShare={handleCopyQueueShare}
+            sharePickerOpen={sharePickerOpen}
+            queueServerOptions={queueServerOptions}
+            defaultQueueServerId={defaultQueueServerId}
+            shareForServer={shareForServer}
+            closeSharePicker={closeSharePicker}
             handleClear={handleClear}
             publicShareQueueActive={publicShareQueueActive}
             gaplessEnabled={gaplessEnabled}
@@ -408,12 +422,34 @@ function QueuePanelHostOrSolo() {
 
       {saveModalOpen && (
         <SavePlaylistModal
-          onClose={() => setSaveModalOpen(false)}
-          onSave={async (name) => {
+          onClose={() => {
+            playlistOperationGenerationRef.current += 1;
+            setSaveModalOpen(false);
+          }}
+          serverOptions={queueServerOptions}
+          initialServerId={defaultQueueServerId}
+          onSave={async (name, serverId) => {
+            const generation = ++playlistOperationGenerationRef.current;
+            activePlaylistSaveGenerationRef.current += 1;
+            setSaveState('idle');
+            const trackIds = queueTrackIdsForServerProfile(queueItems, serverId);
+            if (
+              trackIds.length === 0
+              || !queueServerOptions.some(server => server.id === serverId)
+            ) {
+              setSaveModalOpen(false);
+              return;
+            }
             try {
               const createPlaylist = usePlaylistStore.getState().createPlaylist;
-              const pl = await createPlaylist(name, activeServerQueueTrackIds(queueItems));
-              if (pl) setActivePlaylist({ id: pl.id, name: pl.name });
+              const pl = await createPlaylist(name, trackIds, serverId);
+              if (playlistOperationGenerationRef.current !== generation) return;
+              if (pl) setActivePlaylist({
+                id: pl.id,
+                name: pl.name,
+                serverId,
+                songCount: trackIds.length,
+              });
               setSaveModalOpen(false);
             } catch (e) {
               console.error('Failed to save playlist', e);
@@ -424,23 +460,34 @@ function QueuePanelHostOrSolo() {
 
       {loadModalOpen && (
         <LoadPlaylistModal
-          onClose={() => setLoadModalOpen(false)}
-          onLoad={async (id, name, mode) => {
+          onClose={() => {
+            playlistOperationGenerationRef.current += 1;
+            setLoadModalOpen(false);
+          }}
+          onLoad={async (playlist, mode) => {
+            const generation = ++playlistOperationGenerationRef.current;
+            activePlaylistSaveGenerationRef.current += 1;
+            setSaveState('idle');
             try {
-              const serverId = resolveMediaServerId();
+              const serverId = resolveMediaServerId(playlist.serverId);
               if (!serverId) return;
-              const data = await resolvePlaylist(serverId, id);
-              if (!data) return;
+              const data = await resolvePlaylist(serverId, playlist.id);
+              if (!data || playlistOperationGenerationRef.current !== generation) return;
               const tracks: Track[] = data.songs.map(songToTrack);
-              if (tracks.length > 0) {
-                if (mode === 'append') {
-                  enqueue(tracks);
-                } else {
-                  clearQueue();
+              if (mode === 'append') {
+                if (tracks.length > 0) enqueue(tracks);
+              } else {
+                clearQueue();
+                if (tracks.length > 0) {
                   playTrack(tracks[0], tracks);
                 }
               }
-              setActivePlaylist({ id, name });
+              setActivePlaylist({
+                id: playlist.id,
+                name: playlist.name,
+                serverId,
+                songCount: playlist.songCount,
+              });
               setLoadModalOpen(false);
             } catch (e) {
               console.error('Failed to load playlist', e);

@@ -19,6 +19,8 @@ import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
 import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 interface Props {
   currentTrack: Track;
@@ -233,7 +235,9 @@ export function QueueCurrentTrack({
             <OpenArtistRefInline
               refs={artistRefs}
               fallbackName={currentTrack.artist}
-              onGoArtist={id => navigate(`/artist/${id}`)}
+              onGoArtist={id => navigate(buildArtistDetailPath(id, {
+                serverId: currentTrack.serverId,
+              }))}
               as="none"
               linkTag="span"
               linkClassName="is-link"
@@ -241,7 +245,9 @@ export function QueueCurrentTrack({
           </div>
           <div
             className={`queue-current-sub truncate${currentTrack.albumId ? ' is-link' : ''}`}
-            onClick={() => currentTrack.albumId && navigate(`/album/${currentTrack.albumId}`)}
+            onClick={() => currentTrack.albumId && navigate(buildAlbumDetailPath(currentTrack.albumId, {
+              serverId: currentTrack.serverId,
+            }))}
           >{currentTrack.album}</div>
           {currentTrack.year && (
             <div className="queue-current-sub">{currentTrack.year}</div>
@@ -253,7 +259,7 @@ export function QueueCurrentTrack({
             const label = orbitAttributionLabel(currentTrack.id);
             return label ? <div className="queue-current-sub queue-current-attribution">{label}</div> : null;
           })()}
-          {renderStars(userRatingOverrides[currentTrack.id] ?? currentTrack.userRating)}
+          {renderStars(ownedOverrideValue(userRatingOverrides, currentTrack) ?? currentTrack.userRating)}
         </div>
       </div>
     </div>

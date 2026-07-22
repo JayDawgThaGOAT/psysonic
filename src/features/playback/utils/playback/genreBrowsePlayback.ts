@@ -1,7 +1,7 @@
 /**
  * Genre-detail bulk play/shuffle against the local library index.
  */
-import { libraryAdvancedSearch, libraryGetGenreAlbumCounts, type LibrarySortClause } from '@/lib/api/library';
+import { libraryAdvancedSearch, type LibrarySortClause } from '@/lib/api/library';
 import { fetchAllSongsByGenre, getGenres } from '@/lib/api/subsonicGenres';
 import type { SubsonicGenre } from '@/lib/api/subsonicTypes';
 import {
@@ -25,6 +25,8 @@ import {
 } from '@/lib/library/genreCatalogCountsCache';
 import { fetchGenreAlbumTotal } from '@/lib/library/genreAlbumBrowse';
 import { libraryIsReady } from '@/lib/library/libraryReady';
+import { fetchGenreAlbumCountsDeduped } from '@/lib/library/albumBrowseGenreCountsCache';
+import type { LibraryBrowseIndexScope } from '@/lib/library/libraryBrowseScope';
 import {
   fetchOfflineLocalGenreCatalog,
   isOfflineBrowseActive,
@@ -40,7 +42,7 @@ async function loadLocalGenreCatalogRows(
   serverId: string,
   args: { libraryScope?: string; libraryScopes?: string[] } = {},
 ): Promise<SubsonicGenre[]> {
-  const rows = await libraryGetGenreAlbumCounts({
+  const rows = await fetchGenreAlbumCountsDeduped({
     serverId,
     ...args,
   });
@@ -54,8 +56,8 @@ async function loadLocalGenreCatalogRows(
 async function fetchLocalGenreCatalog(
   serverId: string,
   scopeKey: string,
+  selection: string[] = librarySelectionForServer(serverId),
 ): Promise<SubsonicGenre[]> {
-  const selection = librarySelectionForServer(serverId);
   const genres =
     selection.length === 0
       ? await loadLocalGenreCatalogRows(serverId)
@@ -64,6 +66,73 @@ async function fetchLocalGenreCatalog(
         : await loadLocalGenreCatalogRows(serverId, { libraryScopes: selection });
   writeGenreCatalogCache(serverId, scopeKey, genres);
   return genres;
+}
+
+export function mergeGenreCatalogs(catalogs: readonly SubsonicGenre[][]): SubsonicGenre[] {
+  const merged = new Map<string, SubsonicGenre>();
+  for (const catalog of catalogs) {
+    for (const genre of catalog) {
+      const value = genre.value.trim();
+      if (!value) continue;
+      const key = value.toLocaleLowerCase();
+      const previous = merged.get(key);
+      merged.set(key, {
+        value: previous?.value ?? value,
+        albumCount: (previous?.albumCount ?? 0) + (genre.albumCount ?? 0),
+        songCount: (previous?.songCount ?? 0) + (genre.songCount ?? 0),
+      });
+    }
+  }
+  return filterGenresWithContent([...merged.values()]).sort(
+    (a, b) => b.albumCount - a.albumCount || a.value.localeCompare(b.value),
+  );
+}
+
+function scopeCacheKey(scope: LibraryBrowseIndexScope): string {
+  return scope.libraryIds.length > 0 ? scope.libraryIds.join(',') : 'all';
+}
+
+export function peekScopedGenreCatalog(
+  scopes: readonly LibraryBrowseIndexScope[],
+  allowStale: boolean,
+): SubsonicGenre[] | null {
+  if (scopes.length === 0) return null;
+  const catalogs: SubsonicGenre[][] = [];
+  for (const scope of scopes) {
+    const cached = peekGenreCatalogCache(scope.serverId, scopeCacheKey(scope), allowStale);
+    if (!cached) return null;
+    catalogs.push(cached);
+  }
+  return mergeGenreCatalogs(catalogs);
+}
+
+/** One local indexed GROUP BY per selected server; failures retain the other owners' counts. */
+export async function fetchScopedGenreCatalog(
+  scopes: readonly LibraryBrowseIndexScope[],
+): Promise<SubsonicGenre[]> {
+  const settled = await Promise.allSettled(scopes.map(async scope => {
+    const key = scopeCacheKey(scope);
+    const fresh = peekGenreCatalogCache(scope.serverId, key, false);
+    if (fresh) return fresh;
+    try {
+      return await fetchLocalGenreCatalog(scope.serverId, key, scope.libraryIds);
+    } catch (error) {
+      const stale = peekGenreCatalogCache(scope.serverId, key, true);
+      if (stale) return stale;
+      throw error;
+    }
+  }));
+  const catalogs = settled.flatMap(result =>
+    result.status === 'fulfilled' ? [result.value] : []);
+  if (catalogs.length === 0 && scopes.length > 0) {
+    throw new Error('genre_catalog_scope_unavailable');
+  }
+  const failedServerIds = settled.flatMap((result, index) =>
+    result.status === 'rejected' ? [scopes[index].serverId] : []);
+  if (failedServerIds.length > 0) {
+    console.warn('[genres] local index counts unavailable for selected servers', { failedServerIds });
+  }
+  return mergeGenreCatalogs(catalogs);
 }
 
 /** Matches queueTrackResolver CACHE_CAP — whole seeded queue stays warm. */

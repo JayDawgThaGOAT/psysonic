@@ -15,6 +15,7 @@ import { parseStructuredLyrics, parseStructuredWordLines } from '@/features/lyri
 import { FEATURE_ENHANCED_LYRICS } from '@/lib/serverCapabilities/catalog';
 import { isFeatureActiveForServer } from '@/lib/serverCapabilities/storeView';
 import type { CachedLyrics, LrcLine, LyricsSource, WordLyricsLine } from '@/features/lyrics/types';
+import { playbackCacheKeyForTrack, playbackProfileIdForTrack } from '@/features/playback';
 
 // L1 cache: RAM, survives tab switches and component remount within a session.
 // L2 (IndexedDB) lives in `utils/lyricsPersistentCache.ts` — only touched on
@@ -37,7 +38,10 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
   })));
   // Lyrics are fully off when YouLyPlus is off and no source is enabled.
   const lyricsActive = youLyPlusEnabled || lyricsSources.some(s => s.enabled);
-  const cached = (currentTrack && lyricsActive) ? lyricsCache.get(currentTrack.id) : undefined;
+  const ownerServerKey = currentTrack ? playbackCacheKeyForTrack(currentTrack) : '';
+  const ownerServerId = currentTrack ? playbackProfileIdForTrack(currentTrack) : '';
+  const cacheKey = currentTrack ? lyricsCacheKey(ownerServerKey, currentTrack.id) : '';
+  const cached = (currentTrack && lyricsActive) ? lyricsCache.get(cacheKey) : undefined;
 
   const [loading, setLoading]         = useState(!cached && !!currentTrack);
   const [syncedLines, setSyncedLines] = useState<LrcLine[] | null>(cached?.syncedLines ?? null);
@@ -64,7 +68,7 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
       return;
     }
 
-    const hit = lyricsCache.get(currentTrack.id);
+    const hit = lyricsCache.get(cacheKey);
     if (hit) {
       setSyncedLines(hit.syncedLines);
       setWordLines(hit.wordLines);
@@ -85,7 +89,7 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
 
     const applyEntry = (entry: CachedLyrics) => {
       if (cancelled) return;
-      lyricsCache.set(currentTrack.id, entry);
+      lyricsCache.set(cacheKey, entry);
       setSyncedLines(entry.syncedLines);
       setWordLines(entry.wordLines);
       setPlainLyrics(entry.plainLyrics);
@@ -98,8 +102,7 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
       if (cancelled) return;
       applyEntry(entry);
       // Persist for the next session (fire-and-forget — failures are silent).
-      const serverId = useAuthStore.getState().activeServerId ?? '';
-      putCachedLyrics(lyricsCacheKey(serverId, currentTrack.id), entry);
+      putCachedLyrics(cacheKey, entry);
     };
 
     // For offline / hot-cached tracks we have the file locally — read SYLT /
@@ -107,10 +110,9 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
     // Fast path: both store lookups are synchronous; returns false immediately
     // for streaming tracks so it has zero impact on the normal fetch sequence.
     const fetchEmbedded = async (): Promise<boolean> => {
-      const serverId = useAuthStore.getState().activeServerId ?? '';
       const localUrl =
-        useOfflineStore.getState().getLocalUrl(currentTrack.id, serverId) ??
-        useHotCacheStore.getState().getLocalUrl(currentTrack.id, serverId);
+        useOfflineStore.getState().getLocalUrl(currentTrack.id, ownerServerKey) ??
+        useHotCacheStore.getState().getLocalUrl(currentTrack.id, ownerServerKey);
       if (!localUrl) return false;
 
       const prefix = 'psysonic-local://';
@@ -138,10 +140,12 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
     const fetchServer = async (): Promise<boolean> => {
       // `songLyrics` v2 adds word-level cues, but only where the catalog says the
       // server speaks it. On a v1 server this stays a plain v1 request.
-      const serverId = useAuthStore.getState().activeServerId ?? '';
-      const enhanced = !!serverId && isFeatureActiveForServer(serverId, FEATURE_ENHANCED_LYRICS);
+      const enhanced = !!ownerServerId && isFeatureActiveForServer(ownerServerId, FEATURE_ENHANCED_LYRICS);
 
-      const structured = await getLyricsBySongId(currentTrack.id, { enhanced });
+      const structured = await getLyricsBySongId(currentTrack.id, {
+        enhanced,
+        serverId: ownerServerId || undefined,
+      });
       if (!structured) return false;
       const parsed = parseStructuredLyrics(structured);
       if (!parsed.syncedLines && !parsed.plainLyrics) return false;
@@ -245,12 +249,11 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
       // the standard pipeline (no word-level sync) and the user explicitly
       // wants a fresh lyricsplus attempt.
       if (!youLyPlusEnabled) {
-        const serverId = useAuthStore.getState().activeServerId ?? '';
-        const persisted = await getCachedLyrics(lyricsCacheKey(serverId, currentTrack.id));
+        const persisted = await getCachedLyrics(cacheKey);
         if (cancelled) return;
         if (persisted) {
           // Don't re-write to L2 (it's already there); just hydrate RAM + UI.
-          lyricsCache.set(currentTrack.id, persisted);
+          lyricsCache.set(cacheKey, persisted);
           applyEntry(persisted);
           return;
         }
@@ -274,7 +277,7 @@ export function useLyrics(currentTrack: Track | null): UseLyricsResult {
     })();
 
     return () => { cancelled = true; };
-  }, [currentTrack?.id, lyricsSources, youLyPlusEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cacheKey, currentTrack?.id, lyricsSources, ownerServerId, ownerServerKey, youLyPlusEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { syncedLines, wordLines, plainLyrics, source, loading, notFound };
 }

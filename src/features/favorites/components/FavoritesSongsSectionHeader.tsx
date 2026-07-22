@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ListPlus, Play, SlidersHorizontal, X } from 'lucide-react';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
@@ -7,6 +7,8 @@ import { useSelectionStore } from '@/store/selectionStore';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { AddToPlaylistSubmenu } from '@/features/contextMenu/components/ContextMenu';
 import GenreFilterBar from '@/ui/GenreFilterBar';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { useAuthStore } from '@/store/authStore';
 
 interface Props {
   visibleSongs: SubsonicSong[];
@@ -42,15 +44,20 @@ export default function FavoritesSongsSectionHeader({
   inSelectMode, selectedCount, selectedIds, showPlPicker, setShowPlPicker,
 }: Props) {
   const { t } = useTranslation();
+  const activeServerId = useAuthStore(s => s.activeServerId);
 
   const targetSongs = useMemo(() => {
     if (!inSelectMode) return visibleSongs;
-    return visibleSongs.filter(s => selectedIds.has(s.id));
+    return visibleSongs.filter(s => selectedIds.has(ownedEntityKey(s)));
   }, [inSelectMode, visibleSongs, selectedIds]);
 
   // Snapshot selection when the picker opens so add-to-playlist still sees every
   // checked row if a document mousedown races ahead of the playlist click.
-  const pickerSongIdsRef = useRef<string[]>([]);
+  const [pickerSelection, setPickerSelection] = useState<{ songIds: string[]; serverId?: string }>({ songIds: [] });
+  const playlistSourceServerId = useMemo(() => {
+    const serverIds = new Set(targetSongs.map(song => song.serverId ?? activeServerId).filter(Boolean));
+    return serverIds.size === 1 ? [...serverIds][0] : undefined;
+  }, [activeServerId, targetSongs]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '0.75rem' }}>
@@ -60,8 +67,8 @@ export default function FavoritesSongsSectionHeader({
         {(selectedArtist || selectedGenres.length > 0 || yearRange[0] !== minYear || yearRange[1] !== currentYear) && (
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
             {selectedArtist
-              ? t('favorites.showingFiltered', { filtered: visibleSongs.length, total: songs.filter(s => starredOverrides[s.id] !== false).length, artist: selectedArtistName ?? selectedArtist })
-              : t('favorites.showingCount', { filtered: visibleSongs.length, total: songs.filter(s => starredOverrides[s.id] !== false).length })}
+              ? t('favorites.showingFiltered', { filtered: visibleSongs.length, total: songs.filter(s => (starredOverrides[ownedEntityKey(s)] ?? starredOverrides[s.id]) !== false).length, artist: selectedArtistName ?? selectedArtist })
+              : t('favorites.showingCount', { filtered: visibleSongs.length, total: songs.filter(s => (starredOverrides[ownedEntityKey(s)] ?? starredOverrides[s.id]) !== false).length })}
           </span>
         )}
       </div>
@@ -133,12 +140,17 @@ export default function FavoritesSongsSectionHeader({
             <span className="bulk-action-count">
               {t('common.bulkSelected', { count: selectedCount })}
             </span>
-            <div className="bulk-pl-picker-wrap">
+            {playlistSourceServerId && <div className="bulk-pl-picker-wrap">
               <button
                 className="btn btn-surface btn-sm"
                 onClick={() => {
                   setShowPlPicker(prev => {
-                    if (!prev) pickerSongIdsRef.current = [...selectedIds];
+                    if (!prev) {
+                      setPickerSelection({
+                        songIds: targetSongs.map(song => song.id),
+                        serverId: playlistSourceServerId,
+                      });
+                    }
                     return !prev;
                   });
                 }}
@@ -148,15 +160,14 @@ export default function FavoritesSongsSectionHeader({
               </button>
               {showPlPicker && (
                 <AddToPlaylistSubmenu
-                  // React Compiler refs rule: ref read imperatively outside reactive rendering; not used to compute the render output.
-                  // eslint-disable-next-line react-hooks/refs
-                  songIds={pickerSongIdsRef.current}
-                  resolveSongIds={() => pickerSongIdsRef.current}
+                  songIds={pickerSelection.songIds}
+                  resolveSongIds={() => pickerSelection.songIds}
+                  serverId={pickerSelection.serverId}
                   onDone={() => { setShowPlPicker(false); useSelectionStore.getState().clearAll(); }}
                   dropDown
                 />
               )}
-            </div>
+            </div>}
             <button
               className="btn btn-surface btn-sm"
               onClick={() => useSelectionStore.getState().clearAll()}

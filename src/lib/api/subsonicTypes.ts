@@ -85,8 +85,8 @@ export interface SubsonicSong {
   albumArtist?: string;
   /** OpenSubsonic: single-string album-artist for display (mirrors `albumArtists` joined). */
   displayAlbumArtist?: string;
-  /** ISRC code when available (e.g., Navidrome) */
-  isrc?: string;
+  /** ISRC code; OpenSubsonic/Navidrome may return a string array. */
+  isrc?: string | string[];
   /** Times the track has been played, surfaced by Navidrome's Subsonic API. */
   playCount?: number;
   /** ISO datetime of the last play, surfaced by Navidrome (OpenSubsonic). */
@@ -115,6 +115,8 @@ export interface SubsonicSong {
 
 export interface InternetRadioStation {
   id: string;
+  /** Owning server profile when radio stations are aggregated across a Library scope. */
+  serverId?: string;
   name: string;
   streamUrl: string;
   homepageUrl?: string;
@@ -131,6 +133,8 @@ export interface RadioBrowserStation {
 
 export interface SubsonicPlaylist {
   id: string;
+  /** Owning server profile when playlists are aggregated across a Library scope. */
+  serverId?: string;
   name: string;
   songCount: number;
   duration: number;
@@ -195,6 +199,10 @@ export interface SubsonicArtistInfo {
 
 export interface SubsonicDirectoryEntry {
   id: string;
+  /** Owning saved server when a directory tree combines multiple profiles. */
+  serverId?: string;
+  /** Original folder id when a multi-server root needs a collision-free row id. */
+  sourceId?: string;
   parent?: string;
   title: string;
   isDir: boolean;
@@ -235,23 +243,20 @@ export interface RandomSongsFilters {
 }
 
 export interface StatisticsLibraryAggregates {
+  artistCount: number;
   playtimeSec: number;
   albumsCounted: number;
   songsCounted: number;
   capped: boolean;
   genres: SubsonicGenre[];
+  formats: { format: string; count: number }[];
+  formatTrackCount?: number;
 }
 
 export interface StatisticsOverviewData {
   recent: SubsonicAlbum[];
   frequent: SubsonicAlbum[];
   highest: SubsonicAlbum[];
-  artistCount: number;
-}
-
-export interface StatisticsFormatSample {
-  rows: { format: string; count: number }[];
-  sampleSize: number;
 }
 
 export interface SearchResults {

@@ -1,7 +1,6 @@
 import { useCoverArt } from '@/cover/useCoverArt';
-import { albumCoverRef } from '@/cover/ref';
+import { radioCoverRef } from '@/cover/ref';
 import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
-import { coverArtIdFromRadio } from '@/cover/ids';
 import type { SubsonicArtistInfo, SubsonicSong } from '@/lib/api/subsonicTypes';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { usePlaybackLibraryNavigate } from '@/features/playback/hooks/usePlaybackLibraryNavigate';
@@ -40,6 +39,7 @@ import { useNowPlayingStarLove } from '@/features/nowPlaying/hooks/useNowPlaying
 import { useArtistInfoBatch } from '@/features/artist';
 import { primaryTrackArtistRef, resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
 import type { ArtistCardTab } from '@/features/nowPlaying/components/ArtistCard';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
@@ -108,9 +108,8 @@ export default function NowPlaying() {
 
   const playbackCoverRef = usePlaybackTrackCoverRef(currentTrack ?? undefined);
 
-  const radioCoverArtId = currentRadio?.coverArt ? coverArtIdFromRadio(currentRadio.id) : undefined;
   const radioCover = useCoverArt(
-    radioCoverArtId ? albumCoverRef(radioCoverArtId, radioCoverArtId) : null,
+    currentRadio?.coverArt ? radioCoverRef(currentRadio) : null,
     800,
     { surface: 'sparse' },
   );
@@ -272,11 +271,15 @@ export default function NowPlaying() {
                 artistId: currentTrack.artistId,
                 albumId: currentTrack.albumId,
                 userRating: currentTrack.userRating,
+                serverId: currentTrack.serverId ?? playbackServerId,
               }}
               artistRefs={trackArtistRefs.length > 0 ? trackArtistRefs : undefined}
               genre={songMeta?.genre ?? undefined}
               playCount={(songMeta as (SubsonicSong & { playCount?: number }) | null)?.playCount}
-              userRatingOverride={userRatingOverrides[currentTrack.id]}
+              userRatingOverride={ownedOverrideValue(userRatingOverrides, {
+                id: currentTrack.id,
+                serverId: currentTrack.serverId ?? playbackServerId,
+              })}
               networkTrack={networkTrack}
               networkArtist={networkArtist}
               starred={starred}
@@ -309,6 +312,7 @@ export default function NowPlaying() {
                     <TopSongsCard
                       artistName={artistName}
                       artistId={artistId}
+                      serverId={currentTrack.serverId ?? playbackServerId}
                       songs={topSongs}
                       currentTrackId={currentTrack.id}
                       onNavigate={stableNavigate}
@@ -321,6 +325,7 @@ export default function NowPlaying() {
                       artistName={artistName}
                       artistId={artistId}
                       artistInfo={effectiveArtistInfo}
+                      serverId={currentTrack.serverId ?? playbackServerId}
                       artistTabs={artistTabs}
                       onNavigate={stableNavigate}
                     />
@@ -328,6 +333,7 @@ export default function NowPlaying() {
                   case 'discography': return (
                     <DiscographyCard
                       artistId={artistId}
+                      serverId={currentTrack.serverId ?? playbackServerId}
                       albums={discography}
                       currentAlbumId={albumId}
                       onNavigate={stableNavigate}

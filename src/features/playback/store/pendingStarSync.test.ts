@@ -96,8 +96,22 @@ describe('pendingStarSync', () => {
 
   it('passes serverId through to star/unstar for cross-server favorites', async () => {
     queueSongStar('t1', true, 'srv-b');
+    expect(usePlayerStore.getState().starredOverrides['srv-b:t1']).toBe(true);
+    expect(usePlayerStore.getState().starredOverrides.t1).toBeUndefined();
     await vi.runAllTimersAsync();
     expect(starMock).toHaveBeenCalledWith('t1', 'song', { serverId: 'srv-b' });
+  });
+
+  it('isolates scoped favorite overrides that share a raw id', async () => {
+    queueSongStar('shared', false, 'srv-b', { scopedOverride: true });
+
+    expect(usePlayerStore.getState().starredOverrides).toMatchObject({
+      'srv-b:shared': false,
+    });
+    expect(usePlayerStore.getState().starredOverrides.shared).toBeUndefined();
+
+    await vi.runAllTimersAsync();
+    expect(unstarMock).toHaveBeenCalledWith('shared', 'song', { serverId: 'srv-b' });
   });
 
   it('latest toggle wins when re-queued before sync', async () => {
@@ -121,5 +135,20 @@ describe('pendingStarSync', () => {
     const s = usePlayerStore.getState();
     expect('t1' in s.userRatingOverrides).toBe(false); // cleared
     expect(s.currentTrack?.userRating).toBe(4); // track stays patched
+  });
+
+  it('routes scoped ratings to the owner and clears only its composite override', async () => {
+    const ownedTrack = { ...track('shared'), serverId: 'srv-b' };
+    seedQueueResolver('srv-b', [ownedTrack]);
+    usePlayerStore.setState({ currentTrack: ownedTrack });
+    queueSongRating('shared', 5, 'srv-b', { scopedOverride: true });
+    expect(usePlayerStore.getState().userRatingOverrides['srv-b:shared']).toBe(5);
+    expect(usePlayerStore.getState().userRatingOverrides.shared).toBeUndefined();
+    expect(usePlayerStore.getState().currentTrack?.userRating).toBe(5);
+
+    await vi.runAllTimersAsync();
+
+    expect(setRatingMock).toHaveBeenCalledWith('shared', 5, { serverId: 'srv-b' });
+    expect(usePlayerStore.getState().userRatingOverrides['srv-b:shared']).toBeUndefined();
   });
 });

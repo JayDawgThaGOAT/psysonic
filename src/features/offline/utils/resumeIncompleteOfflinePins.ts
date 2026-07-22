@@ -56,7 +56,7 @@ export async function resumeIncompleteOfflinePins(): Promise<void> {
   for (const meta of metas) {
     if (!meta.trackIds?.length) continue;
     const profileServerId = resolveServerIdForIndexKey(meta.serverId) || meta.serverId;
-    if (offline.isAlbumDownloading(meta.id)) continue;
+    if (offline.isAlbumDownloading(meta.id, profileServerId)) continue;
     if (isOfflinePinComplete(meta.id, profileServerId, meta.trackIds)) continue;
 
     const songs = await songsForOfflineMeta(meta, profileServerId);

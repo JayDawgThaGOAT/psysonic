@@ -50,6 +50,8 @@ pub fn list_lossless_albums(
         "t.deleted = 0".to_string(),
         "t.server_id = ?1".to_string(),
         "t.album_id IS NOT NULL AND t.album_id != ''".to_string(),
+        // Kept explicit so SQLite can prove the partial browse index applies.
+        "t.suffix IS NOT NULL".to_string(),
         lossless_sql,
     ];
     let mut params: Vec<SqlValue> = vec![SqlValue::Text(req.server_id.clone())];
@@ -75,29 +77,29 @@ pub fn list_lossless_albums(
            COALESCE(a.starred_at, la.starred_at), \
            COALESCE(a.synced_at, la.synced_at), \
            a.raw_json \
-         FROM ( \
-           SELECT \
-             t.server_id, \
-             t.album_id, \
-             MAX(t.album) AS album_name, \
-             MAX(t.artist) AS artist, \
-             MAX(t.album_artist) AS album_artist, \
-             MAX(t.artist_id) AS artist_id, \
-             MAX(t.year) AS year, \
-             MAX(t.genre) AS genre, \
-             MAX(t.cover_art_id) AS cover_art_id, \
-             MAX(t.starred_at) AS starred_at, \
-             MAX(t.synced_at) AS synced_at, \
-             (SELECT COUNT(*) FROM track c \
-              WHERE c.server_id = t.server_id AND c.album_id = t.album_id AND c.deleted = 0) AS track_count, \
-             (SELECT COALESCE(SUM(c.duration_sec), 0) FROM track c \
-              WHERE c.server_id = t.server_id AND c.album_id = t.album_id AND c.deleted = 0) AS duration_sec, \
-             MAX(COALESCE(CAST(json_extract(t.raw_json, '$.bitDepth') AS INTEGER), 0)) AS max_bit_depth \
-           FROM track t \
-           WHERE {where_sql} \
-           GROUP BY t.server_id, t.album_id \
-         ) la \
-         LEFT JOIN album a ON a.server_id = la.server_id AND a.id = la.album_id \
+          FROM ( \
+            SELECT \
+              t.server_id, \
+              t.album_id, \
+              MAX(t.album) AS album_name, \
+              MAX(t.artist) AS artist, \
+              MAX(t.album_artist) AS album_artist, \
+              MAX(t.artist_id) AS artist_id, \
+              MAX(t.year) AS year, \
+              MAX(t.genre) AS genre, \
+              MAX(t.cover_art_id) AS cover_art_id, \
+              MAX(t.starred_at) AS starred_at, \
+              MAX(t.synced_at) AS synced_at, \
+              (SELECT COUNT(*) FROM track c \
+               WHERE c.server_id = t.server_id AND c.album_id = t.album_id AND c.deleted = 0) AS track_count, \
+              (SELECT COALESCE(SUM(c.duration_sec), 0) FROM track c \
+               WHERE c.server_id = t.server_id AND c.album_id = t.album_id AND c.deleted = 0) AS duration_sec, \
+              MAX(COALESCE(CAST(json_extract(t.raw_json, '$.bitDepth') AS INTEGER), 0)) AS max_bit_depth \
+            FROM track t INDEXED BY idx_track_lossless_album_browse \
+            WHERE {where_sql} \
+            GROUP BY t.server_id, t.album_id \
+          ) la \
+          LEFT JOIN album a ON a.server_id = la.server_id AND a.id = la.album_id \
          ORDER BY la.max_bit_depth DESC, \
            COALESCE(a.name, la.album_name) COLLATE NOCASE ASC, \
            la.album_id ASC \
@@ -107,13 +109,24 @@ pub fn list_lossless_albums(
     params.push(SqlValue::Integer(limit as i64));
     params.push(SqlValue::Integer(offset as i64));
 
-    let albums = store.with_read_conn(|conn| {
+    let (albums, timing) = store.with_read_conn_timed(|conn| {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(params.iter()), map_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     })?;
+    let blocked_by = timing
+        .blocked_by
+        .map(|owner| format!("{}:{}", owner.file, owner.line))
+        .unwrap_or_else(|| "none".to_string());
+    crate::app_deprintln!(
+        "[library-db][lossless] server={} lock_wait_ms={} query_ms={} blocked_by={}",
+        req.server_id,
+        timing.lock_wait_ms,
+        timing.exec_ms,
+        blocked_by,
+    );
 
     let has_more = albums.len() as u32 == limit;
     Ok(LibraryLosslessAlbumsResponse {

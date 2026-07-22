@@ -5,10 +5,6 @@ const libraryScopeArtistDetailMock = vi.fn();
 
 vi.mock('@/lib/api/library/scopeReads', () => ({
   libraryScopeArtistDetail: (...args: unknown[]) => libraryScopeArtistDetailMock(...args),
-  scopePairsFromLibrarySelection: (serverId: string) => [
-    { serverId: `${serverId}-idx`, libraryId: 'lib-a' },
-    { serverId: `${serverId}-idx`, libraryId: 'lib-b' },
-  ],
 }));
 
 import { tryLoadArtistDetailMultiScope } from './loadArtistDetailMultiScope';
@@ -69,21 +65,30 @@ describe('tryLoadArtistDetailMultiScope', () => {
         trackDto({ id: 'low', playCount: 1 }),
         trackDto({ id: 'high', playCount: 99 }),
       ],
+      topTracksServerId: 'srv-2',
+      topTracksFingerprint: 'tracks-v1',
     });
 
-    const result = await tryLoadArtistDetailMultiScope('srv-1', 'art-1');
+    const scopes = [
+      { serverId: 'srv-1', libraryId: 'lib-a' },
+      { serverId: 'srv-2', libraryId: 'lib-b' },
+    ];
+    const result = await tryLoadArtistDetailMultiScope(scopes, 'srv-1', 'art-1');
 
     expect(libraryScopeArtistDetailMock).toHaveBeenCalledWith('srv-1', {
       scopes: [
-        { serverId: 'srv-1-idx', libraryId: 'lib-a' },
-        { serverId: 'srv-1-idx', libraryId: 'lib-b' },
+        { serverId: 'srv-1', libraryId: 'lib-a' },
+        { serverId: 'srv-2', libraryId: 'lib-b' },
       ],
       artistId: 'art-1',
       serverId: 'srv-1',
+      topTracksLimit: 5,
     });
     expect(result?.artist).toMatchObject({ id: 'art-1', name: 'Merged Artist' });
     expect(result?.albums).toHaveLength(1);
     expect(result?.topSongs.map(s => s.id)).toEqual(['high', 'low']);
+    expect(result?.topTracksServerId).toBe('srv-2');
+    expect(result?.topTracksFingerprint).toBe('tracks-v1');
   });
 
   it('returns null when the merged artist anchor is missing', async () => {
@@ -93,12 +98,12 @@ describe('tryLoadArtistDetailMultiScope', () => {
       tracks: [],
     });
 
-    await expect(tryLoadArtistDetailMultiScope('srv-1', 'art-1')).resolves.toBeNull();
+    await expect(tryLoadArtistDetailMultiScope([], 'srv-1', 'art-1')).resolves.toBeNull();
   });
 
   it('returns null when the scope command throws', async () => {
     libraryScopeArtistDetailMock.mockRejectedValue(new Error('ipc fail'));
 
-    await expect(tryLoadArtistDetailMultiScope('srv-1', 'art-1')).resolves.toBeNull();
+    await expect(tryLoadArtistDetailMultiScope([], 'srv-1', 'art-1')).resolves.toBeNull();
   });
 });

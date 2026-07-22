@@ -235,6 +235,26 @@ pub struct TrackRefDto {
     pub content_hash: Option<String>,
 }
 
+/// Owner-scoped cache key for a user rating on a track, album, or artist.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityUserRatingRefDto {
+    pub server_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+}
+
+/// Cached user rating together with the time it was fetched from its owner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityUserRatingDto {
+    pub server_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub rating: i64,
+    pub fetched_at: i64,
+}
+
 /// Input to `library_put_artifact`. Same shape as `TrackArtifactDto`
 /// minus the server-supplied `server_id` / `track_id` (provided as
 /// command args) and `fetched_at` (stamped server-side from `now`).
@@ -693,11 +713,201 @@ pub struct LibraryArtistLosslessBrowseResponse {
 // ──────────────────────────────────────────────────────────────────────
 
 /// One `(server_id, library_id)` pair in priority order (index 0 = highest).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// `None` selects every indexed library on the server; `Some("")` selects only
+/// concrete rows whose library id is empty.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryScopePair {
     pub server_id: String,
+    pub library_id: Option<String>,
+}
+
+/// Entity kind accepted by `library_resolve_entity_sources`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LibrarySourceEntityType {
+    Track,
+    Album,
+    Artist,
+}
+
+/// Resolve one concrete browse entity to every matching concrete source in an
+/// explicitly ordered scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryResolveEntitySourcesRequest {
+    pub entity_type: LibrarySourceEntityType,
+    pub anchor_server_id: String,
+    pub anchor_id: String,
+    pub scopes: Vec<LibraryScopePair>,
+}
+
+/// Concrete source metadata for one browse identity partition. Identity keys
+/// remain internal so the frontend cannot persist raw cluster hashes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryEntitySourceDto {
+    pub server_id: String,
+    pub id: String,
     pub library_id: String,
+    pub priority: u32,
+    pub duration_sec: Option<i64>,
+    pub suffix: Option<String>,
+    pub bit_rate: Option<i64>,
+    pub size_bytes: Option<i64>,
+    pub starred_at: Option<i64>,
+    pub user_rating: Option<i64>,
+}
+
+/// One raw network album that the New Releases freshness overlay needs to
+/// reconcile with the local scope identity graph.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryAlbumOverlayCandidateDto {
+    pub server_id: String,
+    pub id: String,
+    pub name: String,
+    pub artist: Option<String>,
+}
+
+/// Resolve a bounded network overlay batch against one ordered browse scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryResolveAlbumOverlayRequest {
+    pub scopes: Vec<LibraryScopePair>,
+    pub albums: Vec<LibraryAlbumOverlayCandidateDto>,
+}
+
+/// Order-preserving overlay resolution. `group` is valid only within this
+/// response and lets the frontend collapse logical copies without persisting
+/// internal cluster identity keys.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryAlbumOverlayResolutionDto {
+    pub group: u32,
+    pub representative_server_id: Option<String>,
+    pub representative_id: Option<String>,
+}
+
+/// One selected server and its optional music-folder filter for aggregate index reads.
+/// An empty `library_ids` list includes every indexed folder on that server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsScope {
+    pub server_id: String,
+    #[serde(default)]
+    pub library_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsRequest {
+    pub scopes: Vec<LibraryStatisticsScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsGenreDto {
+    pub value: String,
+    pub song_count: i64,
+    pub album_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsFormatDto {
+    pub value: String,
+    pub song_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatisticsDto {
+    pub artist_count: i64,
+    pub album_count: i64,
+    pub song_count: i64,
+    pub playtime_sec: i64,
+    pub genres: Vec<LibraryStatisticsGenreDto>,
+    pub formats: Vec<LibraryStatisticsFormatDto>,
+}
+
+/// Ranked album row over the selected Statistics-style server/library scopes.
+/// Equivalent albums remain distinct across folders and servers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedAlbumDto {
+    pub server_id: String,
+    pub library_id: String,
+    pub id: String,
+    pub name: String,
+    pub artist: String,
+    pub artist_id: Option<String>,
+    pub year: Option<i64>,
+    pub cover_art_id: Option<String>,
+    pub play_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedArtistDto {
+    pub server_id: String,
+    pub id: String,
+    pub name: String,
+    pub cover_art_id: Option<String>,
+    pub play_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedRequest {
+    pub scopes: Vec<LibraryStatisticsScope>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMostPlayedResponse {
+    pub albums: Vec<LibraryMostPlayedAlbumDto>,
+    pub artists: Vec<LibraryMostPlayedArtistDto>,
+    pub has_more: bool,
+}
+
+/// Entity surface served by the cursor-based scoped browse engine.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LibraryScopeBrowseEntity {
+    Album,
+    Artist,
+    Track,
+}
+
+/// Indexed catalogue browse request. FTS and arbitrary compound filters remain
+/// on `library_advanced_search`; this contract powers ordinary entity pages.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeBrowseRequest {
+    pub entity: LibraryScopeBrowseEntity,
+    pub scopes: Vec<LibraryScopePair>,
+    #[serde(default)]
+    pub sort: Vec<LibrarySortClause>,
+    pub limit: u32,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeBrowseResponse {
+    pub albums: Vec<LibraryAlbumDto>,
+    pub artists: Vec<LibraryArtistDto>,
+    pub tracks: Vec<LibraryTrackDto>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub source: String,
 }
 
 /// Derive ordered `(server_id, library_id)` pairs from request fields.
@@ -706,29 +916,26 @@ pub(crate) fn ordered_library_scope_pairs(
     server_id: &str,
     library_scope: Option<&str>,
     library_scopes: Option<&[LibraryScopePair]>,
-) -> Vec<LibraryScopePair> {
+) -> Result<Vec<LibraryScopePair>, String> {
     if let Some(scopes) = library_scopes {
-        let pairs: Vec<LibraryScopePair> = scopes
-            .iter()
-            .filter(|p| !p.server_id.trim().is_empty() && !p.library_id.trim().is_empty())
-            .cloned()
-            .collect();
+        let pairs = crate::scope_merge::normalize_scope_pairs(scopes)?;
         if !pairs.is_empty() {
-            return pairs;
+            return Ok(pairs);
         }
     }
     if let Some(scope) = library_scope.map(str::trim).filter(|s| !s.is_empty()) {
-        return vec![LibraryScopePair {
+        return Ok(vec![LibraryScopePair {
             server_id: server_id.to_string(),
-            library_id: scope.to_string(),
-        }];
+            library_id: Some(scope.to_string()),
+        }]);
     }
-    Vec::new()
+    Ok(Vec::new())
 }
 
-/// Layer-2 dedup runs only when the ordered scope has more than one pair.
+/// Layer-2 dedup runs for multiple sources and for a whole-server source, which
+/// may contain matching copies in several concrete libraries.
 pub(crate) fn multi_library_merge_enabled(scopes: &[LibraryScopePair]) -> bool {
-    scopes.len() > 1
+    scopes.len() > 1 || scopes.iter().any(|pair| pair.library_id.is_none())
 }
 
 /// Layer-1 scoped browse (sargable `library_id`, no cluster join) for one server.
@@ -738,7 +945,7 @@ pub(crate) fn scoped_layer1_eligible(scopes: &[LibraryScopePair]) -> bool {
     };
     scopes
         .iter()
-        .all(|p| p.server_id == first.server_id && !p.library_id.trim().is_empty())
+        .all(|p| p.server_id == first.server_id && p.library_id.is_some())
 }
 
 /// Paginated album/artist browse over an ordered multi-library scope.
@@ -752,6 +959,43 @@ pub struct LibraryScopeListRequest {
     pub limit: Option<u32>,
     #[serde(default)]
     pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LibraryMainstageAlbumFeed {
+    NewReleases,
+    RecentlyPlayed,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Chronological album feed over one ordered multi-server library scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMainstageAlbumsRequest {
+    pub scopes: Vec<LibraryScopePair>,
+    pub feed: LibraryMainstageAlbumFeed,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    /// OR-matched atomic genres, applied before chronological album grouping.
+    #[serde(default)]
+    pub genres: Vec<String>,
+    /// New Releases page needs genre filter counts; Home's chronological rail does not.
+    #[serde(default = "default_true")]
+    pub include_genre_counts: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryMainstageAlbumsResponse {
+    pub albums: Vec<LibraryAlbumDto>,
+    pub has_more: bool,
+    pub genre_counts: Vec<GenreAlbumCountDto>,
 }
 
 /// FTS track search over an ordered multi-library scope.
@@ -780,6 +1024,23 @@ pub struct LibraryScopeArtistDetailRequest {
     pub scopes: Vec<LibraryScopePair>,
     pub artist_id: String,
     pub server_id: String,
+    /// Detail views need tracks for top songs; discography-only callers can skip
+    /// the extra scoped track query.
+    #[serde(default = "default_true")]
+    pub include_tracks: bool,
+    /// When set, return only the highest personal-play-count tracks. The
+    /// artist page uses this as a bounded fallback while server Top Songs load.
+    #[serde(default)]
+    pub top_tracks_limit: Option<u32>,
+}
+
+/// Aggregated composer detail anchored to one concrete server composer id.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeComposerDetailRequest {
+    pub scopes: Vec<LibraryScopePair>,
+    pub composer_id: String,
+    pub server_id: String,
 }
 
 /// `library_scope_album_detail` response.
@@ -797,6 +1058,20 @@ pub struct LibraryScopeArtistDetailResponse {
     pub artist: LibraryArtistDto,
     pub albums: Vec<LibraryAlbumDto>,
     pub tracks: Vec<LibraryTrackDto>,
+    /// Server with the broadest scoped catalog for this artist. Present only
+    /// for bounded Top Tracks requests.
+    pub top_tracks_server_id: Option<String>,
+    /// Stable hash of the scoped artist tracks used to invalidate Top Songs
+    /// rankings only when that catalog slice changes.
+    pub top_tracks_fingerprint: Option<String>,
+}
+
+/// `library_scope_composer_detail` response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryScopeComposerDetailResponse {
+    pub composer: LibraryArtistDto,
+    pub albums: Vec<LibraryAlbumDto>,
 }
 
 /// `library_search_cross_server` response (§5.5B / §5.9).

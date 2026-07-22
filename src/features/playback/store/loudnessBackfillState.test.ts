@@ -2,8 +2,7 @@
  * Backfill state: two parallel maps that retry the per-track loudness
  * analysis a bounded number of times. The interesting behaviours are the
  * `markBackfillInFlight` atomicity (both flag + counter bump in one call)
- * and the reseed reset that expands across the `stream:` / bare id forms
- * via `loudnessCacheStateKeysForTrackId` (re-used from loudnessGainCache).
+ * and owner isolation when two servers expose the same raw track id.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -14,8 +13,11 @@ import {
   isBackfillInFlight,
   markBackfillInFlight,
   resetBackfillAttempts,
-  resetLoudnessBackfillStateForTrackId,
+  resetLoudnessBackfillState,
 } from '@/features/playback/store/loudnessBackfillState';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
+
+const ref = (trackId: string, serverId = 'server-a') => analysisTrackRef(trackId, serverId);
 
 afterEach(() => {
   _resetBackfillStateForTest();
@@ -23,44 +25,44 @@ afterEach(() => {
 
 describe('initial state', () => {
   it('reports no inflight + 0 attempts for unknown tracks', () => {
-    expect(isBackfillInFlight('t1')).toBe(false);
-    expect(getBackfillAttempts('t1')).toBe(0);
+    expect(isBackfillInFlight(ref('t1'))).toBe(false);
+    expect(getBackfillAttempts(ref('t1'))).toBe(0);
   });
 });
 
 describe('markBackfillInFlight', () => {
   it('atomically sets inflight flag and counter', () => {
-    markBackfillInFlight('t1', 1);
-    expect(isBackfillInFlight('t1')).toBe(true);
-    expect(getBackfillAttempts('t1')).toBe(1);
+    markBackfillInFlight(ref('t1'), 1);
+    expect(isBackfillInFlight(ref('t1'))).toBe(true);
+    expect(getBackfillAttempts(ref('t1'))).toBe(1);
   });
 
   it('keeps tracks independent', () => {
-    markBackfillInFlight('a', 1);
-    markBackfillInFlight('b', 2);
-    expect(getBackfillAttempts('a')).toBe(1);
-    expect(getBackfillAttempts('b')).toBe(2);
-    clearBackfillInFlight('a');
-    expect(isBackfillInFlight('a')).toBe(false);
-    expect(isBackfillInFlight('b')).toBe(true);
+    markBackfillInFlight(ref('same', 'server-a'), 1);
+    markBackfillInFlight(ref('same', 'server-b'), 2);
+    expect(getBackfillAttempts(ref('same', 'server-a'))).toBe(1);
+    expect(getBackfillAttempts(ref('same', 'server-b'))).toBe(2);
+    clearBackfillInFlight(ref('same', 'server-a'));
+    expect(isBackfillInFlight(ref('same', 'server-a'))).toBe(false);
+    expect(isBackfillInFlight(ref('same', 'server-b'))).toBe(true);
   });
 });
 
 describe('clearBackfillInFlight', () => {
   it('clears the flag without touching the counter', () => {
-    markBackfillInFlight('t1', 1);
-    clearBackfillInFlight('t1');
-    expect(isBackfillInFlight('t1')).toBe(false);
-    expect(getBackfillAttempts('t1')).toBe(1); // counter preserved
+    markBackfillInFlight(ref('t1'), 1);
+    clearBackfillInFlight(ref('t1'));
+    expect(isBackfillInFlight(ref('t1'))).toBe(false);
+    expect(getBackfillAttempts(ref('t1'))).toBe(1); // counter preserved
   });
 });
 
 describe('resetBackfillAttempts', () => {
   it('zeros the counter without touching the inflight flag', () => {
-    markBackfillInFlight('t1', 2);
-    resetBackfillAttempts('t1');
-    expect(getBackfillAttempts('t1')).toBe(0);
-    expect(isBackfillInFlight('t1')).toBe(true);
+    markBackfillInFlight(ref('t1'), 2);
+    resetBackfillAttempts(ref('t1'));
+    expect(getBackfillAttempts(ref('t1'))).toBe(0);
+    expect(isBackfillInFlight(ref('t1'))).toBe(true);
   });
 });
 
@@ -70,22 +72,20 @@ describe('MAX_BACKFILL_ATTEMPTS_PER_TRACK', () => {
   });
 });
 
-describe('resetLoudnessBackfillStateForTrackId', () => {
-  it('clears both maps for both id forms (bare + stream:)', () => {
-    markBackfillInFlight('t1', 1);
-    markBackfillInFlight('stream:t1', 2);
-    resetLoudnessBackfillStateForTrackId('t1');
-    expect(isBackfillInFlight('t1')).toBe(false);
-    expect(isBackfillInFlight('stream:t1')).toBe(false);
-    expect(getBackfillAttempts('t1')).toBe(0);
-    expect(getBackfillAttempts('stream:t1')).toBe(0);
+describe('resetLoudnessBackfillState', () => {
+  it('normalizes bare and stream-prefixed ids for the same owner', () => {
+    markBackfillInFlight(ref('t1'), 1);
+    expect(getBackfillAttempts(ref('stream:t1'))).toBe(1);
+    resetLoudnessBackfillState(ref('stream:t1'));
+    expect(isBackfillInFlight(ref('t1'))).toBe(false);
+    expect(getBackfillAttempts(ref('t1'))).toBe(0);
   });
 
-  it('also works when invoked with the stream-prefixed form', () => {
-    markBackfillInFlight('t1', 1);
-    markBackfillInFlight('stream:t1', 2);
-    resetLoudnessBackfillStateForTrackId('stream:t1');
-    expect(getBackfillAttempts('t1')).toBe(0);
-    expect(getBackfillAttempts('stream:t1')).toBe(0);
+  it('does not reset the same raw id owned by another server', () => {
+    markBackfillInFlight(ref('t1', 'server-a'), 1);
+    markBackfillInFlight(ref('t1', 'server-b'), 2);
+    resetLoudnessBackfillState(ref('t1', 'server-a'));
+    expect(getBackfillAttempts(ref('t1', 'server-a'))).toBe(0);
+    expect(getBackfillAttempts(ref('t1', 'server-b'))).toBe(2);
   });
 });

@@ -33,6 +33,8 @@ export const sidebar = {
   librarySelect: 'Inkluder {{name}}',
   libraryDeselect: 'Ekskluder {{name}}',
   librarySelectionCount: '{{count}} biblioteker',
+  serverSelectionCount: '{{count}} servere',
+  serverAvailabilityCount: '<unavailable>{{total}}</unavailable>→{{available}} servere',
   expandPlaylists: 'Utvid spillelister',
   collapsePlaylists: 'Skjul spillelister',
   more: 'Mer',

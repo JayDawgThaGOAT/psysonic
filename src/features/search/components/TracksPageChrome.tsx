@@ -149,7 +149,7 @@ export default function TracksPageChrome({
               <OpenArtistRefInline
                 refs={heroArtistRefs}
                 fallbackName={hero.artist}
-                onGoArtist={id => navigateToArtist(id)}
+                onGoArtist={id => navigateToArtist(id, { serverId: hero.serverId ?? activeServerId })}
                 as="none"
                 linkTag="span"
                 linkClassName="track-artist-link"
@@ -161,7 +161,9 @@ export default function TracksPageChrome({
                   <span
                     className={hero.albumId ? 'track-artist-link' : ''}
                     style={{ cursor: hero.albumId ? 'pointer' : 'default' }}
-                    onClick={() => hero.albumId && navigateToAlbum(hero.albumId)}
+                    onClick={() => hero.albumId && navigateToAlbum(hero.albumId, {
+                      serverId: hero.serverId ?? activeServerId,
+                    })}
                   >{hero.album}</span>
                 </>
               )}

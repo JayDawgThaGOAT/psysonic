@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { computeSyncPaths } from '@/lib/api/syncfs';
 import { fetchTracksForSource } from '@/features/playback/utils/playback/fetchTracksForSource';
 import { trackToSyncInfo, type SyncStatus } from '@/features/deviceSync/utils/deviceSyncHelpers';
-import type { DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
+import { deviceSyncSourceKey, type DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
 
 export interface DeviceSyncSourceStatusesResult {
   sourcePathsMap: Map<string, string[]>;
@@ -41,9 +41,9 @@ export function useDeviceSyncSourceStatuses(
             )),
             destDir: targetDir,
           });
-          map.set(source.id, paths);
+          map.set(deviceSyncSourceKey(source), paths);
         } catch {
-          map.set(source.id, []);
+          map.set(deviceSyncSourceKey(source), []);
         }
       }));
       if (!cancelled) setSourcePathsMap(map);
@@ -56,12 +56,13 @@ export function useDeviceSyncSourceStatuses(
     const deviceSet = new Set(deviceFilePaths);
     const statuses = new Map<string, SyncStatus>();
     for (const source of sources) {
-      if (pendingDeletion.includes(source.id)) {
-        statuses.set(source.id, 'deletion');
+      const sourceKey = deviceSyncSourceKey(source);
+      if (pendingDeletion.includes(sourceKey)) {
+        statuses.set(sourceKey, 'deletion');
       } else {
-        const paths = sourcePathsMap.get(source.id) ?? [];
+        const paths = sourcePathsMap.get(sourceKey) ?? [];
         const allSynced = paths.length > 0 && paths.every(p => deviceSet.has(p));
-        statuses.set(source.id, allSynced ? 'synced' : 'pending');
+        statuses.set(sourceKey, allSynced ? 'synced' : 'pending');
       }
     }
     return statuses;

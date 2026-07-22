@@ -13,9 +13,9 @@ const hoisted = vi.hoisted(() => {
     normalizationEngine: 'loudness' as 'off' | 'replaygain' | 'loudness',
   };
   const playerState = {
-    queue: [] as Array<{ id: string }>,
+    queueItems: [] as Array<{ trackId: string; serverId: string }>,
     queueIndex: 0,
-    currentTrack: null as { id: string } | null,
+    currentTrack: null as { id: string; serverId?: string } | null,
     updateReplayGainForCurrentTrack: vi.fn(),
   };
   return {
@@ -23,6 +23,7 @@ const hoisted = vi.hoisted(() => {
     playerState,
     invokeMock: vi.fn(async (_cmd: string, _args?: Record<string, unknown>) => null as unknown),
     buildStreamUrlMock: vi.fn((id: string) => `https://mock/stream/${id}`),
+    buildStreamUrlForServerMock: vi.fn((serverId: string, id: string) => `https://mock/${serverId}/stream/${id}`),
     redactMock: vi.fn((s: string) => s),
     playerSetStateMock: vi.fn(),
     emitDebugMock: vi.fn(),
@@ -38,7 +39,10 @@ const hoisted = vi.hoisted(() => {
 });
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: hoisted.invokeMock }));
-vi.mock('@/lib/api/subsonicStreamUrl', () => ({ buildStreamUrl: hoisted.buildStreamUrlMock }));
+vi.mock('@/lib/api/subsonicStreamUrl', () => ({
+  buildStreamUrl: hoisted.buildStreamUrlMock,
+  buildStreamUrlForServer: hoisted.buildStreamUrlForServerMock,
+}));
 vi.mock('@/lib/server/redactSubsonicUrl', () => ({ redactSubsonicUrlForLog: hoisted.redactMock }));
 vi.mock('@/store/authStore', () => ({ useAuthStore: { getState: () => hoisted.auth } }));
 vi.mock('@/features/playback/store/playerStore', () => ({
@@ -70,12 +74,15 @@ import {
   _resetLoudnessRefreshInflightForTest,
   refreshLoudnessForTrack,
 } from '@/features/playback/store/loudnessRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
+
+const ref = (trackId: string, serverId = 'server-a') => analysisTrackRef(trackId, serverId);
 
 beforeEach(() => {
   _resetLoudnessRefreshInflightForTest();
   hoisted.auth.loudnessTargetLufs = -14;
   hoisted.auth.normalizationEngine = 'loudness';
-  hoisted.playerState.queue = [];
+  hoisted.playerState.queueItems = [];
   hoisted.playerState.queueIndex = 0;
   hoisted.playerState.currentTrack = null;
   hoisted.invokeMock.mockReset();
@@ -98,45 +105,64 @@ beforeEach(() => {
 
 describe('refreshLoudnessForTrack', () => {
   it('is a no-op for empty trackId', async () => {
-    await refreshLoudnessForTrack('');
+    await refreshLoudnessForTrack(ref(''));
+    expect(hoisted.invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not route an unknown profile UUID through the active server', async () => {
+    await refreshLoudnessForTrack(ref('t1', '9ee02895-4d12-4faa-9a9f-3fae22b64d18'));
     expect(hoisted.invokeMock).not.toHaveBeenCalled();
   });
 
   it('coalesces concurrent calls for the same key into one inflight promise', async () => {
     hoisted.invokeMock.mockResolvedValue(null);
-    const p1 = refreshLoudnessForTrack('t1');
-    const p2 = refreshLoudnessForTrack('t1');
+    const p1 = refreshLoudnessForTrack(ref('t1'));
+    const p2 = refreshLoudnessForTrack(ref('t1'));
     await Promise.all([p1, p2]);
     // One analysis_get_loudness_for_track call shared between both awaiters.
     const getCalls = hoisted.invokeMock.mock.calls.filter(c => c[0] === 'analysis_get_loudness_for_track');
     expect(getCalls).toHaveLength(1);
   });
 
+  it('does not coalesce equal raw ids from different servers', async () => {
+    await Promise.all([
+      refreshLoudnessForTrack(ref('same', 'server-a')),
+      refreshLoudnessForTrack(ref('same', 'server-b')),
+    ]);
+    const getCalls = hoisted.invokeMock.mock.calls.filter(c => c[0] === 'analysis_get_loudness_for_track');
+    expect(getCalls).toHaveLength(2);
+    expect(getCalls.map(c => c[1]?.serverId)).toEqual(['server-a', 'server-b']);
+  });
+
   it('marks loudness stable on a hit row', async () => {
     hoisted.invokeMock.mockResolvedValueOnce({ recommendedGainDb: -7, targetLufs: -14, updatedAt: 123 });
-    await refreshLoudnessForTrack('t1');
-    expect(hoisted.markLoudnessStableMock).toHaveBeenCalledWith('t1', -7);
-    expect(hoisted.resetBackfillAttemptsMock).toHaveBeenCalledWith('t1');
+    await refreshLoudnessForTrack(ref('t1'));
+    expect(hoisted.markLoudnessStableMock).toHaveBeenCalledWith(ref('t1'), -7);
+    expect(hoisted.resetBackfillAttemptsMock).toHaveBeenCalledWith(ref('t1'));
   });
 
   it('forgets the cached value on a miss row', async () => {
     hoisted.invokeMock.mockResolvedValueOnce(null);
-    await refreshLoudnessForTrack('t1');
-    expect(hoisted.forgetLoudnessMock).toHaveBeenCalledWith('t1');
+    await refreshLoudnessForTrack(ref('t1'));
+    expect(hoisted.forgetLoudnessMock).toHaveBeenCalledWith(ref('t1'));
   });
 
   it('enqueues a backfill when conditions are met (loudness engine, not inflight, attempts < max, in window)', async () => {
     hoisted.invokeMock.mockResolvedValueOnce(null);
-    await refreshLoudnessForTrack('t1');
-    expect(hoisted.markBackfillInFlightMock).toHaveBeenCalledWith('t1', 1);
+    await refreshLoudnessForTrack(ref('t1'));
+    expect(hoisted.markBackfillInFlightMock).toHaveBeenCalledWith(ref('t1'), 1);
     const enqueueCall = hoisted.invokeMock.mock.calls.find(c => c[0] === 'analysis_enqueue_seed_from_url');
-    expect(enqueueCall).toBeDefined();
+    expect(enqueueCall?.[1]).toMatchObject({
+      trackId: 't1',
+      serverId: 'server-a',
+      url: 'https://mock/server-a/stream/t1',
+    });
   });
 
   it('skips backfill when outside the prefetch window', async () => {
     hoisted.invokeMock.mockResolvedValueOnce(null);
     hoisted.isTrackInsideWindowMock.mockReturnValueOnce(false);
-    await refreshLoudnessForTrack('t1');
+    await refreshLoudnessForTrack(ref('t1'));
     expect(hoisted.markBackfillInFlightMock).not.toHaveBeenCalled();
     const enqueueCall = hoisted.invokeMock.mock.calls.find(c => c[0] === 'analysis_enqueue_seed_from_url');
     expect(enqueueCall).toBeUndefined();
@@ -145,7 +171,7 @@ describe('refreshLoudnessForTrack', () => {
   it('skips backfill when attempts already at max', async () => {
     hoisted.invokeMock.mockResolvedValueOnce(null);
     hoisted.getBackfillAttemptsMock.mockReturnValueOnce(2);
-    await refreshLoudnessForTrack('t1');
+    await refreshLoudnessForTrack(ref('t1'));
     expect(hoisted.markBackfillInFlightMock).not.toHaveBeenCalled();
     const throttledCalls = hoisted.emitDebugMock.mock.calls.filter(c => c[0] === 'backfill:throttled');
     expect(throttledCalls.length).toBeGreaterThan(0);
@@ -154,7 +180,7 @@ describe('refreshLoudnessForTrack', () => {
   it('skips backfill when already inflight', async () => {
     hoisted.invokeMock.mockResolvedValueOnce(null);
     hoisted.isBackfillInFlightMock.mockReturnValueOnce(true);
-    await refreshLoudnessForTrack('t1');
+    await refreshLoudnessForTrack(ref('t1'));
     expect(hoisted.markBackfillInFlightMock).not.toHaveBeenCalled();
   });
 
@@ -164,7 +190,7 @@ describe('refreshLoudnessForTrack', () => {
       return { recommendedGainDb: -5, targetLufs: -14, updatedAt: 1 };
     });
     hoisted.invokeMock.mockResolvedValueOnce(null); // retry returns miss
-    await refreshLoudnessForTrack('t1');
+    await refreshLoudnessForTrack(ref('t1'));
     // markLoudnessStable should NOT have been called from the first invocation —
     // result is discarded because target changed.
     expect(hoisted.markLoudnessStableMock).not.toHaveBeenCalled();
@@ -177,20 +203,20 @@ describe('refreshLoudnessForTrack', () => {
 
   it('skips engine update when syncPlayingEngine is false', async () => {
     hoisted.invokeMock.mockResolvedValueOnce({ recommendedGainDb: -7, targetLufs: -14, updatedAt: 1 });
-    await refreshLoudnessForTrack('t1', { syncPlayingEngine: false });
+    await refreshLoudnessForTrack(ref('t1'), { syncPlayingEngine: false });
     expect(hoisted.playerState.updateReplayGainForCurrentTrack).not.toHaveBeenCalled();
   });
 
   it('calls updateReplayGainForCurrentTrack by default on hit', async () => {
     hoisted.invokeMock.mockResolvedValueOnce({ recommendedGainDb: -7, targetLufs: -14, updatedAt: 1 });
-    await refreshLoudnessForTrack('t1');
+    await refreshLoudnessForTrack(ref('t1'));
     expect(hoisted.playerState.updateReplayGainForCurrentTrack).toHaveBeenCalledTimes(1);
   });
 
   it('forgets cache + emits refresh:error on a thrown invoke', async () => {
     hoisted.invokeMock.mockRejectedValueOnce(new Error('rust busy'));
-    await refreshLoudnessForTrack('t1');
-    expect(hoisted.forgetLoudnessMock).toHaveBeenCalledWith('t1');
+    await refreshLoudnessForTrack(ref('t1'));
+    expect(hoisted.forgetLoudnessMock).toHaveBeenCalledWith(ref('t1'));
     const errCalls = hoisted.emitDebugMock.mock.calls.filter(c => c[0] === 'refresh:error');
     expect(errCalls).toHaveLength(1);
   });

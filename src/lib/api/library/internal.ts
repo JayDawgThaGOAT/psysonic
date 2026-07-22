@@ -14,8 +14,8 @@ export function serverIndexKeyForId(serverId: string): string {
 }
 
 export function mapServerIdFromIndexKey(serverId: string, fallback?: string): string {
-  if (fallback) return fallback;
-  return resolveServerIdForIndexKey(serverId);
+  const resolved = resolveServerIdForIndexKey(serverId);
+  return resolved === serverId && fallback ? fallback : resolved;
 }
 
 export function mapTracksServerId(

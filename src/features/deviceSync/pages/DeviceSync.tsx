@@ -1,7 +1,11 @@
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import React, { useState, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useDeviceSyncStore, DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
+import {
+  deviceSyncSourceKey,
+  useDeviceSyncStore,
+  type DeviceSyncSource,
+} from '@/features/deviceSync/store/deviceSyncStore';
 import { useDeviceSyncJobStore } from '@/features/deviceSync/store/deviceSyncJobStore';
 
 import {
@@ -54,13 +58,22 @@ export default function DeviceSync() {
 
   const [activeTab, setActiveTab]           = useState<SourceTab>('albums');
   const [search, setSearch]                 = useState('');
+  const resetSearch = useCallback(() => setSearch(''), []);
   // ─── Removable drive detection ──────────────────────────────────────────
   const { drives, drivesLoading, activeDrive, driveDetected, refreshDrives } =
     useDeviceSyncDrives(targetDir);
 
   const [preSyncOpen, setPreSyncOpen] = useState(false);
   const [preSyncLoading, setPreSyncLoading] = useState(false);
-  const [syncDelta, setSyncDelta] = useState<SyncDelta>({ addBytes: 0, addCount: 0, delBytes: 0, delCount: 0, availableBytes: 0, tracks: [] as SubsonicSong[] });
+  const [syncDelta, setSyncDelta] = useState<SyncDelta>({
+    addBytes: 0,
+    addCount: 0,
+    delBytes: 0,
+    delCount: 0,
+    availableBytes: 0,
+    tracks: [] as SubsonicSong[],
+    context: null,
+  });
 
   // ─── Migration (rename existing files into the fixed scheme) ────────────
   const [migrationPhase, setMigrationPhase] = useState<MigrationPhase>('closed');
@@ -72,8 +85,23 @@ export default function DeviceSync() {
 
   const isRunning = jobStatus === 'running';
 
+  // Browser (playlists / albums / artists tabs + their loaders + debounced search)
+  const {
+    playlists, randomAlbums, albumSearchResults, albumSearchLoading,
+    artists, loadingBrowser,
+    expandedArtistIds, artistAlbumsMap, loadingArtistIds,
+    toggleArtistExpand,
+    serverIndexKey: browserServerIndexKey,
+  } = useDeviceSyncBrowser(activeTab, search, resetSearch);
+
   // ─── Device scan + manifest auto-import ─────────────────────────────────
-  const { scanDevice } = useDeviceSyncDeviceScan(targetDir, sources.length, driveDetected, t);
+  const { scanDevice } = useDeviceSyncDeviceScan(
+    targetDir,
+    sources.length,
+    driveDetected,
+    browserServerIndexKey,
+    t,
+  );
 
   // Source status (path map + derived synced/pending/deletion)
   const { sourcePathsMap, sourceStatuses } = useDeviceSyncSourceStatuses(
@@ -83,26 +111,27 @@ export default function DeviceSync() {
   // ─── Desired State / Diff Logic ─────────────────────────────────────────
 
   const handleToggleSource = useCallback((source: DeviceSyncSource) => {
-    const isSelected = sources.some(s => s.id === source.id);
-    const isPendingDeletion = pendingDeletion.includes(source.id);
+    const sourceKey = deviceSyncSourceKey(source);
+    const isSelected = sources.some(s => deviceSyncSourceKey(s) === sourceKey);
+    const isPendingDeletion = pendingDeletion.includes(sourceKey);
     const isActuallySelected = isSelected && !isPendingDeletion;
 
     if (isActuallySelected) {
       // User initiated a DE-SELECTION. Diff check against target device
-      const isSynced = sourceStatuses.get(source.id) === 'synced';
-      const pathsOnDisk = sourcePathsMap.get(source.id)?.filter(p => deviceFilePaths.includes(p)).length || 0;
+      const isSynced = sourceStatuses.get(sourceKey) === 'synced';
+      const pathsOnDisk = sourcePathsMap.get(sourceKey)?.filter(p => deviceFilePaths.includes(p)).length || 0;
       
       if (pathsOnDisk > 0 || isSynced) {
         // Source currently has physical footprint. Stage for deletion.
-        markForDeletion([source.id]);
+        markForDeletion([sourceKey]);
       } else {
         // Zero physical footprint. Strip safely.
-        removeSource(source.id);
+        removeSource(sourceKey);
       }
     } else {
       // User initiated a SELECTION.
       if (isPendingDeletion) {
-        unmarkDeletion(source.id); // Cancel queued red/strikethrough state
+        unmarkDeletion(sourceKey); // Cancel queued red/strikethrough state
       } else if (!isSelected) {
         addSource(source); // Trigger clean pending install state
       }
@@ -111,14 +140,6 @@ export default function DeviceSync() {
 
   // ─── Listen for background sync events ──────────────────────────────────
   useDeviceSyncJobEvents(t, scanDevice);
-
-  // Browser (playlists / albums / artists tabs + their loaders + debounced search)
-  const {
-    playlists, randomAlbums, albumSearchResults, albumSearchLoading,
-    artists, loadingBrowser,
-    expandedArtistIds, artistAlbumsMap, loadingArtistIds,
-    toggleArtistExpand,
-  } = useDeviceSyncBrowser(activeTab, search, () => setSearch(''));
 
   // ─── Migration handlers ─────────────────────────────────────────────────
 
@@ -141,7 +162,12 @@ export default function DeviceSync() {
     setMigrationOldTemplate('');
   };
 
-  const handleChooseFolder = () => runDeviceSyncChooseFolder({ t, setTargetDir, scanDevice });
+  const handleChooseFolder = () => runDeviceSyncChooseFolder({
+    t,
+    ownerServerIndexKey: browserServerIndexKey,
+    setTargetDir,
+    scanDevice,
+  });
 
   // ─── Sync (non-blocking) ────────────────────────────────────────────────
 
@@ -151,7 +177,7 @@ export default function DeviceSync() {
   });
 
   const handleSyncExecution = () => runDeviceSyncExecute({
-    targetDir, sources, pendingDeletion, syncDelta, t,
+    syncDelta, t,
     setPreSyncOpen, removeSources, scanDevice,
   });
 
@@ -162,8 +188,8 @@ export default function DeviceSync() {
     markForDeletion(checkedIds);
   };
 
-  const allChecked = sources.length > 0 && sources.every(s => checkedIds.includes(s.id));
-  const toggleAll  = () => setCheckedIds(allChecked ? [] : sources.map(s => s.id));
+  const allChecked = sources.length > 0 && sources.every(s => checkedIds.includes(deviceSyncSourceKey(s)));
+  const toggleAll  = () => setCheckedIds(allChecked ? [] : sources.map(deviceSyncSourceKey));
 
   const pendingCount   = Array.from(sourceStatuses.values()).filter(s => s === 'pending').length;
   const syncedCount    = Array.from(sourceStatuses.values()).filter(s => s === 'synced').length;
@@ -218,6 +244,7 @@ export default function DeviceSync() {
           artistAlbumsMap={artistAlbumsMap}
           loadingArtistIds={loadingArtistIds}
           toggleArtistExpand={toggleArtistExpand}
+          serverIndexKey={browserServerIndexKey}
           sources={sources}
           pendingDeletion={pendingDeletion}
           handleToggleSource={handleToggleSource}

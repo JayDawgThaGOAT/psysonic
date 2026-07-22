@@ -9,19 +9,29 @@
 // identical to today's behavior outside an Orbit session. A session can only start
 // through the topbar, which loads the barrel (→ registers) before any session
 // exists, so the registered runtime is always in place when it matters.
-import type { OrbitRole, OrbitPhase, OrbitState } from '@/features/orbit'; // type-only (erased at runtime)
+export type OrbitRole = 'host' | 'guest';
+export type OrbitPhase = 'idle' | 'starting' | 'joining' | 'active' | 'ended' | 'error';
+
+export interface OrbitRuntimeState {
+  isPlaying: boolean;
+  positionMs: number;
+  positionAt: number;
+  currentTrack: { trackId: string } | null;
+}
 
 export interface OrbitSnapshot {
   role: OrbitRole | null;
   phase: OrbitPhase;
-  state: OrbitState | null;
+  state: OrbitRuntimeState | null;
+  serverId: string | null;
 }
 
-const NEUTRAL: OrbitSnapshot = { role: null, phase: 'idle', state: null };
+const NEUTRAL: OrbitSnapshot = { role: null, phase: 'idle', state: null, serverId: null };
 
 export interface OrbitRuntime {
   getSnapshot(): OrbitSnapshot;
   bulkGuard(count: number): Promise<boolean>;
+  allowsTrackServer(serverId?: string): boolean;
 }
 
 let runtime: OrbitRuntime | null = null;
@@ -49,6 +59,11 @@ export function orbitBulkGuard(count: number): Promise<boolean> {
   return runtime ? runtime.bulkGuard(count) : Promise.resolve(true);
 }
 
+/** Host queue mutations may only carry tracks owned by the bound Orbit server. */
+export function orbitAllowsTrackServer(serverId?: string): boolean {
+  return runtime?.allowsTrackServer(serverId) ?? true;
+}
+
 // Pure derivations mirrored from the orbit feature (sessionActive.ts /
 // orbitSession.ts / api/orbit.ts). Duplicated here so the audio core needs no
 // feature import; the feature keeps its own copies (incl. the UI arg-form of
@@ -68,6 +83,6 @@ export function isOrbitPlaybackSyncActive(): boolean {
   return isSyncingPhase(role, phase);
 }
 
-export function estimateLivePosition(state: OrbitState, nowMs: number): number {
+export function estimateLivePosition(state: OrbitRuntimeState, nowMs: number): number {
   return state.isPlaying ? state.positionMs + (nowMs - state.positionAt) : state.positionMs;
 }

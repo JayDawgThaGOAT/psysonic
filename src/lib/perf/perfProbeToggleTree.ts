@@ -293,6 +293,25 @@ export const PERF_PROBE_TOGGLE_TREE: PerfToggleGroup[] = [
         ],
       },
       {
+        id: 'mainstage-tracks',
+        label: 'Tracks (`/tracks`)',
+        children: [
+          {
+            id: 'tracks-debug-traces',
+            label: 'Debug traces',
+            children: [
+              {
+                id: 'tracksBrowseTrace',
+                label: 'Browse perf trace',
+                description:
+                  'Copy mount → local browse → list paint timings from Tracks. Enable PsyLab → Logs → Debug for correlated `tracks-browse` logs.',
+                trace: 'tracksBrowse',
+              },
+            ],
+          },
+        ],
+      },
+      {
         id: 'mainstage-albums',
         label: 'Albums (`/albums`)',
         children: [
@@ -310,8 +329,26 @@ export const PERF_PROBE_TOGGLE_TREE: PerfToggleGroup[] = [
                 id: 'albumsBrowseTrace',
                 label: 'Browse perf trace',
                 description:
-                  'Step timing for nav → SQL → paint (`albums-browse` scope). Requires PsyLab → Logs → Debug.',
+                  'Copy nav → SQL → paint timings from Albums. Enable PsyLab → Logs → Debug for correlated `albums-browse` logs.',
                 trace: 'albumsBrowse',
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'home-mainstage',
+        label: 'Home (`/`)',
+        children: [
+          {
+            id: 'mainstage-debug-traces',
+            label: 'Debug traces',
+            children: [
+              {
+                id: 'mainstageTrace',
+                label: 'Mainstage diagnostics',
+                description: 'Show per-section timings, copy reports, and isolate Home sections.',
+                trace: 'mainstage',
               },
             ],
           },
@@ -343,6 +380,25 @@ export const PERF_PROBE_TOGGLE_TREE: PerfToggleGroup[] = [
                 description:
                   'Step timing for nav → SQL → paint (`artists-browse` scope). Requires PsyLab → Logs → Debug.',
                 trace: 'artistsBrowse',
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'mainstage-favorites',
+        label: 'Favorites (`/favorites`)',
+        children: [
+          {
+            id: 'favorites-debug-traces',
+            label: 'Debug traces',
+            children: [
+              {
+                id: 'favoritesBrowseTrace',
+                label: 'Browse perf trace',
+                description:
+                  'Step timing for favorites snapshots, server refresh, radio load, and paint (`favorites-browse` scope). Requires PsyLab → Logs → Debug.',
+                trace: 'favoritesBrowse',
               },
             ],
           },

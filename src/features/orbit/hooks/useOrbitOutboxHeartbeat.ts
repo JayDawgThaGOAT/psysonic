@@ -18,21 +18,22 @@ const HEARTBEAT_TICK_MS = 10_000;
  */
 export function useOrbitOutboxHeartbeat(
   active: boolean,
+  serverId: string | null,
   outboxPlaylistId: string | null,
   sessionId: string | null,
   ownName: string | null | undefined,
 ): void {
   useEffect(() => {
-    if (!active || !outboxPlaylistId || !sessionId || !ownName) return;
+    if (!active || !serverId || !outboxPlaylistId || !sessionId || !ownName) return;
     const outboxName = orbitOutboxPlaylistName(sessionId, ownName);
 
     const beat = async () => {
-      try { await writeOrbitHeartbeat(outboxPlaylistId, outboxName); }
+      try { await writeOrbitHeartbeat(outboxPlaylistId, outboxName, serverId); }
       catch { /* best-effort */ }
     };
     void beat();
 
     const id = window.setInterval(() => { void beat(); }, HEARTBEAT_TICK_MS);
     return () => window.clearInterval(id);
-  }, [active, outboxPlaylistId, sessionId, ownName]);
+  }, [active, serverId, outboxPlaylistId, sessionId, ownName]);
 }

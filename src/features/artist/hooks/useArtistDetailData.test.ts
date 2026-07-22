@@ -17,18 +17,45 @@ import type { SubsonicArtistInfo } from '@/lib/api/subsonicTypes';
 
 vi.mock('@/lib/api/subsonicArtists');
 vi.mock('@/lib/api/subsonicSearch');
+vi.mock('@/lib/hooks/useConnectionStatus', () => ({
+  useConnectionStatus: () => ({ status: 'connected' }),
+}));
+vi.mock('@/lib/network/subsonicNetworkGuard', () => ({
+  shouldAttemptSubsonicForServer: () => true,
+}));
+vi.mock('@/features/offline/utils/offlineBrowseMode', () => ({
+  isOfflineBrowseActive: () => false,
+  useOfflineBrowseActive: () => false,
+}));
 
-import { getArtist, getArtistInfo, getTopSongs } from '@/lib/api/subsonicArtists';
-import { search } from '@/lib/api/subsonicSearch';
+import {
+  getArtist,
+  getArtistForServer,
+  getArtistInfo,
+  getArtistInfoForServer,
+  getTopSongs,
+  getTopSongsForServer,
+} from '@/lib/api/subsonicArtists';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
 import { useArtistDetailData } from '@/features/artist/hooks/useArtistDetailData';
+import { useAuthStore } from '@/store/authStore';
 
 const mockArtistInfo = vi.mocked(getArtistInfo) as unknown as {
   mockImplementation: (impl: (id: string) => Promise<SubsonicArtistInfo | null>) => void;
 };
 
 beforeEach(() => {
+  useAuthStore.setState({
+    activeServerId: null,
+    servers: [],
+    libraryBrowseServerIds: [],
+    musicFoldersByServer: {},
+    libraryBrowseSelectionByServer: {},
+  });
   vi.mocked(getTopSongs).mockResolvedValue([]);
+  vi.mocked(getTopSongsForServer).mockResolvedValue([]);
   vi.mocked(search).mockResolvedValue({ songs: [], albums: [], artists: [] });
+  vi.mocked(searchForServer).mockResolvedValue({ songs: [], albums: [], artists: [] });
 });
 
 afterEach(() => {
@@ -39,6 +66,14 @@ function routerWrapper({ children }: { children: React.ReactNode }) {
   return React.createElement(MemoryRouter, null, children);
 }
 
+function secondaryServerWrapper({ children }: { children: React.ReactNode }) {
+  return React.createElement(
+    MemoryRouter,
+    { initialEntries: ['/artist/A?server=srv-b'] },
+    children,
+  );
+}
+
 function deferred<T>() {
   let resolve!: (v: T) => void;
   let reject!: (e?: unknown) => void;
@@ -47,6 +82,40 @@ function deferred<T>() {
 }
 
 describe('useArtistDetailData — id-gated info', () => {
+  it('loads artist detail, info, and featured search from the explicit secondary server', async () => {
+    useAuthStore.setState({
+      activeServerId: 'srv-a',
+      servers: [
+        { id: 'srv-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'srv-b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
+    });
+    vi.mocked(getArtistForServer).mockResolvedValue({
+      artist: { id: 'A', name: 'Secondary Artist', serverId: 'srv-b' },
+      albums: [],
+    });
+    vi.mocked(getArtistInfoForServer).mockResolvedValue({ biography: 'Secondary bio' });
+
+    const { result } = renderHook(() => useArtistDetailData('A'), {
+      wrapper: secondaryServerWrapper,
+    });
+
+    await waitFor(() => expect(result.current.artist?.name).toBe('Secondary Artist'));
+    await waitFor(() => expect(result.current.info?.biography).toBe('Secondary bio'));
+    await waitFor(() => expect(searchForServer).toHaveBeenCalledWith(
+      'srv-b',
+      'Secondary Artist',
+      { songCount: 500, artistCount: 0, albumCount: 0 },
+    ));
+    expect(getArtistForServer).toHaveBeenCalledWith('srv-b', 'A');
+    expect(getArtistInfoForServer).toHaveBeenCalledWith('srv-b', 'A', {
+      similarArtistCount: undefined,
+    });
+    expect(getArtist).not.toHaveBeenCalled();
+    expect(getArtistInfo).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+  });
+
   it('returns null info when id changes before the new fetch resolves', async () => {
     vi.mocked(getArtist).mockImplementation(async (id) => (
       { artist: { id, name: id }, albums: [] }

@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Scenario: server switch × active orbit + playing queue (closes the switchActiveServer
-// QA). Switching servers must tear down a live orbit session (its playlists live on the
-// old backend), flush the old server's play queue, rebind the active server, and mark a
-// queue handoff. Deep modules are mocked (not the @/features/orbit barrel) to avoid
-// partial-barrel collapse; the real orbit + auth stores drive the observable assertions.
+// QA). Switching the active server must preserve a source-bound Orbit session, flush the
+// old active server's play queue, rebind the active server, and mark a queue handoff.
 
 const ensureConnectUrlResolved = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/server/serverEndpoint', async (io) => ({
@@ -29,18 +27,6 @@ vi.mock('@/features/playback/store/queueSyncUiState', async (io) => ({
 vi.mock('@/lib/server/syncServerHttpContext', async (io) => ({
   ...(await io<typeof import('@/lib/server/syncServerHttpContext')>()),
   syncServerHttpContextForProfile: vi.fn(),
-}));
-
-const endOrbitSession = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('@/features/orbit/utils/host', async (io) => ({
-  ...(await io<typeof import('@/features/orbit/utils/host')>()),
-  endOrbitSession,
-}));
-
-const leaveOrbitSession = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('@/features/orbit/utils/guest', async (io) => ({
-  ...(await io<typeof import('@/features/orbit/utils/guest')>()),
-  leaveOrbitSession,
 }));
 
 import { switchActiveServer } from '@/utils/server/switchActiveServer';
@@ -72,32 +58,34 @@ describe('server switch × active orbit + playing queue', () => {
     expect(useAuthStore.getState().activeServerId).toBe(oldServer.id);
   });
 
-  it('as host: tears down orbit, flushes the old queue, rebinds, marks handoff', async () => {
-    useOrbitStore.setState({ role: 'host', phase: 'active' });
+  it('as host: preserves orbit, flushes the old queue, rebinds, marks handoff', async () => {
+    useOrbitStore.setState({ role: 'host', phase: 'active', serverId: oldServer.id });
     const ok = await switchActiveServer(newServer);
     expect(ok).toBe(true);
-    expect(endOrbitSession).toHaveBeenCalledTimes(1);
-    expect(leaveOrbitSession).not.toHaveBeenCalled();
-    expect(useOrbitStore.getState().role).toBeNull();
+    expect(useOrbitStore.getState()).toEqual(expect.objectContaining({
+      role: 'host',
+      phase: 'active',
+      serverId: oldServer.id,
+    }));
     expect(flushPlayQueueForServer).toHaveBeenCalledWith(oldServer.id);
     expect(useAuthStore.getState().activeServerId).toBe(newServer.id);
     expect(markQueueHandoffPending).toHaveBeenCalledTimes(1);
   });
 
-  it('as guest: leaves the session instead of ending it', async () => {
-    useOrbitStore.setState({ role: 'guest', phase: 'active' });
+  it('as guest: preserves the session on its bound server', async () => {
+    useOrbitStore.setState({ role: 'guest', phase: 'active', serverId: oldServer.id });
     const ok = await switchActiveServer(newServer);
     expect(ok).toBe(true);
-    expect(leaveOrbitSession).toHaveBeenCalledTimes(1);
-    expect(endOrbitSession).not.toHaveBeenCalled();
-    expect(useOrbitStore.getState().role).toBeNull();
+    expect(useOrbitStore.getState()).toEqual(expect.objectContaining({
+      role: 'guest',
+      phase: 'active',
+      serverId: oldServer.id,
+    }));
   });
 
-  it('with no orbit session: still rebinds + flushes, no teardown call', async () => {
+  it('with no orbit session: still rebinds and flushes', async () => {
     const ok = await switchActiveServer(newServer);
     expect(ok).toBe(true);
-    expect(endOrbitSession).not.toHaveBeenCalled();
-    expect(leaveOrbitSession).not.toHaveBeenCalled();
     expect(flushPlayQueueForServer).toHaveBeenCalledWith(oldServer.id);
     expect(useAuthStore.getState().activeServerId).toBe(newServer.id);
   });

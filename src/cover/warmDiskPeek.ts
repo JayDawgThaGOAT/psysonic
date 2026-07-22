@@ -3,6 +3,10 @@ import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { coverEnsureQueued, ensureArtistBackdropQueued } from './ensureQueue';
 import { getDiskSrcForGrid, rememberGridDiskSrc } from './diskSrcLookup';
 import { albumCoverRef, artistCoverRef } from './ref';
+import {
+  coverServerScopeForOwnerServerId,
+  coverServerScopeForServerId,
+} from './serverScope';
 import { coverDiskUrl } from './diskSrcCache';
 import { resolveAlbumCoverRefFromLibrary } from './resolveEntryLibrary';
 import { coverStorageKeyFromRef } from './storageKeys';
@@ -24,8 +28,13 @@ export function coverWarmItem(
   fetchCoverArtId: string,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
+  serverId?: string,
 ): CoverWarmItem {
-  const ref = albumCoverRef(albumId, fetchCoverArtId);
+  const ref = albumCoverRef(
+    albumId,
+    fetchCoverArtId,
+    coverServerScopeForServerId(serverId),
+  );
   const tier = resolveCoverDisplayTier(displayCssPx, { surface });
   return {
     ref,
@@ -39,8 +48,13 @@ export async function coverWarmItemFromLibrary(
   fetchCoverArtId: string,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
+  serverId?: string,
 ): Promise<CoverWarmItem> {
-  const ref = await resolveAlbumCoverRefFromLibrary(albumId, fetchCoverArtId);
+  const ref = await resolveAlbumCoverRefFromLibrary(
+    albumId,
+    fetchCoverArtId,
+    serverId ? coverServerScopeForOwnerServerId(serverId) : coverServerScopeForServerId(serverId),
+  );
   const tier = resolveCoverDisplayTier(displayCssPx, { surface });
   return {
     ref,
@@ -50,7 +64,7 @@ export async function coverWarmItemFromLibrary(
 }
 
 export function collectAlbumCoverWarmItems(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
   limit = 96,
@@ -61,22 +75,28 @@ export function collectAlbumCoverWarmItems(
     const entityId = a.id ?? a.coverArt;
     if (!entityId) continue;
     // Grid warm/peek uses API coverArt ids — avoids N sequential library_resolve IPC.
-    out.push(coverWarmItem(entityId, a.coverArt ?? entityId, displayCssPx, surface));
+    out.push(coverWarmItem(entityId, a.coverArt ?? entityId, displayCssPx, surface, a.serverId));
   }
   return out;
 }
 
-export async function collectSongCoverWarmItems(
-  songs: ReadonlyArray<{ albumId?: string; coverArt?: string | null }>,
+export function collectSongCoverWarmItems(
+  songs: ReadonlyArray<{ albumId?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
   limit = 96,
-): Promise<CoverWarmItem[]> {
+): CoverWarmItem[] {
   const out: CoverWarmItem[] = [];
   for (const s of songs) {
     if (!s.albumId || out.length >= limit) break;
     out.push(
-      await coverWarmItemFromLibrary(s.albumId, s.albumId, displayCssPx, surface),
+      coverWarmItem(
+        s.albumId,
+        s.coverArt ?? s.albumId,
+        displayCssPx,
+        surface,
+        s.serverId,
+      ),
     );
   }
   return out;
@@ -99,18 +119,60 @@ export function uniqueAlbumIdsFromSongs(
   return out;
 }
 
+export type SongAlbumCoverSource = {
+  albumId?: string | null;
+  coverArt?: string | null;
+  serverId?: string;
+};
+
+export type UniqueAlbumCoverSource = {
+  albumId: string;
+  coverArt: string;
+  serverId?: string;
+};
+
+/** Dedupe track-list covers by owner + album identity. */
+export function uniqueAlbumCoverSourcesFromSongs(
+  songs: ReadonlyArray<SongAlbumCoverSource>,
+  limit = 48,
+): UniqueAlbumCoverSource[] {
+  const seen = new Set<string>();
+  const out: UniqueAlbumCoverSource[] = [];
+  for (const song of songs) {
+    const albumId = song.albumId?.trim();
+    if (!albumId) continue;
+    const serverId = song.serverId?.trim() || undefined;
+    const key = `${serverId ?? ''}\u0001${albumId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      albumId,
+      coverArt: song.coverArt?.trim() || albumId,
+      ...(serverId ? { serverId } : {}),
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 /**
  * Library-resolved peek + high-priority ensure for deduped album covers referenced
  * by a track list window (browse rows, playlist suggestions, virtual slice).
  */
 export async function warmUniqueAlbumCoversFromLibrary(
-  albumIds: readonly string[],
+  albums: readonly UniqueAlbumCoverSource[],
   displayCssPx: number,
   surface: CoverSurfaceKind = 'dense',
 ): Promise<void> {
-  if (albumIds.length === 0 || displayCssPx <= 0) return;
+  if (albums.length === 0 || displayCssPx <= 0) return;
   const items = await Promise.all(
-    albumIds.map(albumId => coverWarmItemFromLibrary(albumId, albumId, displayCssPx, surface)),
+    albums.map(album => coverWarmItemFromLibrary(
+      album.albumId,
+      album.coverArt,
+      displayCssPx,
+      surface,
+      album.serverId,
+    )),
   );
   const batch = dedupeWarmItems(items);
   if (batch.length === 0) return;
@@ -157,7 +219,7 @@ export async function warmCoverDiskSrcBatch(items: CoverWarmItem[]): Promise<num
 
 /** High-priority ensure for albums still missing disk `src` after peek. */
 export async function ensureAlbumCoverMisses(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   opts?: { surface?: CoverSurfaceKind; limit?: number },
 ): Promise<void> {
@@ -171,7 +233,11 @@ export async function ensureAlbumCoverMisses(
     const entityId = album.id ?? album.coverArt;
     if (!entityId) continue;
     const coverArt = album.coverArt ?? entityId;
-    const ref = albumCoverRef(entityId, coverArt);
+    const ref = albumCoverRef(
+      entityId,
+      coverArt,
+      coverServerScopeForServerId(album.serverId),
+    );
     if (!getDiskSrcForGrid(ref, tier)) {
       needEnsure.push({ ref });
     }
@@ -197,7 +263,7 @@ export async function ensureAlbumCoverMisses(
  * Peek + high-priority ensure so cards paint with `src` on first frame.
  */
 export async function primeAlbumCoversForDisplay(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   opts?: { surface?: CoverSurfaceKind; limit?: number; disabled?: boolean },
 ): Promise<void> {
@@ -229,7 +295,7 @@ export async function warmHomeMainstageCovers(snapshot: {
   mostPlayed: SubsonicAlbum[];
   recentlyPlayed: SubsonicAlbum[];
   starred: SubsonicAlbum[];
-  discoverSongs?: Array<{ albumId?: string; coverArt?: string | null }>;
+  discoverSongs?: Array<{ albumId?: string; coverArt?: string | null; serverId?: string }>;
 }): Promise<void> {
   const items = dedupeWarmItems([
     ...collectAlbumCoverWarmItems(snapshot.heroAlbums, 220, 'dense', 12),
@@ -238,7 +304,7 @@ export async function warmHomeMainstageCovers(snapshot: {
     ...collectAlbumCoverWarmItems(snapshot.mostPlayed, 300, 'dense', 20),
     ...collectAlbumCoverWarmItems(snapshot.recentlyPlayed, 300, 'dense', 20),
     ...collectAlbumCoverWarmItems(snapshot.starred, 300, 'dense', 20),
-    ...(await collectSongCoverWarmItems(snapshot.discoverSongs ?? [], 200, 'dense', 20)),
+    ...collectSongCoverWarmItems(snapshot.discoverSongs ?? [], 200, 'dense', 20),
   ]);
   await warmCoverDiskSrcBatch(items);
 
@@ -248,7 +314,11 @@ export async function warmHomeMainstageCovers(snapshot: {
     ensureAlbumCoverMisses(snapshot.recent, 300, { surface: 'dense', limit: 14 }),
     ensureAlbumCoverMisses(snapshot.random, 300, { surface: 'dense', limit: 10 }),
     ensureAlbumCoverMisses(
-      discoverSongsForEnsure.filter(s => s.albumId).map(s => ({ id: s.albumId!, coverArt: s.coverArt })),
+      discoverSongsForEnsure.filter(s => s.albumId).map(s => ({
+        id: s.albumId!,
+        coverArt: s.coverArt,
+        serverId: s.serverId,
+      })),
       200,
       { surface: 'dense', limit: 12 },
     ),
@@ -258,7 +328,11 @@ export async function warmHomeMainstageCovers(snapshot: {
   void predecodeWarmAlbums(snapshot.recent, 300, 10);
   void predecodeWarmAlbums(snapshot.random, 300, 8);
   void predecodeWarmAlbums(
-    discoverSongsForEnsure.filter(s => s.albumId).map(s => ({ id: s.albumId!, coverArt: s.coverArt })),
+    discoverSongsForEnsure.filter(s => s.albumId).map(s => ({
+      id: s.albumId!,
+      coverArt: s.coverArt,
+      serverId: s.serverId,
+    })),
     200,
     8,
   );
@@ -302,9 +376,13 @@ export async function warmHeroArtistBackdrops(
     heroAlbums.flatMap((album, idx) => {
       const artist = deriveAlbumArtistRefs(album)[0];
       if (!artist?.id || !album.id) return [];
-      const ref = artistCoverRef(artist.id);
+      const ref = artistCoverRef(
+        artist.id,
+        undefined,
+        coverServerScopeForServerId(album.serverId),
+      );
       const priority = heroSlidePriority(idx);
-      const albumId = album.id;
+      const albumId = album.serverId ? `${album.serverId}:${album.id}` : album.id;
       return surfaces.map(surface => {
         const key = `${coverStorageKeyFromRef(ref, HERO_BACKDROP_TIER)}:${surface}`;
         return ensureArtistBackdropQueued(key, ref, surface, priority, {
@@ -328,7 +406,8 @@ async function predecodeHeroBackdrops(heroAlbums: ReadonlyArray<SubsonicAlbum>):
   if (typeof window === 'undefined') return;
   const urls: string[] = [];
   for (const album of heroAlbums) {
-    const mem = getHeroBackdropUpgrade(album.id);
+    const albumKey = album.serverId ? `${album.serverId}:${album.id}` : album.id;
+    const mem = getHeroBackdropUpgrade(albumKey);
     const url = mem?.banner ?? mem?.fanart;
     if (url) urls.push(url);
   }
@@ -355,7 +434,7 @@ function decodeImage(src: string): Promise<void> {
 }
 
 async function predecodeWarmAlbums(
-  albums: ReadonlyArray<{ id?: string; coverArt?: string | null }>,
+  albums: ReadonlyArray<{ id?: string; coverArt?: string | null; serverId?: string }>,
   displayCssPx: number,
   limit: number,
 ): Promise<void> {
@@ -366,7 +445,11 @@ async function predecodeWarmAlbums(
     if (!album.coverArt || urls.length >= limit) continue;
     const entityId = album.id ?? album.coverArt;
     if (!entityId) continue;
-    const ref = albumCoverRef(entityId, album.coverArt);
+    const ref = albumCoverRef(
+      entityId,
+      album.coverArt,
+      coverServerScopeForServerId(album.serverId),
+    );
     const src = getDiskSrcForGrid(ref, tier);
     if (!src) continue;
     urls.push(src);

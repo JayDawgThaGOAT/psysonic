@@ -16,6 +16,7 @@ describe('useAlbumOfflineState', () => {
         pinKind: 'album',
         status: 'queued',
         queuedAt: Date.now(),
+        serverId: 'srv',
       }],
     });
 
@@ -32,6 +33,7 @@ describe('useAlbumOfflineState', () => {
         pinKind: 'album',
         status: 'downloading',
         queuedAt: Date.now(),
+        serverId: 'srv',
       }],
       jobs: [{
         trackId: 't1',
@@ -42,11 +44,29 @@ describe('useAlbumOfflineState', () => {
         totalTracks: 1,
         status: 'downloading',
         downloadId: 'dl-1',
+        serverId: 'srv',
       }],
     });
 
     const { result } = renderHook(() => useAlbumOfflineState('alb-1', 'srv', ['t1']));
     expect(result.current.resolvedOfflineStatus).toBe('downloading');
     expect(result.current.offlineProgress).toEqual({ done: 0, total: 1 });
+  });
+
+  it('ignores a duplicate album id downloading on another server', () => {
+    useOfflineJobStore.setState({
+      pinQueue: [{
+        albumId: 'alb-1',
+        albumName: 'Other',
+        pinKind: 'album',
+        status: 'downloading',
+        queuedAt: Date.now(),
+        serverId: 'other',
+      }],
+      jobs: [],
+    });
+
+    const { result } = renderHook(() => useAlbumOfflineState('alb-1', 'srv', ['t1']));
+    expect(result.current.resolvedOfflineStatus).toBe('none');
   });
 });

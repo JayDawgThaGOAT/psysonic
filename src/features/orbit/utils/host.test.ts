@@ -12,6 +12,8 @@ const { orbitStore } = vi.hoisted(() => ({
   orbitStore: {
     role: 'host' as 'host' | 'guest' | null,
     state: null as OrbitState | null,
+    serverId: 'srv-owner' as string | null,
+    bindingRevision: 1,
     sessionPlaylistId: 'session-pl' as string | null,
     setState: vi.fn(),
   },

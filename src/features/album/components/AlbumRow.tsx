@@ -137,7 +137,10 @@ export default function AlbumRow({
 
   // Reset when the row’s identity changes (new data / server), not when the list grows via
   // “load more” — reusing albums.length would shrink the budget mid-scroll and flash placeholders.
-  const rowArtworkResetKey = uniqueAlbums[0]?.id ?? '';
+  const firstAlbum = uniqueAlbums[0];
+  const rowArtworkResetKey = firstAlbum
+    ? (firstAlbum.serverId ? `${firstAlbum.serverId}:${firstAlbum.id}` : firstAlbum.id)
+    : '';
   useEffect(() => {
     // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
     // eslint-disable-next-line react-hooks/set-state-in-effect

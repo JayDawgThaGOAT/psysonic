@@ -16,10 +16,10 @@ export {
   filterAlbumsByCompilation,
   filterAlbumsByStarred,
 } from './albumBrowseFilters';
-export { runLocalAlbumBrowse } from './albumBrowseLocal';
+export { runLocalAlbumBrowse, runLocalAlbumScopeBrowse } from './albumBrowseLocal';
 
 import { albumBrowseHasServerFilters, countGenresFromAlbums, filterAlbumsByCompilation } from './albumBrowseFilters';
-import { runLocalAlbumBrowse } from './albumBrowseLocal';
+import { runLocalAlbumBrowse, runLocalAlbumScopeBrowse } from './albumBrowseLocal';
 import { fetchAlbumBrowseNetwork } from './albumBrowseNetwork';
 import { fetchStarredAlbumBrowse } from './albumBrowseStarredFetch';
 import { librarySelectionForServer } from '@/lib/api/subsonicClient';
@@ -33,6 +33,7 @@ import type {
 import { GENRE_ALBUM_FETCH_LIMIT } from './albumBrowseTypes';
 import { albumBrowseTimed, emitAlbumBrowseDebug } from './albumBrowseDebug';
 import { fetchGenreAlbumCountsDeduped } from './albumBrowseGenreCountsCache';
+import { getLibraryBrowseScope } from './libraryBrowseScope';
 
 /** Unfiltered browse: paint a small SQL page first, then grow the catalog buffer. */
 export function albumBrowseBootstrapEligible(query: AlbumBrowseQuery): boolean {
@@ -46,6 +47,7 @@ export async function fetchLocalAlbumCatalogChunk(
   query: AlbumBrowseQuery,
   offset: number,
   chunkSize: number,
+  cursor?: string | null,
 ): Promise<AlbumBrowsePageResult | null> {
   if (query.starredOnly) {
     return fetchAlbumBrowsePage(serverId, indexEnabled, query, offset, chunkSize);
@@ -59,6 +61,10 @@ export async function fetchLocalAlbumCatalogChunk(
     : query.genres.length > 0 && offset === 0
       ? GENRE_ALBUM_FETCH_LIMIT
       : chunkSize;
+  if (albumBrowseBootstrapEligible(query)) {
+    const scoped = await runLocalAlbumScopeBrowse(serverId, query.sort, limit, cursor);
+    if (scoped) return scoped;
+  }
   return runLocalAlbumBrowse(serverId, query, offset, limit);
 }
 
@@ -132,6 +138,7 @@ export async function fetchAlbumBrowsePage(
   pageSize: number,
   callbacks?: AlbumBrowseFetchCallbacks,
 ): Promise<AlbumBrowsePageResult> {
+  const multiServer = getLibraryBrowseScope().multiServer;
   if (query.losslessOnly && (!indexEnabled || !serverId)) {
     return { albums: [], hasMore: false };
   }
@@ -144,6 +151,8 @@ export async function fetchAlbumBrowsePage(
     const local = await runLocalAlbumBrowse(serverId, query, offset, pageSize);
     if (local != null) return local;
   }
+
+  if (multiServer) return { albums: [], hasMore: false };
 
   return fetchAlbumBrowseNetwork(query, offset, pageSize);
 }

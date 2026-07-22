@@ -114,13 +114,13 @@ pub fn list_albums_by_genre(
         &req.server_id,
         req.library_scope.as_deref(),
         req.library_scopes.as_deref(),
-    );
+    )?;
     // Any >1-library scope collapses duplicates via cluster keys — including the
     // Layer-1 same-server path, whose genre `EXISTS` sets `merge_by_album_key`.
     // Build keys first so dedup works on a cold index (not only after a prior
     // search / sync-idle rebuild happened to populate them).
     if multi_library_merge_enabled(&scope_pairs) {
-        crate::identity::ensure_cluster_keys_built(store, &req.server_id)?;
+        crate::scope_merge::ensure_cluster_keys_for_scopes(store, &scope_pairs)?;
     }
     if scoped_layer1_eligible(&scope_pairs) {
         return list_albums_by_genre_layer1_scope(store, req, &scope_pairs, genre, limit, offset);
@@ -132,7 +132,7 @@ pub fn list_albums_by_genre(
     let mut legacy = req.clone();
     if legacy.library_scope.is_none() {
         if let Some(pair) = scope_pairs.first() {
-            legacy.library_scope = Some(pair.library_id.clone());
+            legacy.library_scope = pair.library_id.clone();
         }
     }
 

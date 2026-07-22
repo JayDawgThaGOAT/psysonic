@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useNavigateToAlbum } from '@/features/album';
+import { useNavigateToArtist } from '@/features/artist';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/store/authStore';
 import {
@@ -15,14 +16,22 @@ import { serverIndexKeyFromUrl } from '@/lib/server/serverIndexKey';
 import { useShareSearchPreview } from '@/features/search/hooks/useShareSearchPreview';
 import { useNavidromePublicSharePreview } from '@/features/search/hooks/useNavidromePublicSharePreview';
 import { playNavidromePublicShare } from '@/features/share';
+import { buildComposerDetailPath } from '@/lib/navigation/detailServerScope';
 
 export function useShareSearch(query: string, onSuccess?: () => void) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const navigateToAlbum = useNavigateToAlbum();
+  const navigateToArtist = useNavigateToArtist();
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const shareMatch = useMemo(() => parseShareSearchText(query), [query]);
+  const shareServerId = useMemo(() => {
+    if (!shareMatch || shareMatch.type === 'unsupported' || shareMatch.type === 'navidrome-public') {
+      return null;
+    }
+    return findServerIdForShareUrl(servers, shareMatch.payload.srv);
+  }, [shareMatch, servers]);
   const shareServerLabel = useMemo(
     () => shareServerOriginLabel(shareMatch, servers, activeServerId),
     [shareMatch, servers, activeServerId],
@@ -31,12 +40,12 @@ export function useShareSearch(query: string, onSuccess?: () => void) {
     if (!shareMatch || shareMatch.type === 'unsupported' || shareMatch.type === 'navidrome-public') {
       return null;
     }
-    const serverId = findServerIdForShareUrl(servers, shareMatch.payload.srv);
+    const serverId = shareServerId;
     if (!serverId || serverId === activeServerId) return null;
     return servers.find(s => s.id === serverId)
       ?? servers.find(s => serverIndexKeyFromUrl(s.url) === serverId)
       ?? null;
-  }, [shareMatch, servers, activeServerId]);
+  }, [shareMatch, servers, activeServerId, shareServerId]);
   const preview = useShareSearchPreview(shareMatch);
   const navidromeRef = shareMatch?.type === 'navidrome-public' ? shareMatch.publicShareRef : null;
   const navidromePreview = useNavidromePublicSharePreview(navidromeRef);
@@ -69,23 +78,23 @@ export function useShareSearch(query: string, onSuccess?: () => void) {
   const openShareAlbum = useCallback(() => {
     if (shareMatch?.type !== 'album' || !preview.shareAlbum) return;
     if (!activateShareSearchServer(shareMatch.payload.srv, t)) return;
-    navigateToAlbum(preview.shareAlbum.id);
+    navigateToAlbum(preview.shareAlbum.id, { serverId: shareServerId });
     onSuccess?.();
-  }, [shareMatch, preview.shareAlbum, navigateToAlbum, t, onSuccess]);
+  }, [shareMatch, preview.shareAlbum, navigateToAlbum, shareServerId, t, onSuccess]);
 
   const openShareArtist = useCallback(() => {
     if (shareMatch?.type !== 'artist' || !preview.shareArtist) return;
     if (!activateShareSearchServer(shareMatch.payload.srv, t)) return;
-    navigate(`/artist/${preview.shareArtist.id}`);
+    navigateToArtist(preview.shareArtist.id, { serverId: shareServerId });
     onSuccess?.();
-  }, [shareMatch, preview.shareArtist, navigate, t, onSuccess]);
+  }, [shareMatch, preview.shareArtist, navigateToArtist, shareServerId, t, onSuccess]);
 
   const openShareComposer = useCallback(() => {
     if (shareMatch?.type !== 'composer' || !preview.shareComposer) return;
     if (!activateShareSearchServer(shareMatch.payload.srv, t)) return;
-    navigate(`/composer/${preview.shareComposer.id}`);
+    navigate(buildComposerDetailPath(preview.shareComposer.id, { serverId: shareServerId }));
     onSuccess?.();
-  }, [shareMatch, preview.shareComposer, navigate, t, onSuccess]);
+  }, [shareMatch, preview.shareComposer, navigate, shareServerId, t, onSuccess]);
 
   const playNavidromePublic = useCallback(async () => {
     if (

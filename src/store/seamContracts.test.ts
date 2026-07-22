@@ -67,18 +67,21 @@ describe('mediaResolver seam contract', () => {
 describe('orbitRuntime seam contract', () => {
   it('default snapshot is neutral and bulkGuard allows', async () => {
     expect(orbitRuntime.isOrbitRuntimeRegistered()).toBe(false);
-    expect(orbitRuntime.orbitSnapshot()).toEqual({ role: null, phase: 'idle', state: null });
+    expect(orbitRuntime.orbitSnapshot()).toEqual({ role: null, phase: 'idle', state: null, serverId: null });
     await expect(orbitRuntime.orbitBulkGuard(5)).resolves.toBe(true);
   });
 
   it('after registerOrbitRuntime, delegates snapshot + bulkGuard', async () => {
-    const snapshot = { role: 'host' as const, phase: 'active' as const, state: null };
+    const snapshot = { role: 'host' as const, phase: 'active' as const, state: null, serverId: 'srv-owner' };
     const bulkGuard = vi.fn(async () => false);
-    orbitRuntime.registerOrbitRuntime({ getSnapshot: () => snapshot, bulkGuard });
+    const allowsTrackServer = vi.fn(() => false);
+    orbitRuntime.registerOrbitRuntime({ getSnapshot: () => snapshot, bulkGuard, allowsTrackServer });
     expect(orbitRuntime.isOrbitRuntimeRegistered()).toBe(true);
     expect(orbitRuntime.orbitSnapshot()).toEqual(snapshot);
     await expect(orbitRuntime.orbitBulkGuard(9)).resolves.toBe(false);
     expect(bulkGuard).toHaveBeenCalledWith(9);
+    expect(orbitRuntime.orbitAllowsTrackServer('srv-other')).toBe(false);
+    expect(allowsTrackServer).toHaveBeenCalledWith('srv-other');
   });
 });
 

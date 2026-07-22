@@ -6,7 +6,7 @@ import {
   Trash2, Undo2,
 } from 'lucide-react';
 import { useDeviceSyncJobStore } from '@/features/deviceSync/store/deviceSyncJobStore';
-import type { DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
+import { deviceSyncSourceKey, type DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
 import type { SyncStatus } from '@/features/deviceSync/utils/deviceSyncHelpers';
 
 interface Props {
@@ -121,16 +121,17 @@ export default function DeviceSyncDevicePanel({
           </div>
           <div className="device-sync-device-list">
             {sources.map(s => {
-              const status = sourceStatuses.get(s.id) ?? 'pending';
+              const sourceKey = deviceSyncSourceKey(s);
+              const status = sourceStatuses.get(sourceKey) ?? 'pending';
               return (
                 <label
-                  key={s.id}
-                  className={`device-sync-device-row ${status}${checkedIds.includes(s.id) ? ' checked' : ''}`}
+                  key={sourceKey}
+                  className={`device-sync-device-row ${status}${checkedIds.includes(sourceKey) ? ' checked' : ''}`}
                 >
                   <input
                     type="checkbox"
-                    checked={checkedIds.includes(s.id)}
-                    onChange={() => toggleChecked(s.id)}
+                    checked={checkedIds.includes(sourceKey)}
+                    onChange={() => toggleChecked(sourceKey)}
                     disabled={status === 'deletion'}
                   />
                   <span className="device-sync-row-name">
@@ -147,7 +148,7 @@ export default function DeviceSyncDevicePanel({
                     {status === 'synced' && (
                       <button
                         className="device-sync-action-btn danger"
-                        onClick={e => { e.preventDefault(); markForDeletion([s.id]); }}
+                        onClick={e => { e.preventDefault(); markForDeletion([sourceKey]); }}
                         data-tooltip={t('deviceSync.markForDeletion')}
                       >
                         <Trash2 size={12} />
@@ -165,7 +166,7 @@ export default function DeviceSyncDevicePanel({
                     {status === 'deletion' && (
                       <button
                         className="device-sync-action-btn undo"
-                        onClick={e => { e.preventDefault(); unmarkDeletion(s.id); }}
+                        onClick={e => { e.preventDefault(); unmarkDeletion(sourceKey); }}
                         data-tooltip={t('deviceSync.undoDeletion')}
                       >
                         <Undo2 size={12} />

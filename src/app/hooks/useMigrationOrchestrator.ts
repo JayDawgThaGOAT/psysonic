@@ -1,6 +1,11 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { libraryGenreTagsInspect, libraryGenreTagsRun } from '@/lib/api/library';
+import {
+  libraryGenreTagsInspect,
+  libraryGenreTagsRun,
+  libraryScopeBrowseProjectionInspect,
+  libraryScopeBrowseProjectionRun,
+} from '@/lib/api/library';
 import { migrationInspect, migrationRun, type ServerIndexMapping } from '@/lib/api/migration';
 import { useAuthStore } from '@/store/authStore';
 import { useMigrationStore } from '@/store/migrationStore';
@@ -67,6 +72,28 @@ async function runGenreTagsPhase(): Promise<void> {
   }
 }
 
+async function runScopeBrowseProjectionPhase(): Promise<void> {
+  const state = useMigrationStore.getState();
+  state.setScopeBrowseProjectionProgress(null);
+  const inspect = await libraryScopeBrowseProjectionInspect();
+  state.setScopeBrowseProjectionInspect(inspect);
+  if (!inspect.needed) return;
+
+  state.setStep('scopeBrowseProjection');
+  state.setError(null);
+  state.setPhase('running');
+  await libraryScopeBrowseProjectionRun();
+  const after = await libraryScopeBrowseProjectionInspect();
+  state.setScopeBrowseProjectionInspect(after);
+  if (after.needed) {
+    state.setError('Library browse index update incomplete. Retry after restart.');
+    state.setPhase('error');
+    throw new Error('scope_browse_projection_incomplete');
+  }
+  state.setStep(null);
+  state.setScopeBrowseProjectionProgress(null);
+}
+
 async function runOrchestrator(force = false): Promise<void> {
   if (migrationInFlight) {
     await migrationInFlight;
@@ -101,6 +128,7 @@ async function runOrchestrator(force = false): Promise<void> {
       skippedLogged = logSkippedUnknownRowsOnce(inspect, skippedLogged);
       if (!inspect.needsMigration) {
         await runGenreTagsPhase();
+        await runScopeBrowseProjectionPhase();
         state.setPhase('completed');
         return;
       }
@@ -115,6 +143,7 @@ async function runOrchestrator(force = false): Promise<void> {
       await rewriteFrontendStoreKeys(servers);
       localStorage.setItem(MIGRATION_DONE_FLAG, '1');
       await runGenreTagsPhase();
+      await runScopeBrowseProjectionPhase();
       state.setPhase('completed');
       return;
     }
@@ -129,7 +158,8 @@ async function runOrchestrator(force = false): Promise<void> {
     logSkippedUnknownRowsOnce(after, skippedLogged);
     if (!after.needsMigration) {
       localStorage.setItem(MIGRATION_DONE_FLAG, '1');
-      await runGenreTagsPhase();
+        await runGenreTagsPhase();
+        await runScopeBrowseProjectionPhase();
       state.setPhase('completed');
       return;
     }
@@ -181,6 +211,10 @@ export function retryBlockingMigration(): void {
     retryGenreTagsMigration();
     return;
   }
+  if (step === 'scopeBrowseProjection') {
+    void runOrchestrator();
+    return;
+  }
   retryServerIndexMigration();
 }
 
@@ -202,6 +236,13 @@ export function useMigrationOrchestrator(): void {
       listen('genre_tags:progress', (event) => {
         if (disposed) return;
         useMigrationStore.getState().setGenreTagsProgress(event.payload as {
+          done: number;
+          total: number;
+        });
+      }),
+      listen('scope_browse_projection:progress', (event) => {
+        if (disposed) return;
+        useMigrationStore.getState().setScopeBrowseProjectionProgress(event.payload as {
           done: number;
           total: number;
         });

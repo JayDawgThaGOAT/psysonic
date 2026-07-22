@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'Szám keresése cím, előadó vagy album szerint…',
   count_one: '{{count}} szám',
   count_other: '{{count}} szám',
+  copyDiagnostics: 'Időzítési jelentés másolása',
 };

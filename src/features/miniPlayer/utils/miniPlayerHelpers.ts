@@ -1,7 +1,9 @@
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
-import type { MiniSyncPayload, MiniTrackInfo } from '@/features/miniPlayer/utils/miniPlayerBridge';
-import type { Track } from '@/lib/media/trackTypes';
+import type { MiniSyncPayload } from '@/features/miniPlayer/utils/miniPlayerBridge';
+import { toMini } from '@/features/miniPlayer/utils/miniTrackInfo';
+
+export { toMini } from '@/features/miniPlayer/utils/miniTrackInfo';
 
 /** Half-width of the mini initial-snapshot queue window (matches the bridge). */
 const MINI_SNAPSHOT_HALF = 100;
@@ -34,21 +36,6 @@ export function readStoredExpandedHeight(): number {
 export const QUEUE_OPEN_KEY = 'psysonic_mini_queue_open';
 export function readQueueOpen(): boolean {
   try { return localStorage.getItem(QUEUE_OPEN_KEY) === '1'; } catch { return false; }
-}
-
-export function toMini(t: Track): MiniTrackInfo {
-  return {
-    id: t.id,
-    title: t.title,
-    artist: t.artist,
-    album: t.album,
-    albumId: t.albumId,
-    artistId: t.artistId,
-    coverArt: t.coverArt,
-    duration: t.duration,
-    starred: !!t.starred,
-    year: t.year,
-  };
 }
 
 /**

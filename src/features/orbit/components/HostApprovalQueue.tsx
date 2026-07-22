@@ -1,4 +1,4 @@
-import { getSong } from '@/lib/api/subsonicLibrary';
+import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useEffect, useMemo, useState } from 'react';
 import { Check, X, Inbox } from 'lucide-react';
@@ -25,6 +25,7 @@ const HOST_APPROVAL_COVER_CSS_PX = 36;
 export default function HostApprovalQueue() {
   const { t } = useTranslation();
   const role = useOrbitStore(s => s.role);
+  const serverId = useOrbitStore(s => s.serverId);
   const state = useOrbitStore(s => s.state);
   const mergedKeys = useOrbitStore(s => s.mergedSuggestionKeys);
   const declinedKeys = useOrbitStore(s => s.declinedSuggestionKeys);
@@ -46,7 +47,11 @@ export default function HostApprovalQueue() {
   }, [state, mergedKeys, declinedKeys]);
 
   // Track-metadata cache (title/artist/cover) for the pending items.
-  const [songs, setSongs] = useState<Record<string, SubsonicSong>>({});
+  const [songCache, setSongCache] = useState<{ serverId: string; songs: Record<string, SubsonicSong> }>({
+    serverId: '',
+    songs: {},
+  });
+  const songs = songCache.serverId === serverId ? songCache.songs : {};
   const wantedKey = useMemo(
     () => Array.from(new Set(pendingItems.map(q => q.trackId))).sort().join('|'),
     [pendingItems],
@@ -54,19 +59,19 @@ export default function HostApprovalQueue() {
   useEffect(() => {
     const wanted = wantedKey ? wantedKey.split('|') : [];
     const missing = wanted.filter(id => id && !songs[id]);
-    if (missing.length === 0) return;
+    if (!serverId || missing.length === 0) return;
     let cancelled = false;
-    void Promise.all(missing.map(id => getSong(id).catch(() => null)))
+    void Promise.all(missing.map(id => getSongForServer(serverId, id).catch(() => null)))
       .then(results => {
         if (cancelled) return;
-        setSongs(prev => {
-          const next = { ...prev };
+        setSongCache(prev => {
+          const next = prev.serverId === serverId ? { ...prev.songs } : {};
           results.forEach((s, i) => { if (s) next[missing[i]] = s; });
-          return next;
+          return { serverId, songs: next };
         });
       });
     return () => { cancelled = true; };
-  }, [wantedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serverId, wantedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (role !== 'host' || !state || !autoApproveOff || pendingItems.length === 0) {
     return null;

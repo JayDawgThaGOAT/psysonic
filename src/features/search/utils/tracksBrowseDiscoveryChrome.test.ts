@@ -25,4 +25,13 @@ describe('tracksBrowseDiscoveryChromeHidden', () => {
       leaveRestorePendingWithQuery: false,
     })).toBe(true);
   });
+
+  it('hides active-server discovery when the selected browse scope has another owner', () => {
+    expect(tracksBrowseDiscoveryChromeHidden({
+      offlineBrowseActive: false,
+      tracksSearchActive: false,
+      leaveRestorePendingWithQuery: false,
+      activeServerOwnsBrowseScope: false,
+    })).toBe(true);
+  });
 });

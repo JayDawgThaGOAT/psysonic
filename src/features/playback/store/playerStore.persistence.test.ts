@@ -269,6 +269,7 @@ describe('merge: restores the queue from any old persisted blob', () => {
     );
     expect(merged.queueItems.map(r => r.trackId)).toEqual(['a', 'b']);
     expect(merged.queueItemsIndex).toBe(1);
+    expect(merged.queueIndex).toBe(1);
   });
 
   it('rebuilds queueItems from a legacy queueRefs string list', () => {
@@ -281,6 +282,7 @@ describe('merge: restores the queue from any old persisted blob', () => {
       { serverId: 's2', trackId: 'y' },
     ]);
     expect(merged.queueItemsIndex).toBe(1);
+    expect(merged.queueIndex).toBe(1);
   });
 
   it('rebuilds queueItems from an old windowed fat `queue: Track[]` blob and drops the `queue` key', () => {
@@ -298,6 +300,21 @@ describe('merge: restores the queue from any old persisted blob', () => {
     expect('queue' in blob).toBe(false);
     // Sentinel falls back to the persisted queueIndex when no explicit index.
     expect(merged.queueItemsIndex).toBe(1);
+    expect(merged.queueIndex).toBe(1);
+  });
+
+  it('clamps a persisted queue index to the restored queue bounds', () => {
+    const merged = getMerge()(
+      {
+        queueItems: [
+          { serverId: 's1', trackId: 'a' },
+          { serverId: 's1', trackId: 'b' },
+        ],
+        queueItemsIndex: 99,
+      },
+      current(),
+    );
+    expect(merged.queueIndex).toBe(1);
   });
 
   it('leaves an empty queue alone (no sentinel) when the blob has nothing to restore', () => {

@@ -8,33 +8,33 @@ import { mainstageBrowseNavHandlers } from '@/features/sidebar/utils/mainstageBr
 import WhatsNewBanner from '@/features/whatsNew/components/WhatsNewBanner';
 import ThemeUpdateBanner from '@/features/settings/components/ThemeUpdateBanner';
 import SidebarLibraryPicker from '@/features/sidebar/components/SidebarLibraryPicker';
+import type { SidebarLibraryGroup } from '@/features/sidebar/components/SidebarLibraryPicker';
 import SidebarPlaylistsSection from '@/features/sidebar/components/SidebarPlaylistsSection';
 import SidebarActiveJobs from '@/features/sidebar/components/SidebarActiveJobs';
+import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
 
 interface NavDndState {
   section: 'library' | 'system';
   draggedId: string;
 }
 
-interface MusicFolder { id: string; name: string }
-
 interface Props {
   isCollapsed: boolean;
   showLibraryPicker: boolean;
-  selectedLibraryIds: string[];
-  selectionSummary: string | null;
+  libraryGroups: SidebarLibraryGroup[];
   libraryDropdownOpen: boolean;
   setLibraryDropdownOpen: (open: boolean) => void;
   dropdownRect: { top: number; left: number; width: number };
   libraryTriggerRef: React.RefObject<HTMLButtonElement | null>;
-  musicFolders: MusicFolder[];
-  onLibrarySelectionChange: (libraryIds: string[]) => void;
+  onLibrarySelectionChange: (serverId: string, libraryIds: string[]) => void;
   visibleLibraryConfigs: SidebarItemConfig[];
   visibleSystemConfigs: SidebarItemConfig[];
   playlistsExpanded: boolean;
   setPlaylistsExpanded: (v: boolean) => void;
-  playlists: { id: string; name: string }[];
+  playlists: SubsonicPlaylist[];
   playlistsLoading: boolean;
+  multiServerPlaylistScope: boolean;
+  playlistFolderServerId: string | null;
   newReleasesUnreadCount: number;
   navDnd: NavDndState | null;
   navDndRowClass: (section: 'library' | 'system', id: string) => string;
@@ -56,12 +56,13 @@ interface Props {
 
 export default function SidebarNavBody(props: Props) {
   const {
-    isCollapsed, showLibraryPicker, selectedLibraryIds, selectionSummary,
+    isCollapsed, showLibraryPicker, libraryGroups,
     libraryDropdownOpen, setLibraryDropdownOpen, dropdownRect, libraryTriggerRef,
-    musicFolders, onLibrarySelectionChange,
+    onLibrarySelectionChange,
     visibleLibraryConfigs,
     visibleSystemConfigs,
     playlistsExpanded, setPlaylistsExpanded, playlists, playlistsLoading,
+    multiServerPlaylistScope, playlistFolderServerId,
     newReleasesUnreadCount, navDnd, navDndRowClass, handleNavRowPointerDown,
     isPlaying, hasNowPlayingTrack, nowPlayingAtTop, hasOfflineContent,
     activeJobsCount, activePinName, queuedPinCount, cancelAllDownloads,
@@ -91,13 +92,11 @@ export default function SidebarNavBody(props: Props) {
         {nowPlayingAtTop && nowPlayingLink}
         {!isCollapsed && (showLibraryPicker ? (
           <SidebarLibraryPicker
-            selectedLibraryIds={selectedLibraryIds}
-            selectionSummary={selectionSummary}
+            groups={libraryGroups}
             libraryDropdownOpen={libraryDropdownOpen}
             setLibraryDropdownOpen={setLibraryDropdownOpen}
             dropdownRect={dropdownRect}
             libraryTriggerRef={libraryTriggerRef}
-            musicFolders={musicFolders}
             onSelectionChange={onLibrarySelectionChange}
           />
         ) : (
@@ -144,7 +143,12 @@ export default function SidebarNavBody(props: Props) {
                 </button>
               </div>
               {playlistsExpanded && (
-                <SidebarPlaylistsSection playlists={playlists} playlistsLoading={playlistsLoading} />
+                <SidebarPlaylistsSection
+                  playlists={playlists}
+                  playlistsLoading={playlistsLoading}
+                  multiServerScope={multiServerPlaylistScope}
+                  folderServerId={playlistFolderServerId}
+                />
               )}
             </div>
           ) : isCollapsed ? (

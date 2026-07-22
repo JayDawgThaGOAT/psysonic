@@ -2,7 +2,11 @@ import {
   libraryGetStatus,
   librarySyncBindSession,
 } from '@/lib/api/library';
-import { enqueueLibrarySync, queueInitialSyncIfNeeded } from './librarySyncQueue';
+import {
+  enqueueLibrarySync,
+  hasLibrarySyncWork,
+  queueInitialSyncIfNeeded,
+} from './librarySyncQueue';
 import type { ServerProfile } from '@/store/authStoreTypes';
 import { useAuthStore } from '@/store/authStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
@@ -17,8 +21,34 @@ import {
   libraryCoverClearFetchFailures,
 } from '@/lib/api/coverCache';
 import { libraryDevEnabled, logLibraryStatus, logLibrarySync, timed } from './libraryDevLog';
+import { publishServerConnectionStatus } from '@/lib/network/serverReachability';
 
 export type BindServerResult = 'bound' | 'offline' | 'error';
+
+interface BindFlight {
+  latestServer: ServerProfile;
+  promise: Promise<BindServerResult>;
+}
+
+const bindInFlightByIndexKey = new Map<string, BindFlight>();
+
+function bindProfileFingerprint(server: ServerProfile): string {
+  return JSON.stringify([
+    server.url,
+    server.alternateUrl ?? '',
+    server.username,
+    server.password,
+    server.customHeaders ?? [],
+    server.customHeadersApplyTo ?? '',
+  ]);
+}
+
+function currentProfileMatches(server: ServerProfile, serverIndexKey: string): boolean {
+  const current = useAuthStore.getState().servers.find(candidate => candidate.id === server.id);
+  return current != null
+    && bindProfileFingerprint(current) === bindProfileFingerprint(server)
+    && serverIndexKeyForProfile(current) === serverIndexKey;
+}
 
 /**
  * A gated server (Cloudflare Access / Pangolin) whose cover fetches 403'd while
@@ -42,7 +72,10 @@ async function retryGatedServerCovers(server: ServerProfile): Promise<void> {
 /**
  * Bind one server when it participates in the local index (master on, not excluded).
  */
-export async function bindIndexedServer(server: ServerProfile): Promise<BindServerResult> {
+async function bindIndexedServerOnce(
+  server: ServerProfile,
+  serverIndexKey: string,
+): Promise<BindServerResult> {
   if (!useLibraryIndexStore.getState().isIndexEnabled(server.id)) return 'error';
 
   // Register per-server gate headers in the native registry FIRST — before the
@@ -65,22 +98,23 @@ export async function bindIndexedServer(server: ServerProfile): Promise<BindServ
   // through to one ping, identical to the legacy path.
   const probe = await ensureConnectUrlResolved(server);
   if (!probe.ok) return 'offline';
+  if (!currentProfileMatches(server, serverIndexKey)) return 'error';
   const baseUrl = probe.baseUrl;
 
   try {
     const t0 = performance.now();
     await librarySyncBindSession({
-      serverId: server.id,
+      serverId: serverIndexKey,
       baseUrl,
       username: server.username,
       password: server.password,
     });
     if (libraryDevEnabled()) {
-      const { result: status, ms } = await timed(() => libraryGetStatus(server.id));
+      const { result: status, ms } = await timed(() => libraryGetStatus(serverIndexKey));
       logLibrarySync({
         at: new Date().toISOString(),
         kind: 'bind_session',
-        serverId: server.id,
+        serverId: serverIndexKey,
         ingestStrategy: status.ingestStrategy ?? null,
         ingestPhase: status.ingestPhase ?? null,
         syncPhase: status.syncPhase,
@@ -88,11 +122,56 @@ export async function bindIndexedServer(server: ServerProfile): Promise<BindServ
         durationMs: Math.round(performance.now() - t0),
         message: `status fetch ${ms}ms`,
       });
-      logLibraryStatus(server.id, status, 'bind_session');
+      logLibraryStatus(serverIndexKey, status, 'bind_session');
     }
     return 'bound';
   } catch {
     return 'error';
+  }
+}
+
+export async function bindIndexedServer(server: ServerProfile): Promise<BindServerResult> {
+  const serverIndexKey = serverIndexKeyForProfile(server);
+  const existing = bindInFlightByIndexKey.get(serverIndexKey);
+  if (existing) {
+    existing.latestServer = server;
+    const result = await existing.promise;
+    const completedProfile = existing.latestServer;
+    if (!currentProfileMatches(completedProfile, serverIndexKey)) return 'error';
+    publishServerConnectionStatus(
+      completedProfile.id,
+      result === 'bound' ? 'online' : result === 'offline' ? 'offline' : 'unknown',
+      useAuthStore.getState().activeServerId === completedProfile.id,
+    );
+    return result;
+  }
+
+  const flight = {} as BindFlight;
+  flight.latestServer = server;
+  flight.promise = (async () => {
+    let profile = flight.latestServer;
+    let result = await bindIndexedServerOnce(profile, serverIndexKey);
+    while (bindProfileFingerprint(profile) !== bindProfileFingerprint(flight.latestServer)) {
+      profile = flight.latestServer;
+      result = await bindIndexedServerOnce(profile, serverIndexKey);
+    }
+    return result;
+  })();
+  bindInFlightByIndexKey.set(serverIndexKey, flight);
+  try {
+    const result = await flight.promise;
+    const completedProfile = flight.latestServer;
+    if (!currentProfileMatches(completedProfile, serverIndexKey)) return 'error';
+    publishServerConnectionStatus(
+      completedProfile.id,
+      result === 'bound' ? 'online' : result === 'offline' ? 'offline' : 'unknown',
+      useAuthStore.getState().activeServerId === completedProfile.id,
+    );
+    return result;
+  } finally {
+    if (bindInFlightByIndexKey.get(serverIndexKey) === flight) {
+      bindInFlightByIndexKey.delete(serverIndexKey);
+    }
   }
 }
 
@@ -101,6 +180,8 @@ export async function bootstrapIndexedServer(server: ServerProfile): Promise<Bin
   const bound = await bindIndexedServer(server);
   if (bound !== 'bound') return bound;
   const indexKey = serverIndexKeyForProfile(server);
+  if (!currentProfileMatches(server, indexKey)) return 'error';
+  await resumeInitialSyncIfIncomplete(indexKey);
   await queueInitialSyncIfNeeded(indexKey);
   return 'bound';
 }
@@ -137,6 +218,7 @@ export async function bootstrapAllIndexedServers(): Promise<Record<string, BindS
   for (const server of primaryByKey.values()) {
     const key = serverIndexKeyForProfile(server);
     if (results[key] === 'bound') {
+      await resumeInitialSyncIfIncomplete(key);
       await queueInitialSyncIfNeeded(key);
     }
   }
@@ -151,25 +233,26 @@ export async function ensureActiveServerSessionBound(): Promise<boolean> {
   const server = auth.servers.find(s => s.id === auth.activeServerId);
   if (!server) return false;
   if (!useLibraryIndexStore.getState().isIndexEnabled(server.id)) return false;
-  return (await bindIndexedServer(server)) === 'bound';
+  return (await bootstrapIndexedServer(server)) === 'bound';
 }
 
 const resumeInFlight = new Set<string>();
 
-export async function resumeInitialSyncIfIncomplete(serverId: string): Promise<void> {
-  if (resumeInFlight.has(serverId)) return;
-  resumeInFlight.add(serverId);
+export async function resumeInitialSyncIfIncomplete(serverIndexKey: string): Promise<void> {
+  if (resumeInFlight.has(serverIndexKey)) return;
+  resumeInFlight.add(serverIndexKey);
   try {
-    const { result: status, ms: statusMs } = await timed(() => libraryGetStatus(serverId));
+    const { result: status, ms: statusMs } = await timed(() => libraryGetStatus(serverIndexKey));
     if (status.syncPhase === 'ready' || status.lastFullSyncAt) return;
     if (status.syncPhase !== 'initial_sync') return;
+    if (hasLibrarySyncWork(serverIndexKey, 'full')) return;
     const resumeT0 = performance.now();
-    await enqueueLibrarySync({ serverId, kind: 'full' });
+    await enqueueLibrarySync({ serverId: serverIndexKey, kind: 'full' });
     if (libraryDevEnabled()) {
       logLibrarySync({
         at: new Date().toISOString(),
         kind: 'resume_initial_sync',
-        serverId,
+        serverId: serverIndexKey,
         ingestStrategy: status.ingestStrategy ?? null,
         ingestPhase: status.ingestPhase ?? null,
         syncPhase: status.syncPhase,
@@ -179,11 +262,16 @@ export async function resumeInitialSyncIfIncomplete(serverId: string): Promise<v
         durationMs: Math.round(performance.now() - resumeT0),
         message: `status ${statusMs}ms`,
       });
-      logLibraryStatus(serverId, status, 'resume_initial_sync');
+      logLibraryStatus(serverIndexKey, status, 'resume_initial_sync');
     }
   } catch {
     /* best-effort */
   } finally {
-    resumeInFlight.delete(serverId);
+    resumeInFlight.delete(serverIndexKey);
   }
+}
+
+export function resetLibrarySessionForTests(): void {
+  bindInFlightByIndexKey.clear();
+  resumeInFlight.clear();
 }

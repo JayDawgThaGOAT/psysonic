@@ -1,7 +1,7 @@
-import { getSong } from '@/lib/api/subsonicLibrary';
+import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { useEffect } from 'react';
-import { useOrbitStore } from '@/features/orbit/store/orbitStore';
+import { orbitBindingIsCurrent, useOrbitStore } from '@/features/orbit/store/orbitStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import {
   writeOrbitState,
@@ -12,6 +12,7 @@ import {
   makeCoalescedRunner,
   readOrbitTransitionSettings,
   suggestionKey,
+  orbitServerMatches,
 } from '@/features/orbit/utils/orbit';
 import {
   ORBIT_DEFAULT_SETTINGS,
@@ -47,26 +48,37 @@ const STATE_TICK_MS     = 2_500;
 export function useOrbitHost(): void {
   const role              = useOrbitStore(s => s.role);
   const phase             = useOrbitStore(s => s.phase);
+  const serverId          = useOrbitStore(s => s.serverId);
+  const bindingRevision   = useOrbitStore(s => s.bindingRevision);
   const sessionPlaylistId = useOrbitStore(s => s.sessionPlaylistId);
   const outboxPlaylistId  = useOrbitStore(s => s.outboxPlaylistId);
   const sessionId         = useOrbitStore(s => s.sessionId);
   const hostName          = useOrbitStore(s => s.state?.host);
 
-  const active = role === 'host' && phase === 'active' && !!sessionPlaylistId;
+  const active = role === 'host' && phase === 'active' && !!serverId && !!sessionPlaylistId;
 
   useEffect(() => {
-    if (!active || !sessionPlaylistId) return;
+    if (!active || !serverId || !sessionPlaylistId) return;
+    const binding = {
+      bindingRevision,
+      role: 'host' as const,
+      serverId,
+      sessionPlaylistId,
+    };
+    const bindingIsCurrent = () => orbitBindingIsCurrent(binding);
 
     const snapshotPlayerPatch = (hostUsername: string): Partial<OrbitState> => {
       const p = usePlayerStore.getState();
       const now = Date.now();
+      const currentTrack = p.currentTrack;
+      const currentServerId = currentTrack?.serverId ?? p.queueServerId;
       return {
         isPlaying: p.isPlaying,
         positionMs: Math.round((p.currentTime ?? 0) * 1000),
         positionAt: now,
-        currentTrack: p.currentTrack
+        currentTrack: currentTrack && orbitServerMatches(serverId, currentServerId)
           ? {
-              trackId: p.currentTrack.id,
+              trackId: currentTrack.id,
               // Locally-initiated plays are marked as authored by the host.
               // Guest-suggested tracks that later become `currentTrack` will
               // carry their original attribution because the queue-consume
@@ -79,6 +91,7 @@ export function useOrbitHost(): void {
     };
 
     const pushState = async () => {
+      if (!bindingIsCurrent()) return;
       const store = useOrbitStore.getState();
       const base = store.state;
       if (!base) return;
@@ -86,7 +99,8 @@ export function useOrbitHost(): void {
       // 1) Sweep every guest outbox: new suggestions + fresh heartbeats.
       let afterSweep = base;
       try {
-        const snaps = await sweepGuestOutboxes(base.sid, base.host);
+        const snaps = await sweepGuestOutboxes(base.sid, base.host, serverId);
+        if (!bindingIsCurrent()) return;
         afterSweep = applyOutboxSnapshotsToState(base, snaps);
       } catch { /* best-effort; keep old participants and queue */ }
 
@@ -95,6 +109,7 @@ export function useOrbitHost(): void {
       //    tracks. Must happen BEFORE the shuffle step so the merge decision
       //    tracks `addedAt` (immutable) rather than list position.
       await mergeNewSuggestionsIntoQueue(afterSweep.queue);
+      if (!bindingIsCurrent()) return;
 
       // 3) Shuffle check:
       //    a) `maybeShuffleQueue` handles the OrbitState.queue (guest-facing
@@ -115,7 +130,9 @@ export function useOrbitHost(): void {
       // 4) Overlay the host's live playback snapshot. Host tick reads ids only,
       // so the thin `queueItems` refs are all we need (no full Track resolve).
       const playerLive = usePlayerStore.getState();
-      const upcoming   = playerLive.queueItems.slice(playerLive.queueIndex + 1);
+      const upcoming = playerLive.queueItems
+        .slice(playerLive.queueIndex + 1)
+        .filter(ref => orbitServerMatches(serverId, ref.serverId));
       // Map track id → original suggester (if any). State's `queue` carries
       // every suggestion we've ever seen this session, so it's the right
       // attribution source even after the track has been merged into the
@@ -138,8 +155,9 @@ export function useOrbitHost(): void {
 
       // 5) Commit locally + push remote.
       useOrbitStore.getState().setState(next);
+      if (!bindingIsCurrent()) return;
       try {
-        await writeOrbitState(sessionPlaylistId, next);
+        await writeOrbitState(sessionPlaylistId, next, serverId);
         pushOrbitEvent('host:push', JSON.stringify({
           track: next.currentTrack?.trackId ?? null,
           playing: next.isPlaying,
@@ -183,12 +201,13 @@ export function useOrbitHost(): void {
       // Resolve in parallel — Navidrome is fine with concurrent getSong calls.
       const resolved = await Promise.all(pending.map(async q => {
         try {
-          const song = await getSong(q.trackId);
+          const song = await getSongForServer(serverId, q.trackId);
           return song ? { q, track: songToTrack(song) } : null;
         } catch {
           return null;
         }
       }));
+      if (!bindingIsCurrent()) return;
 
       const toEnqueue = resolved.filter((r): r is { q: OrbitQueueItem; track: ReturnType<typeof songToTrack> } => r !== null);
       const markAllAsMerged = () => pending.forEach(q => store.addMergedSuggestion(suggestionKey(q)));
@@ -253,9 +272,9 @@ export function useOrbitHost(): void {
       window.clearInterval(id);
       unsubPlayPause();
     };
-  }, [active, sessionPlaylistId]);
+  }, [active, bindingRevision, serverId, sessionPlaylistId]);
 
   // Outbox heartbeat — shared with the guest hook; the host's outbox is keyed
   // by its own `OrbitState.host` name.
-  useOrbitOutboxHeartbeat(active, outboxPlaylistId, sessionId, hostName);
+  useOrbitOutboxHeartbeat(active, serverId, outboxPlaylistId, sessionId, hostName);
 }

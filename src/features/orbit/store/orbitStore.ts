@@ -17,6 +17,11 @@ import type { OrbitState } from '@/features/orbit/api/orbit';
 
 export type OrbitRole = 'host' | 'guest';
 
+export interface OrbitHostScopeSnapshot {
+  activeServerId: string | null;
+  libraryBrowseServerIds: string[];
+}
+
 /** Fine-grained lifecycle phase. Drives which modal/indicator UI is visible. */
 export type OrbitPhase =
   /** No session bound. */
@@ -37,6 +42,12 @@ interface OrbitStore {
   role: OrbitRole | null;
   /** Active session id, or null. */
   sessionId: string | null;
+  /** Saved server profile that owns every remote Orbit playlist operation. */
+  serverId: string | null;
+  /** Host-only active-server/library scope to restore when the session ends. */
+  hostScopeSnapshot: OrbitHostScopeSnapshot | null;
+  /** Monotonic local generation; invalidates async work from prior bindings. */
+  bindingRevision: number;
   /** Navidrome playlist id of the canonical session playlist. */
   sessionPlaylistId: string | null;
   /** Navidrome playlist id of our own outbox (exists for both host and guest). */
@@ -80,6 +91,7 @@ interface OrbitStore {
   setPhase: (phase: OrbitPhase) => void;
   setRole: (role: OrbitRole | null) => void;
   setSessionBinding: (args: {
+    serverId: string | null;
     sessionId: string | null;
     sessionPlaylistId: string | null;
     outboxPlaylistId: string | null;
@@ -100,6 +112,9 @@ interface OrbitStore {
 const initialState = {
   role: null,
   sessionId: null,
+  serverId: null,
+  hostScopeSnapshot: null,
+  bindingRevision: 0,
   sessionPlaylistId: null,
   outboxPlaylistId: null,
   phase: 'idle' as OrbitPhase,
@@ -120,8 +135,8 @@ export const useOrbitStore = create<OrbitStore>()((set) => ({
 
   setPhase: (phase) => set({ phase }),
   setRole: (role) => set({ role }),
-  setSessionBinding: ({ sessionId, sessionPlaylistId, outboxPlaylistId }) =>
-    set({ sessionId, sessionPlaylistId, outboxPlaylistId }),
+  setSessionBinding: ({ serverId, sessionId, sessionPlaylistId, outboxPlaylistId }) =>
+    set({ serverId, sessionId, sessionPlaylistId, outboxPlaylistId }),
   setState: (state) => set({ state }),
   setError: (message) => set({ phase: message ? 'error' : 'idle', errorMessage: message }),
   addPendingSuggestion: (trackId) => set(s => (
@@ -143,5 +158,22 @@ export const useOrbitStore = create<OrbitStore>()((set) => ({
       ? s
       : { declinedSuggestionKeys: [...s.declinedSuggestionKeys, key] }
   )),
-  reset: () => set({ ...initialState }),
+  reset: () => set(state => ({ ...initialState, bindingRevision: state.bindingRevision + 1 })),
 }));
+
+export function orbitBindingRevisionIsCurrent(revision: number): boolean {
+  return useOrbitStore.getState().bindingRevision === revision;
+}
+
+export function orbitBindingIsCurrent(args: {
+  bindingRevision: number;
+  role: OrbitRole;
+  serverId: string;
+  sessionPlaylistId: string;
+}): boolean {
+  const state = useOrbitStore.getState();
+  return state.bindingRevision === args.bindingRevision
+    && state.role === args.role
+    && state.serverId === args.serverId
+    && state.sessionPlaylistId === args.sessionPlaylistId;
+}

@@ -172,6 +172,12 @@ export interface SyncJobDto {
   kind: string; // 'initial_sync' | 'delta_sync'
 }
 
+export interface ScopeBrowseProjectionInspectDto {
+  needed: boolean;
+  totalTracks: number;
+  doneTracks: number;
+}
+
 // ── Advanced Search (PR-5d, §5.13 / §5.5B) ────────────────────────────
 
 export type LibraryEntityType = 'artist' | 'album' | 'track';
@@ -196,10 +202,29 @@ export interface LibrarySortClause {
   dir: SortDir;
 }
 
-/** One server + library folder id — profile `serverId` space until IPC wrappers remap. */
+/** One server scope; `null` means every indexed library, while `''` is an exact id. */
 export interface LibraryScopePair {
   serverId: string;
-  libraryId: string;
+  libraryId: string | null;
+}
+
+export type LibraryScopeBrowseEntity = 'album' | 'artist' | 'track';
+
+export interface LibraryScopeBrowseRequest {
+  entity: LibraryScopeBrowseEntity;
+  scopes: LibraryScopePair[];
+  sort?: LibrarySortClause[];
+  limit: number;
+  cursor?: string | null;
+}
+
+export interface LibraryScopeBrowseResponse {
+  albums: LibraryAlbumDto[];
+  artists: LibraryArtistDto[];
+  tracks: LibraryTrackDto[];
+  nextCursor?: string | null;
+  hasMore: boolean;
+  source: string;
 }
 
 export interface LibraryAdvancedSearchRequest {
@@ -464,6 +489,8 @@ export interface LibrarySyncIdlePayload {
   serverId: string;
   libraryScope: string;
   kind: string; // 'initial_sync' | 'delta_sync'
+  source?: 'foreground' | 'background';
+  jobId?: string | null;
   ok: boolean;
   error?: string | null;
 }

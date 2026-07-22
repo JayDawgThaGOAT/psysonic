@@ -22,7 +22,11 @@ import { getAlbumForServer } from '@/lib/api/subsonicLibrary';
 import { resolveSongMetaIndexFirst } from '@/lib/library/resolveSongMetaIndexFirst';
 import type { SubsonicAlbum, SubsonicSong } from '@/lib/api/subsonicTypes';
 import { shouldAttemptSubsonicForServer } from '@/lib/network/subsonicNetworkGuard';
-import { loadAlbumFromLibraryIndex, loadArtistFromLibraryIndex } from '@/features/offline';
+import {
+  loadAlbumFromLibraryIndex,
+  loadArtistFromLibraryIndex,
+  loadArtistTracksFromLibraryIndex,
+} from '@/features/offline';
 import { trackToSong } from '@/lib/library/advancedSearchLocal';
 import { libraryIsReady } from '@/lib/library/libraryReady';
 
@@ -62,10 +66,10 @@ export async function resolveNpDiscography(
 }
 
 /**
- * Most played — derive from the artist's own discography albums (same bucket the
- * discography card uses), sorted by play_count. This is deterministic: it can't
- * pull the wrong artist's tracks the way an FTS-on-name query could. Network
- * `getTopSongsForServer` is the fallback on index miss / off / unreachable.
+ * Most played — load the artist's own scoped tracks in one local query and sort
+ * by play_count. The all-library fallback keeps the older album-by-album path.
+ * Both are deterministic by artist id; network `getTopSongsForServer` is the
+ * fallback on index miss / off / unreachable.
  */
 export async function resolveNpTopSongs(
   serverId: string,
@@ -74,17 +78,25 @@ export async function resolveNpTopSongs(
 ): Promise<SubsonicSong[]> {
   if (artistId && await libraryIsReady(serverId)) {
     try {
-      const hit = await loadArtistFromLibraryIndex(serverId, artistId);
-      if (hit && hit.albums.length > 0) {
-        const perAlbum = await Promise.all(
-          hit.albums.map(a => libraryGetTracksByAlbum(serverId, a.id).catch(() => [])),
-        );
-        const songs = perAlbum
-          .flat()
-          .map(trackToSong)
+      const scopedTracks = await loadArtistTracksFromLibraryIndex(serverId, artistId);
+      if (scopedTracks !== null) {
+        const songs = scopedTracks
           .sort((a, b) => (b.playCount ?? 0) - (a.playCount ?? 0))
           .slice(0, TOP_SONGS_LIMIT);
         if (songs.length > 0) return songs;
+      } else {
+        const hit = await loadArtistFromLibraryIndex(serverId, artistId);
+        if (hit && hit.albums.length > 0) {
+          const perAlbum = await Promise.all(
+            hit.albums.map(a => libraryGetTracksByAlbum(serverId, a.id).catch(() => [])),
+          );
+          const songs = perAlbum
+            .flat()
+            .map(trackToSong)
+            .sort((a, b) => (b.playCount ?? 0) - (a.playCount ?? 0))
+            .slice(0, TOP_SONGS_LIMIT);
+          if (songs.length > 0) return songs;
+        }
       }
     } catch { /* index error → network fallback */ }
   }

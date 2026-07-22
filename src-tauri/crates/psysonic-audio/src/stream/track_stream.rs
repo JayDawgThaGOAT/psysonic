@@ -150,7 +150,14 @@ pub(crate) async fn track_download_task(
                                 loudness_pre_analysis_attenuation_db.load(Ordering::Relaxed),
                             )
                             .clamp(-24.0, 0.0);
-                            crate::helpers::emit_partial_loudness_from_bytes(&app, &url, &capture, target_lufs, pre_db);
+                            crate::helpers::emit_partial_loudness_from_bytes(
+                                &app,
+                                &url,
+                                server_id.as_deref(),
+                                &capture,
+                                target_lufs,
+                                pre_db,
+                            );
                         }
                     }
                     offset += pushed;

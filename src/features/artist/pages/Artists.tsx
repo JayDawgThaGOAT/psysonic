@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useLayoutEffect } from 'react';
+import { useEffect, useState, useCallback, useRef, useLayoutEffect, useSyncExternalStore } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { LayoutGrid, List, Images } from 'lucide-react';
 import SelectionToggleButton from '@/ui/SelectionToggleButton';
@@ -41,29 +41,33 @@ import { readArtistBrowseRestore } from '@/lib/navigation/albumDetailNavigation'
 
 import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
-import { librarySelectionForServer } from '@/lib/api/subsonicClient';
-import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 import {
   beginArtistsBrowseTrace,
   emitArtistsBrowseDebug,
+  formatArtistBrowseTraceReport,
+  getArtistBrowseTraceSnapshot,
+  subscribeArtistBrowseTrace,
 } from '@/lib/library/artistBrowseDebug';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export default function Artists() {
   const perfFlags = usePerfProbeFlags();
+  const artistsBrowseDiagnosticsEnabled = usePsyLabDebugTraces().artistsBrowse;
+  const artistTraceEntries = useSyncExternalStore(
+    subscribeArtistBrowseTrace,
+    getArtistBrowseTraceSnapshot,
+    getArtistBrowseTraceSnapshot,
+  );
   const { t } = useTranslation();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
-  const serverId = useAuthStore(s => s.activeServerId ?? '');
-  const libraryScopeKey = useAuthStore(s => {
-    if (!serverId) return 'all';
-    const resolved = resolveServerIdForIndexKey(serverId);
-    const selection = s.musicLibrarySelectionByServer[resolved];
-    if (selection !== undefined) {
-      return selection.length === 0 ? 'all' : selection.join(',');
-    }
-    const legacy = s.musicLibraryFilterByServer[resolved];
-    if (legacy === undefined || legacy === 'all') return 'all';
-    return legacy;
-  });
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const libraryBrowseVersion = musicLibraryFilterVersion + libraryBrowseScopeVersion;
+  const activeServerId = useAuthStore(s => s.activeServerId ?? '');
+  const browseScope = getLibraryBrowseScope();
+  const serverId = browseScope.anchorServerId ?? activeServerId;
+  const libraryScopeKey = browseScope.fingerprint || 'all';
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
 
   const scrollSnapshotRef = useRef<ArtistBrowseScrollSnapshot>({ scrollTop: 0, visibleCount: 0 });
@@ -83,17 +87,18 @@ export default function Artists() {
   } = useArtistsBrowseFilters(serverId, scrollSnapshotRef);
 
   useLayoutEffect(() => {
+    const libraryScopeCount = getLibraryBrowseScope().pairs.length;
     beginArtistsBrowseTrace({
       serverId,
       indexEnabled,
-      libraryFilterVersion: musicLibraryFilterVersion,
-      libraryScopeCount: librarySelectionForServer(serverId).length,
+      libraryFilterVersion: libraryBrowseVersion,
+      libraryScopeCount,
       creditMode,
       letterFilter,
       viewMode,
     });
     return () => emitArtistsBrowseDebug('page_unmount');
-  }, [serverId, indexEnabled, musicLibraryFilterVersion, creditMode, letterFilter, viewMode]);
+  }, [serverId, indexEnabled, libraryBrowseVersion, creditMode, letterFilter, viewMode]);
 
   const artistsSearchQuery = useScopedBrowseSearchQuery('artists');
 
@@ -106,6 +111,9 @@ export default function Artists() {
   const showArtistImages = useAuthStore(s => s.showArtistImages);
   const PAGE_SIZE = showArtistImages ? 50 : 100; // Smaller with images to reduce I/O
   const navigateToArtist = useNavigateToArtist();
+  const openArtist = useCallback((artistId: string, ownerServerId?: string) => {
+    navigateToArtist(artistId, { serverId: ownerServerId });
+  }, [navigateToArtist]);
   const location = useLocation();
   const navigate = useNavigate();
   const openContextMenu = usePlayerStore(state => state.openContextMenu);
@@ -126,8 +134,10 @@ export default function Artists() {
     starredOnly,
     creditMode,
     letterFilter,
-    musicLibraryFilterVersion,
+    musicLibraryFilterVersion: libraryBrowseVersion,
     libraryScopeKey,
+    libraryScopes: browseScope.pairs,
+    multiServer: browseScope.multiServer,
     ignoredArticles,
   });
 
@@ -154,7 +164,7 @@ export default function Artists() {
     loadMore: sliceLoadMore,
   } = useClientSliceInfiniteScroll({
     pageSize: PAGE_SIZE,
-    resetDeps: [artistsSearchQuery, letterFilter, starredOnly, creditMode, viewMode, musicLibraryFilterVersion, serverId],
+    resetDeps: [artistsSearchQuery, letterFilter, starredOnly, creditMode, viewMode, libraryBrowseVersion, serverId],
     getScrollRoot: getArtistsScrollRoot,
     scrollRootEl: artistsScrollBodyEl,
     restoreDisplayCount: restoreVisibleCountRef.current,
@@ -177,7 +187,7 @@ export default function Artists() {
     });
   }, []);
 
-  const selectedArtists = artists.filter(a => selectedIds.has(a.id));
+  const selectedArtists = artists.filter(a => selectedIds.has(ownedEntityKey(a)));
 
   const {
     filtered, visible, hasMore, groups, letters, artistListFlatRows,
@@ -365,6 +375,30 @@ export default function Artists() {
     textSearchArtists?.[0]?.id ?? '',
   ].join('\0');
 
+  const copyArtistBrowseDiagnostics = async () => {
+    const text = formatArtistBrowseTraceReport({
+      route: '/artists',
+      serverId,
+      indexEnabled,
+      libraryScopeCount: getLibraryBrowseScope().pairs.length,
+      creditMode,
+      letterFilter,
+      starredOnly,
+      viewMode,
+      loading,
+      browseMode,
+      catalogArtistCount: catalogArtists.length,
+      visibleArtistCount: visible.length,
+      catalogHasMore,
+      traceEntryCount: artistTraceEntries.length,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
+
   useArtistsBrowseScrollReset({
     scrollSnapshotRef,
     getScrollRoot: getArtistsScrollRoot,
@@ -379,6 +413,17 @@ export default function Artists() {
     <div
       className={`content-body animate-fade-in mainstage-inpage-split${mainstageHeaderTight ? ' mainstage-inpage--header-tight' : ''}`}
     >
+      {artistsBrowseDiagnosticsEnabled && (
+        <div className="mainstage-diagnostic-copy-all">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void copyArtistBrowseDiagnostics()}
+          >
+            {t('albums.copyDiagnostics')}
+          </button>
+        </div>
+      )}
       <div className="mainstage-inpage-toolbar">
         <div className="page-sticky-header">
           <div className="mainstage-inpage-toolbar-row">
@@ -517,7 +562,7 @@ export default function Artists() {
             selectedArtists={selectedArtists}
             showArtistImages={showArtistImages}
             toggleSelect={toggleSelect}
-            onOpenArtist={navigateToArtist}
+            onOpenArtist={openArtist}
             openContextMenu={openContextMenu}
             t={t}
           />
@@ -537,7 +582,7 @@ export default function Artists() {
             selectedArtists={selectedArtists}
             showArtistImages={showArtistImages}
             toggleSelect={toggleSelect}
-            onOpenArtist={navigateToArtist}
+            onOpenArtist={openArtist}
             openContextMenu={openContextMenu}
             t={t}
           />

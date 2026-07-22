@@ -5,7 +5,6 @@ import type { TFunction } from 'i18next';
 import type { SubsonicArtist } from '@/lib/api/subsonicTypes';
 import type { ServerProfile } from '@/store/authStoreTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
-import { activateShareSearchServer } from '@/features/share/enqueueShareSearchPayload';
 import { sharePayloadTotal, type ShareSearchMatch } from '@/lib/share/shareSearch';
 import type { ShareSearchPreviewState } from '@/features/search/hooks/useShareSearchPreview';
 import type { NavidromePublicSharePreviewState } from '@/features/search/hooks/useNavidromePublicSharePreview';
@@ -124,16 +123,6 @@ function ShareArtistThumb({
 
 function StaticIcon({ className, children }: { className: string; children: React.ReactNode }) {
   return <div className={className}>{children}</div>;
-}
-
-function withShareServer(
-  shareMatch: ShareSearchMatch,
-  t: TFunction,
-  fn: () => void,
-): void {
-  if (shareMatch.type === 'unsupported' || shareMatch.type === 'navidrome-public') return;
-  if (!activateShareSearchServer(shareMatch.payload.srv, t)) return;
-  fn();
 }
 
 function shareSubLine(primary: string, serverLabel: string | null | undefined, t: TFunction): string {
@@ -333,7 +322,7 @@ export default function ShareSearchResults(props: ShareSearchResultsProps) {
           onClick={onOpenArtist}
           onContextMenu={e => {
             e.preventDefault();
-            withShareServer(shareMatch, t, () => onContextMenu?.(e, shareArtist, 'artist'));
+            onContextMenu?.(e, shareArtist, 'artist');
           }}
           role={desktop ? 'option' : undefined}
           aria-selected={desktop ? activeIndex === 0 : undefined}
@@ -421,7 +410,7 @@ export default function ShareSearchResults(props: ShareSearchResultsProps) {
           onClick={onOpenAlbum}
           onContextMenu={e => {
             e.preventDefault();
-            withShareServer(shareMatch, t, () => onContextMenu?.(e, shareAlbum, 'album'));
+            onContextMenu?.(e, shareAlbum, 'album');
           }}
           role={desktop ? 'option' : undefined}
           aria-selected={desktop ? activeIndex === 0 : undefined}
@@ -471,7 +460,7 @@ export default function ShareSearchResults(props: ShareSearchResultsProps) {
           onClick={onEnqueue}
           onContextMenu={e => {
             e.preventDefault();
-            withShareServer(shareMatch, t, () => onContextMenu?.(e, songToTrack(shareTrackSong), 'song'));
+            onContextMenu?.(e, songToTrack(shareTrackSong), 'song');
           }}
           disabled={shareQueueBusy}
           role={desktop ? 'option' : undefined}

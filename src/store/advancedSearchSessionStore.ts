@@ -27,12 +27,16 @@ export type AdvancedSearchResultsStash = {
 
 /** Session snapshot when leaving Search → album/artist detail. */
 export type AdvancedSearchSessionStash = AdvancedSearchFormStash & {
+  browseScopeFingerprint: string;
+  librarySyncRevision: number;
   results: AdvancedSearchResultsStash | null;
   hasSearched: boolean;
   activeSearch: AdvancedSearchQueryStash | null;
   localMode: boolean;
   songsServerOffset: number;
   songsHasMore: boolean;
+  /** Opaque local Tracks browse cursor; absent for search and network pages. */
+  songsBrowseCursor?: string | null;
   genreNote: boolean;
   /** `/search?q=` quick results (no advanced filter panel). */
   basicSearchMode: boolean;

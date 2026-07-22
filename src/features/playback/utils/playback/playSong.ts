@@ -3,6 +3,7 @@ import { songToTrack } from '@/lib/media/songToTrack';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { fadeOut } from '@/features/playback/utils/playback/fadeOut';
 import { shouldAutodjInterruptBlend } from '@/features/playback/utils/playback/autodjManualBlend';
+import { queueItemRefMatchesTrack } from '@/features/playback/utils/playback/queueIdentity';
 
 /**
  * Play a single song. When `queue` is provided, surrounds the chosen song with that queue
@@ -39,7 +40,7 @@ export async function enqueueAndPlay(song: SubsonicSong): Promise<void> {
     usePlayerStore.setState({ volume });
   }
 
-  if (!queueItems.some(r => r.trackId === track.id)) {
+  if (!queueItems.some(ref => queueItemRefMatchesTrack(ref, track))) {
     usePlayerStore.getState().enqueue([track]);
   }
   // playTrack with no queue arg uses the current state.queue, finds the track by id,

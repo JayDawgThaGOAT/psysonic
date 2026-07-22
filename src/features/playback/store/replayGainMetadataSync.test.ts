@@ -219,6 +219,29 @@ describe('maybeRefreshCurrentTrackMetadataFromIndex', () => {
     expect(s.currentTrack?.id).toBe('t2');
     expect(s.currentTrack?.replayGainTrackDb).toBe(-3.0);
   });
+
+  it('no-ops when the same raw track id switches to another server during index fetch', async () => {
+    vi.spyOn(resolveSongMetaIndexFirst, 'resolveSongMetaIndexFirst').mockImplementation(async () => {
+      usePlayerStore.setState({
+        currentTrack: track('t1', { serverId: 's2', replayGainTrackDb: -3.0 }),
+        queueItems: [{ serverId: 's2', trackId: 't1' }],
+        queueIndex: 0,
+      });
+      return {
+        id: 't1',
+        title: 'Server 1 track',
+        album: 'Album',
+        duration: 200,
+        replayGain: { trackGain: -8.5, trackPeak: 0.91 },
+      } as Awaited<ReturnType<typeof resolveSongMetaIndexFirst.resolveSongMetaIndexFirst>>;
+    });
+
+    await maybeRefreshCurrentTrackMetadataFromIndex();
+
+    const s = usePlayerStore.getState();
+    expect(s.currentTrack?.serverId).toBe('s2');
+    expect(s.currentTrack?.replayGainTrackDb).toBe(-3.0);
+  });
 });
 
 describe('syncIdleAppliesToQueueRef', () => {

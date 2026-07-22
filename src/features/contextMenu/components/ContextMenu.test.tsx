@@ -160,6 +160,19 @@ describe('ContextMenu — type=song', () => {
     fireEvent.click(getByText('Play Next'));
     expect(usePlayerStore.getState().contextMenu.isOpen).toBe(false);
   });
+
+  it('opens Song Info with the context track owner', () => {
+    openMenuFor('song', makeTrack({ id: 'shared', serverId: 'srv-owner' }));
+    const { getByText } = renderWithProviders(<ContextMenu />);
+
+    fireEvent.click(getByText('Song Info'));
+
+    expect(usePlayerStore.getState().songInfoModal).toEqual({
+      isOpen: true,
+      songId: 'shared',
+      serverId: 'srv-owner',
+    });
+  });
 });
 
 describe('ContextMenu — type=album', () => {
@@ -184,6 +197,23 @@ describe('ContextMenu — type=artist', () => {
     const { container } = renderWithProviders(<ContextMenu />);
     expect(container.querySelector('.context-menu')).not.toBeNull();
     expect(container.textContent).toMatch(/Start Radio/i);
+    expect(container.textContent).toMatch(/share/i);
+  });
+
+  it('hides album-artist radio and playlist actions for composer credits', () => {
+    usePlayerStore.getState().openContextMenu(
+      100,
+      100,
+      { id: 'co-1', name: 'Composer', albumCount: 3, serverId: 'srv-owner' },
+      'artist',
+      undefined,
+      undefined,
+      undefined,
+      'composer',
+    );
+    const { container } = renderWithProviders(<ContextMenu />);
+    expect(container.textContent).not.toMatch(/Start Radio/i);
+    expect(container.textContent).not.toMatch(/Add to Playlist/i);
     expect(container.textContent).toMatch(/share/i);
   });
 });

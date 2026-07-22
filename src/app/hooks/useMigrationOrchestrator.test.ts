@@ -7,6 +7,8 @@ const migrationInspectMock = vi.fn();
 const migrationRunMock = vi.fn();
 const libraryGenreTagsInspectMock = vi.fn();
 const libraryGenreTagsRunMock = vi.fn();
+const libraryScopeBrowseProjectionInspectMock = vi.fn();
+const libraryScopeBrowseProjectionRunMock = vi.fn();
 const rewriteFrontendStoreKeysMock = vi.fn(async (_servers: unknown) => undefined);
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -21,6 +23,8 @@ vi.mock('@/lib/api/migration', () => ({
 vi.mock('@/lib/api/library', () => ({
   libraryGenreTagsInspect: () => libraryGenreTagsInspectMock(),
   libraryGenreTagsRun: () => libraryGenreTagsRunMock(),
+  libraryScopeBrowseProjectionInspect: () => libraryScopeBrowseProjectionInspectMock(),
+  libraryScopeBrowseProjectionRun: () => libraryScopeBrowseProjectionRunMock(),
 }));
 
 vi.mock('@/utils/server/rewriteFrontendStoreKeys', () => ({
@@ -38,8 +42,12 @@ describe('useMigrationOrchestrator', () => {
     migrationRunMock.mockReset();
     libraryGenreTagsInspectMock.mockReset();
     libraryGenreTagsRunMock.mockReset();
+    libraryScopeBrowseProjectionInspectMock.mockReset();
+    libraryScopeBrowseProjectionRunMock.mockReset();
     libraryGenreTagsInspectMock.mockResolvedValue({ needed: false, totalTracks: 0, doneTracks: 0 });
     libraryGenreTagsRunMock.mockResolvedValue(undefined);
+    libraryScopeBrowseProjectionInspectMock.mockResolvedValue({ needed: false, totalTracks: 0, doneTracks: 0 });
+    libraryScopeBrowseProjectionRunMock.mockResolvedValue(undefined);
     rewriteFrontendStoreKeysMock.mockClear();
     localStorage.clear();
     useAuthStore.setState({
@@ -57,6 +65,8 @@ describe('useMigrationOrchestrator', () => {
       progress: null,
       genreTagsInspect: null,
       genreTagsProgress: null,
+      scopeBrowseProjectionInspect: null,
+      scopeBrowseProjectionProgress: null,
       lastError: null,
     });
     (globalThis as Record<string, unknown>)[REAL_MIGRATION_TEST_OVERRIDE] = true;
@@ -188,6 +198,35 @@ describe('useMigrationOrchestrator', () => {
       analysis: { totalLegacyRows: 0, skippedUnknownServerRows: 0, tables: {} },
       mappings: [{ legacyId: 'legacy-a', indexKey: 'a.test' }],
     });
+
+    await waitFor(() => {
+      expect(useMigrationStore.getState().phase).toBe('completed');
+    });
+  });
+
+  it('keeps startup non-blocking while scope-browse projection inspect is pending', async () => {
+    localStorage.setItem(DONE_FLAG, '1');
+    migrationInspectMock.mockResolvedValue({
+      needsMigration: false, hasSkippedUnknownServerRows: false, canRun: true, warnings: [],
+      unmappedEmptyBucket: false,
+      library: { totalLegacyRows: 0, skippedUnknownServerRows: 0, tables: {} },
+      analysis: { totalLegacyRows: 0, skippedUnknownServerRows: 0, tables: {} },
+      mappings: [{ legacyId: 'legacy-a', indexKey: 'a.test' }],
+    });
+    let resolveProjection: ((value: unknown) => void) | undefined;
+    libraryScopeBrowseProjectionInspectMock.mockImplementation(
+      () => new Promise(resolve => { resolveProjection = resolve; }),
+    );
+
+    renderHook(() => useMigrationOrchestrator());
+
+    await waitFor(() => {
+      expect(libraryScopeBrowseProjectionInspectMock).toHaveBeenCalledTimes(1);
+    });
+    expect(useMigrationStore.getState().phase).toBe('idle');
+
+    if (!resolveProjection) throw new Error('projection inspect resolver not captured');
+    resolveProjection({ needed: false, totalTracks: 100, doneTracks: 100 });
 
     await waitFor(() => {
       expect(useMigrationStore.getState().phase).toBe('completed');

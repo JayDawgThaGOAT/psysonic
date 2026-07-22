@@ -8,12 +8,13 @@ import type { SubsonicOpenArtistRef } from '@/lib/api/subsonicTypes';
 import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
 import { formatTrackTime } from '@/lib/format/formatDuration';
 import { renderPresetIcon, useEnrichmentPrimaryIcon, useEnrichmentPrimaryLabel } from '@/music-network/ui';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface HeroProps {
   track: { title: string; artist: string; album: string; year?: number;
     duration: number; suffix?: string; bitRate?: number; samplingRate?: number;
     bitDepth?: number; artistId?: string; albumId?: string; id: string;
-    userRating?: number; };
+    userRating?: number; serverId?: string; };
   /** OpenSubsonic `artists` on the playing track — per-artist links in the hero subline. */
   artistRefs?: SubsonicOpenArtistRef[];
   genre?: string;
@@ -80,14 +81,16 @@ const Hero = memo(function Hero({ track, artistRefs, genre, playCount, userRatin
             <OpenArtistRefInline
               refs={artistRefs}
               fallbackName={track.artist}
-              onGoArtist={id => onNavigate(`/artist/${id}`)}
+              onGoArtist={id => onNavigate(buildArtistDetailPath(id, { serverId: track.serverId }))}
               as="none"
               linkTag="span"
               linkClassName="np-link"
             />
           ) : (
             <span className="np-link"
-              onClick={() => track.artistId && onNavigate(`/artist/${track.artistId}`)}
+              onClick={() => track.artistId && onNavigate(buildArtistDetailPath(track.artistId, {
+                serverId: track.serverId,
+              }))}
               style={{ cursor: track.artistId ? 'pointer' : 'default' }}>
               {track.artist}
             </span>

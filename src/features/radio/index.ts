@@ -11,3 +11,8 @@
 export { useRadioMetadata } from './hooks/useRadioMetadata';
 export type { RadioMetadata } from './hooks/useRadioMetadata';
 export { useRadioMprisSync } from './hooks/useRadioMprisSync';
+export {
+  migrateRadioStationKeys,
+  radioStationKey,
+  sameRadioStation,
+} from './utils/radioStationIdentity';

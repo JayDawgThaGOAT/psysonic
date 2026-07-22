@@ -1,7 +1,7 @@
 import type React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { computeSyncPaths } from '@/lib/api/syncfs';
-import type { DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
+import { deviceSyncOwnerKey, type DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { applyLegacyTemplate } from '@/features/deviceSync/utils/deviceSyncLegacyTemplate';
 import { trackToSyncInfo } from '@/features/deviceSync/utils/deviceSyncHelpers';
@@ -133,9 +133,11 @@ export async function runDeviceSyncMigrationExecute(deps: RunMigrationExecuteDep
     const failed = results.filter(r => !r.ok).length;
     const errors = results.filter(r => !r.ok).map(r => `${r.oldPath}: ${r.error ?? 'unknown'}`);
     setMigrationResult({ ok, failed, errors });
-    // Bump manifest to v2 (no template field) + rescan the device.
-    invoke('write_device_manifest', { destDir: targetDir, sources }).catch(() => {});
-    scanDevice();
+    const ownerServerIndexKey = deviceSyncOwnerKey(sources);
+    if (ownerServerIndexKey) {
+      await invoke('write_device_manifest', { destDir: targetDir, ownerServerIndexKey, sources });
+    }
+    await scanDevice();
     setMigrationPhase('done');
   } catch (e) {
     setMigrationResult({ ok: 0, failed: migrationPairs.length, errors: [String(e)] });

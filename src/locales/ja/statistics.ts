@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: '総再生時間',
   genreInsights: 'ジャンル分析',
   formatDistribution: '形式分布',
-  formatSample: '{{n}} 曲のサンプル',
+  formatSample: '{{n}} 曲全体',
   computing: '計算中…',
   genreSongs: '{{count}} 曲',
   genreAlbums: '{{count}} 枚のアルバム',

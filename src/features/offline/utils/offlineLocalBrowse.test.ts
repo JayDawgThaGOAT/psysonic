@@ -13,6 +13,7 @@ import {
   fetchOfflineLocalBrowsableSongPage,
   fetchOfflineLocalStarredArtists,
   invalidateBrowsableLocalTrackCache,
+  loadAlbumFromLocalPlayback,
   loadArtistFromLocalPlayback,
   offlineLocalBrowseEnabled,
   resetBrowsableLocalTrackCacheForTests,
@@ -22,8 +23,13 @@ import {
 } from '@/features/offline/utils/offlineLocalBrowse';
 import { resetOfflineLocalLibrarySyncRevisionForTests, bumpOfflineLocalLibrarySyncRevisionForTests } from '@/store/offlineLocalLibrarySyncRevision';
 
-const { libraryGetTracksBatchChunkedMock, libraryAdvancedSearchMock } = vi.hoisted(() => ({
+const {
+  libraryGetTracksBatchChunkedMock,
+  libraryGetTracksByAlbumMock,
+  libraryAdvancedSearchMock,
+} = vi.hoisted(() => ({
   libraryGetTracksBatchChunkedMock: vi.fn(async (): Promise<LibraryTrackDto[]> => []),
+  libraryGetTracksByAlbumMock: vi.fn(async (): Promise<LibraryTrackDto[]> => []),
   libraryAdvancedSearchMock: vi.fn(async () => ({
     source: 'local' as const,
     albums: [],
@@ -38,7 +44,7 @@ const { libraryGetTracksBatchChunkedMock, libraryAdvancedSearchMock } = vi.hoist
 
 vi.mock('@/lib/api/library', () => ({
   libraryGetTracksBatchChunked: libraryGetTracksBatchChunkedMock,
-  libraryGetTracksByAlbum: vi.fn(async () => []),
+  libraryGetTracksByAlbum: libraryGetTracksByAlbumMock,
   libraryAdvancedSearch: libraryAdvancedSearchMock,
   subscribeLibrarySyncIdle: vi.fn(async () => () => {}),
 }));
@@ -55,6 +61,8 @@ describe('offlineLocalBrowse', () => {
     resetOfflineLocalLibrarySyncRevisionForTests();
     libraryGetTracksBatchChunkedMock.mockReset();
     libraryGetTracksBatchChunkedMock.mockResolvedValue([]);
+    libraryGetTracksByAlbumMock.mockReset();
+    libraryGetTracksByAlbumMock.mockResolvedValue([]);
     libraryAdvancedSearchMock.mockClear();
   });
 
@@ -95,6 +103,42 @@ describe('offlineLocalBrowse', () => {
     });
     expect(countLocalBrowsableTracks('srv-a')).toBe(1);
     expect(offlineLocalBrowseEnabled('srv-a')).toBe(true);
+  });
+
+  it('skips the unused total when loading a local album by id', async () => {
+    useLocalPlaybackStore.setState({
+      entries: {
+        'a.test:t1': {
+          serverIndexKey: 'a.test',
+          trackId: 't1',
+          localPath: '/media/library/a.test/a/al/t1.mp3',
+          layoutFingerprint: 'fp',
+          sizeBytes: 1,
+          tier: 'library',
+          cachedAt: 1,
+          suffix: 'mp3',
+        },
+      },
+    });
+    libraryGetTracksByAlbumMock.mockResolvedValue([{
+      id: 't1', title: 'Track', album: 'Album', artist: 'Artist', artistId: 'ar1',
+      durationSec: 1, serverId: 'srv-a', syncedAt: 0, rawJson: {},
+    }]);
+    libraryAdvancedSearchMock.mockResolvedValue({
+      source: 'local',
+      albums: [{ id: 'al1', name: 'Album', artist: 'Artist', artistId: 'ar1', serverId: 'srv-a', syncedAt: 0, rawJson: {} }],
+      artists: [], tracks: [], totals: { tracks: 0, albums: 1, artists: 0 }, appliedFilters: [],
+    } as never);
+
+    await loadAlbumFromLocalPlayback('srv-a', 'al1');
+
+    expect(libraryAdvancedSearchMock).toHaveBeenCalledWith({
+      serverId: 'srv-a',
+      entityTypes: ['album'],
+      restrictAlbumIds: ['al1'],
+      limit: 1,
+      skipTotals: true,
+    });
   });
 
   it('fetchOfflineLocalBrowsableSongPage pages local bytes alphabetically', async () => {

@@ -12,4 +12,7 @@ export const migration = {
   genreTagsTitle: 'Műfajindex frissítése…',
   genreTagsBody: 'Műfajok indexelése a böngészéshez és a szűrőkhöz. Ez frissítés után egyszer fut le.',
   genreTagsFailed: 'A műfajindex frissítése nem sikerült',
+  scopeBrowseProjectionTitle: 'A könyvtárböngészési index frissítése…',
+  scopeBrowseProjectionBody: 'Az albumkatalógus előkészítése a gyorsabb böngészéshez. Ez frissítés után egyszer fut le.',
+  scopeBrowseProjectionFailed: 'A könyvtárböngészési index frissítése nem sikerült',
 };

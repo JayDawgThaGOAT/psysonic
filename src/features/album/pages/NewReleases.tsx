@@ -1,9 +1,6 @@
-import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
-import { getAlbumsByGenre } from '@/lib/api/subsonicGenres';
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
+import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { resolveAlbum } from '@/features/offline';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
-import { dedupeById } from '@/lib/util/dedupeById';
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Download, HardDriveDownload } from 'lucide-react';
 import SelectionToggleButton from '@/ui/SelectionToggleButton';
@@ -12,6 +9,7 @@ import GenreFilterBar from '@/ui/GenreFilterBar';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 import { useOfflineStore } from '@/features/offline';
 import { useDownloadModalStore } from '@/features/offline';
 import { downloadZip } from '@/lib/api/downloadZip';
@@ -19,6 +17,7 @@ import { join } from '@tauri-apps/api/path';
 import { showToast } from '@/lib/dom/toast';
 import { useZipDownloadStore } from '@/features/offline';
 import { useRangeSelection } from '@/lib/hooks/useRangeSelection';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
 import { useMainstageInpageHeaderTight } from '@/lib/hooks/useMainstageInpageHeaderTight';
 import { albumGridWarmCovers } from '@/cover/layoutSizes';
@@ -39,6 +38,10 @@ import { albumArtistDisplayName } from '@/features/album/utils/deriveAlbumHeader
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
 import { filterAlbumsByGenres } from '@/lib/library/albumBrowseFilters';
 import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
+import { deriveLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { loadLocalNewReleases } from '@/lib/library/newReleasesLocal';
+import { mergeHotNewReleases } from '@/features/album/utils/hotNewReleases';
+import { useHotNewReleaseOverlay } from '@/features/album/hooks/useHotNewReleaseOverlay';
 
 const PAGE_SIZE = 30;
 
@@ -47,18 +50,30 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'download';
 }
 
-async function fetchByGenres(genres: string[]): Promise<SubsonicAlbum[]> {
-  const results = await Promise.all(genres.map(g => getAlbumsByGenre(g, 500, 0)));
-  return dedupeById(results.flat()).sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
-}
-
 export default function NewReleases() {
   const { t } = useTranslation();
   const perfFlags = usePerfProbeFlags();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const unavailableServerIds = useUnavailableServerIds();
   const auth = useAuthStore();
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
+  const { anchorServerId, pairs: releaseScopes, fingerprint: releaseScopeFingerprint } = useMemo(() => (
+    deriveLibraryBrowseScope({
+      servers: auth.servers,
+      activeServerId: auth.activeServerId,
+      libraryBrowseServerIds: auth.libraryBrowseServerIds,
+      musicFoldersByServer: auth.musicFoldersByServer,
+      libraryBrowseSelectionByServer: auth.libraryBrowseSelectionByServer,
+    }, unavailableServerIds)
+  ), [
+    auth.activeServerId,
+    auth.libraryBrowseSelectionByServer,
+    auth.libraryBrowseServerIds,
+    auth.musicFoldersByServer,
+    auth.servers,
+    unavailableServerIds,
+  ]);
   const downloadAlbum = useOfflineStore(s => s.downloadAlbum);
   const requestDownloadFolder = useDownloadModalStore(s => s.requestFolder);
   const navigate = useNavigate();
@@ -89,6 +104,7 @@ export default function NewReleases() {
 
   const [albums, setAlbums] = useState<SubsonicAlbum[]>(() => initialAlbums ?? []);
   const [hasMore, setHasMore] = useState(() => initialHasMore ?? true);
+  const [genreCounts, setGenreCounts] = useState<Array<{ genre: string; count: number }>>([]);
   const {
     scrollBodyEl,
     bindScrollBody: bindNewReleasesScrollBody,
@@ -96,7 +112,6 @@ export default function NewReleases() {
   } = useInpageScrollViewport();
   const {
     loading,
-    setLoading,
     resetPage,
     runLoad,
     requestNextPage,
@@ -104,6 +119,15 @@ export default function NewReleases() {
   } = useAsyncInpagePagination(PAGE_SIZE, { initialLoading: initialAlbums == null });
   const [selectionMode, setSelectionMode] = useState(false);
   const genreFiltered = selectedGenres.length > 0;
+  const hotOverlay = useHotNewReleaseOverlay(
+    releaseScopes,
+    releaseScopeFingerprint,
+    !genreFiltered && !scopedSearchQuery,
+  );
+  const hotAlbums = useMemo(
+    () => hotOverlay.scopeFingerprint === releaseScopeFingerprint ? hotOverlay.albums : [],
+    [hotOverlay.albums, hotOverlay.scopeFingerprint, releaseScopeFingerprint],
+  );
 
   const displayAlbums = useMemo(() => {
     if (textSearchActive && textSearchAlbums) {
@@ -111,8 +135,10 @@ export default function NewReleases() {
         ? filterAlbumsByGenres(textSearchAlbums, selectedGenres)
         : textSearchAlbums;
     }
-    return albums;
-  }, [textSearchActive, textSearchAlbums, albums, genreFiltered, selectedGenres]);
+    return !genreFiltered && !scopedSearchQuery
+      ? mergeHotNewReleases(albums, hotAlbums)
+      : albums;
+  }, [textSearchActive, textSearchAlbums, albums, hotAlbums, genreFiltered, selectedGenres, scopedSearchQuery]);
 
   const loadingGrid = textSearchActive ? textSearchLoading : loading;
   const gridHasMore = textSearchActive ? false : (!genreFiltered && hasMore);
@@ -129,11 +155,14 @@ export default function NewReleases() {
     selectedGenres,
   ]);
 
-  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(displayAlbums);
+  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(
+    displayAlbums,
+    ownedEntityKey,
+  );
 
   const toggleSelectionMode = () => { setSelectionMode(v => !v); resetSelection(); };
   const clearSelection = () => { setSelectionMode(false); resetSelection(); };
-  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(a.id));
+  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(ownedEntityKey(a)));
 
   const handleDownloadZips = async () => {
     if (selectedAlbums.length === 0) return;
@@ -145,7 +174,7 @@ export default function NewReleases() {
       const downloadId = crypto.randomUUID();
       const filename = `${sanitizeFilename(album.name)}.zip`;
       const destPath = await join(folder, filename);
-      const url = buildDownloadUrl(album.id);
+      const url = buildDownloadUrlForServer(album.serverId ?? serverId, album.id);
       start(downloadId, filename);
       try {
         await downloadZip({ id: downloadId, url, destPath });
@@ -163,9 +192,10 @@ export default function NewReleases() {
     let queued = 0;
     for (const album of selectedAlbums) {
       try {
-        const detail = await resolveAlbum(serverId, album.id);
+        const ownerServerId = album.serverId ?? serverId;
+        const detail = await resolveAlbum(ownerServerId, album.id);
         if (!detail) throw new Error('album unavailable');
-        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, serverId);
+        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, ownerServerId);
         queued++;
       } catch {
         showToast(t('albums.offlineFailed', { name: album.name }), 3000, 'error');
@@ -175,42 +205,35 @@ export default function NewReleases() {
     clearSelection();
   };
 
-  const load = useCallback(async (offset: number, append = false) => {
+  const load = useCallback(async (offset: number, append = false, genres: string[] = []) => {
     await runLoad(async () => {
-      const data = await getAlbumList('newest', PAGE_SIZE, offset);
-      if (append) setAlbums(prev => [...prev, ...data]);
-      else setAlbums(data);
-      setHasMore(data.length === PAGE_SIZE);
+      const data = await loadLocalNewReleases(
+        anchorServerId ?? '', releaseScopes, PAGE_SIZE, offset, genres,
+      );
+      if (append) setAlbums(prev => [...prev, ...data.albums]);
+      else setAlbums(data.albums);
+      setHasMore(data.hasMore);
+      if (!append) setGenreCounts(data.genreCounts.map(row => ({ genre: row.value, count: row.albumCount })));
     });
-  }, [runLoad]);
+  }, [anchorServerId, releaseScopes, runLoad]);
 
   const loadFiltered = useCallback(async (genres: string[]) => {
-    setLoading(true);
-    try {
-      setAlbums(await fetchByGenres(genres));
-      setHasMore(false);
-    } finally {
-      setLoading(false);
-    }
-    // musicLibraryFilterVersion is an intentional re-create trigger (fetchByGenres
-    // reads the active library filter internally); the setters are stable. The
-    // loader must refresh when that version bumps even though it is unused here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [musicLibraryFilterVersion]);
+    await load(0, false, genres);
+  }, [load]);
 
   useEffect(() => {
     if (restoringSessionRef.current || scopedSearchQuery) return;
     if (genreFiltered) loadFiltered(selectedGenres);
     else {
       resetPage();
-      void load(0);
+      void load(0, false, selectedGenres);
     }
-  }, [genreFiltered, selectedGenres, load, loadFiltered, resetPage, scopedSearchQuery]);
+  }, [genreFiltered, selectedGenres, load, loadFiltered, resetPage, scopedSearchQuery, releaseScopeFingerprint, musicLibraryFilterVersion]);
 
   const loadMore = useCallback(() => {
     if (!gridHasMore || genreFiltered || textSearchActive || isBlocked()) return;
-    requestNextPage(offset => load(offset, true));
-  }, [gridHasMore, genreFiltered, textSearchActive, isBlocked, requestNextPage, load]);
+    requestNextPage(offset => load(offset, true, selectedGenres));
+  }, [gridHasMore, genreFiltered, textSearchActive, isBlocked, requestNextPage, load, selectedGenres]);
 
   const bindLoadMoreSentinel = useInpageScrollSentinel({
     active: gridHasMore,
@@ -234,7 +257,7 @@ export default function NewReleases() {
     scrollSnapshotRef,
     getScrollRoot,
     isScrollRestorePending,
-    resetKey: [newReleasesSearchQuery, selectedGenres.join('\u0001'), serverId].join('|'),
+    resetKey: [newReleasesSearchQuery, selectedGenres.join('\u0001'), releaseScopeFingerprint].join('|'),
   });
 
   useLayoutEffect(() => {
@@ -270,7 +293,11 @@ export default function NewReleases() {
                 </button>
               </>
             ) : (
-              <GenreFilterBar selected={selectedGenres} onSelectionChange={setSelectedGenres} />
+              <GenreFilterBar
+                selected={selectedGenres}
+                onSelectionChange={setSelectedGenres}
+                catalogGenres={genreCounts}
+              />
             )}
             <SelectionToggleButton
               active={selectionMode}
@@ -316,7 +343,7 @@ export default function NewReleases() {
             <div style={{ visibility: isScrollRestorePending ? 'hidden' : 'visible' }}>
             <VirtualCardGrid
               items={displayAlbums}
-              itemKey={(a, _i) => a.id}
+              itemKey={(a, _i) => ownedEntityKey(a)}
               rowVariant="album"
               disableVirtualization={albumBrowsePlainLayout}
               layoutSignal={displayAlbums.length}
@@ -327,8 +354,8 @@ export default function NewReleases() {
                   album={a}
                   observeScrollRootId={NEW_RELEASES_INPAGE_SCROLL_VIEWPORT_ID}
                   selectionMode={selectionMode}
-                  selected={selectedIds.has(a.id)}
-                  onToggleSelect={toggleSelect}
+                  selected={selectedIds.has(ownedEntityKey(a))}
+                  onToggleSelect={(_id, opts) => toggleSelect(ownedEntityKey(a), opts)}
                   selectedAlbums={selectedAlbums}
                 />
               )}

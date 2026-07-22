@@ -73,7 +73,7 @@ pub async fn prune_empty_parents(file_path: &std::path::Path, levels: usize) {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SubsonicAuthPayload {
     base_url: String,
@@ -83,9 +83,12 @@ pub struct SubsonicAuthPayload {
     v: String,
     c: String,
     f: String,
+    server_id: String,
+    server_index_key: String,
 }
 
 #[derive(serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceSyncSourcePayload {
     #[serde(rename = "type")]
     source_type: String,
@@ -94,6 +97,29 @@ pub struct DeviceSyncSourcePayload {
     /// computing the playlist-folder path on the device.
     #[serde(default)]
     name: Option<String>,
+    server_index_key: String,
+}
+
+fn device_sync_source_key(source: &DeviceSyncSourcePayload) -> String {
+    serde_json::to_string(&(
+        &source.server_index_key,
+        &source.source_type,
+        &source.id,
+    ))
+    .unwrap_or_default()
+}
+
+fn validate_device_sync_source_owners(
+    sources: &[DeviceSyncSourcePayload],
+    owner_server_index_key: &str,
+) -> Result<(), String> {
+    if sources
+        .iter()
+        .any(|source| source.server_index_key != owner_server_index_key)
+    {
+        return Err("DEVICE_SYNC_SERVER_OWNER_MISMATCH".to_string());
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -124,7 +150,7 @@ pub async fn fetch_subsonic_songs(
         ("f", auth.f.as_str()),
         ("id", id),
     ];
-    let res = apply_server_http_get(client, registry, None, &url)
+    let res = apply_server_http_get(client, registry, Some(&auth.server_id), &url)
         .query(&query)
         .send()
         .await
@@ -248,6 +274,7 @@ pub async fn calculate_sync_payload(
     target_dir: String,
     app: tauri::AppHandle,
 ) -> Result<SyncDeltaResult, String> {
+    validate_device_sync_source_owners(&sources, &auth.server_index_key)?;
     let client = subsonic_http_client(std::time::Duration::from_secs(30))?;
     let http_registry = app
         .try_state::<Arc<psysonic_core::server_http::ServerHttpRegistry>>()
@@ -261,7 +288,7 @@ pub async fn calculate_sync_payload(
     let mut sync_tracks = Vec::new();
     let (mut del_sources, mut add_sources) = (Vec::new(), Vec::new());
     for s in sources {
-        if deletion_ids.contains(&s.id) {
+        if deletion_ids.contains(&device_sync_source_key(&s)) {
             del_sources.push(s);
         } else {
             add_sources.push(s);
@@ -270,10 +297,7 @@ pub async fn calculate_sync_payload(
     
     let mut handles: Vec<(DeviceSyncSourcePayload, tokio::task::JoinHandle<Vec<serde_json::Value>>)> = Vec::new();
     for source in add_sources {
-        let auth_clone = SubsonicAuthPayload {
-            base_url: auth.base_url.clone(), u: auth.u.clone(), t: auth.t.clone(), s: auth.s.clone(),
-            v: auth.v.clone(), c: auth.c.clone(), f: auth.f.clone(),
-        };
+        let auth_clone = auth.clone();
         let cli = client.clone();
         let reg_for_task = http_registry.clone();
         let source_snapshot = source.clone();
@@ -287,7 +311,7 @@ pub async fn calculate_sync_payload(
             } else if source.source_type == "artist" {
                 let url = format!("{}/getArtist.view", auth_clone.base_url);
                 let query = vec![("u", auth_clone.u.as_str()), ("t", auth_clone.t.as_str()), ("s", auth_clone.s.as_str()), ("v", auth_clone.v.as_str()), ("c", auth_clone.c.as_str()), ("f", auth_clone.f.as_str()), ("id", &source.id)];
-                if let Ok(re) = apply_server_http_get(&cli, registry, None, &url).query(&query).send().await {
+                if let Ok(re) = apply_server_http_get(&cli, registry, Some(&auth_clone.server_id), &url).query(&query).send().await {
                    if let Ok(js) = re.json::<serde_json::Value>().await {
                        if let Some(root) = js.get("subsonic-response").and_then(|r| r.get("artist")).and_then(|a| a.get("album")) {
                           let arr = root.as_array().cloned().unwrap_or_else(|| {
@@ -311,10 +335,7 @@ pub async fn calculate_sync_payload(
 
     let mut del_handles = Vec::new();
     for source in del_sources {
-        let auth_clone = SubsonicAuthPayload {
-            base_url: auth.base_url.clone(), u: auth.u.clone(), t: auth.t.clone(), s: auth.s.clone(),
-            v: auth.v.clone(), c: auth.c.clone(), f: auth.f.clone(),
-        };
+        let auth_clone = auth.clone();
         let cli = client.clone();
         let reg_for_task = http_registry.clone();
         del_handles.push(tokio::spawn(async move {
@@ -339,7 +360,7 @@ pub async fn calculate_sync_payload(
             let mut playlist_position: u32 = 0;
             for track in ts {
                 if let Some(tid) = track.get("id").and_then(|i| i.as_str()) {
-                    let key = (source.id.clone(), tid.to_string());
+                    let key = (device_sync_source_key(&source), tid.to_string());
                     if seen_by_source.contains(&key) { continue; }
                     seen_by_source.insert(key);
                     if is_playlist { playlist_position += 1; }
@@ -414,6 +435,7 @@ pub async fn sync_batch_to_device(
     dest_dir: String,
     job_id: String,
     expected_bytes: u64,
+    server_id: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<SyncBatchResult, String> {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -484,6 +506,7 @@ pub async fn sync_batch_to_device(
         let f = failed.clone();
         let le = last_emit.clone();
         let cancel = cancel_flag.clone();
+        let request_server_id = server_id.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
@@ -514,7 +537,7 @@ pub async fn sync_batch_to_device(
                     }
                 }
 
-                let response = match apply_server_http_get(&cli, registry, None, &track.url).send().await {
+                let response = match apply_server_http_get(&cli, registry, request_server_id.as_deref(), &track.url).send().await {
                     Ok(r) if r.status().is_success() => r,
                     Ok(r) => {
                         f.fetch_add(1, Ordering::Relaxed);
@@ -638,7 +661,42 @@ mod tests {
             v: "1.16.1".into(),
             c: "psysonic".into(),
             f: "json".into(),
+            server_id: "server-id".into(),
+            server_index_key: "server.test".into(),
         }
+    }
+
+    #[test]
+    fn source_identity_includes_server_type_and_raw_id() {
+        let album = DeviceSyncSourcePayload {
+            source_type: "album".into(),
+            id: "shared".into(),
+            name: Some("Album".into()),
+            server_index_key: "https://server-a.test".into(),
+        };
+        let mut playlist = album.clone();
+        playlist.source_type = "playlist".into();
+        let mut other_server = album.clone();
+        other_server.server_index_key = "https://server-b.test".into();
+
+        assert_ne!(device_sync_source_key(&album), device_sync_source_key(&playlist));
+        assert_ne!(device_sync_source_key(&album), device_sync_source_key(&other_server));
+    }
+
+    #[test]
+    fn source_owner_must_match_the_captured_auth_owner() {
+        let source = DeviceSyncSourcePayload {
+            source_type: "album".into(),
+            id: "album-1".into(),
+            name: Some("Album".into()),
+            server_index_key: "server-a.test".into(),
+        };
+
+        assert!(validate_device_sync_source_owners(std::slice::from_ref(&source), "server-a.test").is_ok());
+        assert_eq!(
+            validate_device_sync_source_owners(&[source], "server-b.test"),
+            Err("DEVICE_SYNC_SERVER_OWNER_MISMATCH".to_string()),
+        );
     }
 
     // ── prune_empty_parents ───────────────────────────────────────────────────

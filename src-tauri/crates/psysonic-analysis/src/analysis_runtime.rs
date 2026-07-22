@@ -17,6 +17,7 @@ use crate::analysis_perf::{emit_analysis_track_perf, AnalysisSeedTimings};
 #[serde(rename_all = "camelCase")]
 pub struct WaveformUpdatedPayload {
     pub track_id: String,
+    pub server_index_key: String,
     pub is_partial: bool,
 }
 
@@ -1420,6 +1421,7 @@ async fn spawn_cpu_seed_slots(app: &tauri::AppHandle, shared: &Arc<AnalysisCpuSe
         let notify_ui = analysis_emits_ui_events(job.priority);
         tauri::async_runtime::spawn(async move {
             let sid = job.server_id.clone();
+            let sid_for_event = sid.clone();
             let tid = job.track_id.clone();
             let bytes = job.bytes;
             let format_hint = job.format_hint;
@@ -1481,6 +1483,7 @@ async fn spawn_cpu_seed_slots(app: &tauri::AppHandle, shared: &Arc<AnalysisCpuSe
                             "analysis:waveform-updated",
                             WaveformUpdatedPayload {
                                 track_id: tid_log.clone(),
+                                server_index_key: sid_for_event,
                                 is_partial: false,
                             },
                         );

@@ -7,7 +7,7 @@ export function useNavigateToComposer() {
   const navigate = useNavigate();
   const location = useLocation();
   return useCallback(
-    (composerId: string, opts?: { search?: string }) => {
+    (composerId: string, opts?: { search?: string; serverId?: string | null }) => {
       navigateToComposerDetail(navigate, location, composerId, opts);
     },
     [navigate, location],

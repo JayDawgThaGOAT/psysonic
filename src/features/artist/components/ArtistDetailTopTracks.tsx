@@ -12,6 +12,7 @@ import { topSongAlbumForCover } from '@/features/artist/components/topSongAlbumF
 
 interface Props {
   topSongs: SubsonicSong[];
+  loading?: boolean;
   albums: SubsonicAlbum[];
   marginTop: string;
   playTopSongWithContinuation: (startIndex: number) => Promise<void>;
@@ -19,7 +20,7 @@ interface Props {
 }
 
 export default function ArtistDetailTopTracks({
-  topSongs, albums, marginTop, playTopSongWithContinuation, losslessOnly = false,
+  topSongs, loading = false, albums, marginTop, playTopSongWithContinuation, losslessOnly = false,
 }: Props) {
   const { t } = useTranslation();
   const currentTrack = usePlayerStore(s => s.currentTrack);
@@ -34,14 +35,34 @@ export default function ArtistDetailTopTracks({
       <h2 className="section-title" style={{ marginTop, marginBottom: '1rem' }}>
         {t(losslessOnly ? 'artistDetail.topTracksLossless' : 'artistDetail.topTracks')}
       </h2>
-  <div className="tracklist" data-preview-loc="artist" style={{ padding: 0, marginBottom: '2rem' }}>
+  <div
+    className="tracklist"
+    data-preview-loc="artist"
+    aria-busy={loading}
+    style={{ padding: 0, marginBottom: '2rem' }}
+  >
     <div className="tracklist-header" style={{ gridTemplateColumns: '60px minmax(150px, 1fr) minmax(100px, 1fr) 65px' }}>
       <div style={{ textAlign: 'center' }}>#</div>
       <div>{t('artistDetail.trackTitle')}</div>
       <div>{t('artistDetail.trackAlbum')}</div>
       <div style={{ textAlign: 'right' }}>{t('artistDetail.trackDuration')}</div>
     </div>
-     {topSongs.map((song, idx) => {
+      {loading && topSongs.length === 0 ? Array.from({ length: 5 }, (_, idx) => (
+        <div
+          key={idx}
+          className="track-row artist-top-track-skeleton"
+          style={{ gridTemplateColumns: '60px minmax(150px, 1fr) minmax(100px, 1fr) 65px' }}
+          aria-hidden="true"
+        >
+          <div className="artist-top-track-skeleton-rank" />
+          <div className="artist-top-track-skeleton-title">
+            <div className="artist-top-track-skeleton-cover" />
+            <div className="artist-top-track-skeleton-line artist-top-track-skeleton-line--title" />
+          </div>
+          <div className="artist-top-track-skeleton-line artist-top-track-skeleton-line--album" />
+          <div className="artist-top-track-skeleton-line artist-top-track-skeleton-line--duration" />
+        </div>
+      )) : topSongs.map((song, idx) => {
            const track = songToTrack(song);
            return (
              <div
@@ -55,7 +76,7 @@ export default function ArtistDetailTopTracks({
                }}
                onDoubleClick={orbitActive ? e => {
                  if ((e.target as HTMLElement).closest('button, a, input')) return;
-                 addTrackToOrbit(song.id);
+                  addTrackToOrbit(song.id, song.serverId);
                } : undefined}
                onContextMenu={(e) => {
                  e.preventDefault();
@@ -110,7 +131,7 @@ export default function ArtistDetailTopTracks({
          </div>
        </div>
        );
-     })}
+      })}
    </div>
     </Fragment>
   );

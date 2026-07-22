@@ -3,20 +3,21 @@
 
 pub mod cli;
 mod cover_cache;
-pub(crate) mod library_analysis_backfill;
 mod lib_commands;
-pub(crate) mod theme_import;
+mod library_identity_maintenance;
+pub(crate) mod library_analysis_backfill;
 pub mod theme_animation;
+pub(crate) mod theme_import;
 
 pub use psysonic_integration::discord;
 
+pub use psysonic_analysis::{analysis_cache, analysis_runtime};
+pub use psysonic_audio as audio;
 pub use psysonic_core::logging;
-pub use psysonic_core::{app_eprintln, app_deprintln};
 pub use psysonic_core::user_agent::{
     default_subsonic_wire_user_agent, runtime_subsonic_wire_user_agent, subsonic_wire_user_agent,
 };
-pub use psysonic_analysis::{analysis_cache, analysis_runtime};
-pub use psysonic_audio as audio;
+pub use psysonic_core::{app_deprintln, app_eprintln};
 pub use psysonic_syncfs::{sync_cancel_flags, DownloadSemaphore};
 #[cfg(target_os = "windows")]
 mod taskbar_win;
@@ -25,10 +26,13 @@ mod tray_runtime;
 pub(crate) use tray_runtime::*;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use tauri::{Emitter, Manager};
+use futures_util::stream::{self, StreamExt};
 use lib_commands::*;
+use tauri::{Emitter, Manager};
 
 /// Tracks which user-configured shortcuts are currently registered (shortcut_str → action).
 /// Prevents on_shortcut() accumulating duplicate handlers across JS reloads (HMR / StrictMode).
@@ -37,6 +41,52 @@ type ShortcutMap = Mutex<HashMap<String, String>>;
 /// Maximum number of offline track downloads that can run concurrently.
 /// The frontend queues more tasks than this; Rust is the real throttle.
 const MAX_DL_CONCURRENCY: usize = 4;
+const MAX_BACKGROUND_SCHEDULER_CONCURRENCY: usize = 2;
+const BACKGROUND_SCHEDULER_TICK_TIMEOUT: Duration = Duration::from_secs(120);
+
+async fn run_bounded_scheduler_sessions<I, F, Fut>(sessions: I, run: F)
+where
+    I: IntoIterator,
+    F: FnMut(I::Item) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    stream::iter(sessions)
+        .for_each_concurrent(MAX_BACKGROUND_SCHEDULER_CONCURRENCY, run)
+        .await;
+}
+
+fn foreground_blocks_scheduler_session(
+    job: Option<&psysonic_library::runtime::CurrentJob>,
+    server_id: &str,
+) -> bool {
+    job.is_some_and(|job| job.kind == "initial_sync" || job.server_id == server_id)
+}
+
+fn scheduler_session_still_current(
+    runtime: &psysonic_library::LibraryRuntime,
+    snapshot: &psysonic_library::runtime::SyncSession,
+) -> bool {
+    runtime.get_session(&snapshot.server_id).as_ref() == Some(snapshot)
+}
+
+fn scheduler_idle_payload(
+    report: &psysonic_library::sync::scheduler::SchedulerTickReport,
+    server_id: &str,
+    library_scope: &str,
+) -> Option<psysonic_library::LibrarySyncIdlePayload> {
+    report
+        .delta
+        .as_ref()
+        .is_some_and(|delta| !delta.deferred_scanning && !delta.up_to_date)
+        .then(|| {
+            psysonic_library::LibrarySyncIdlePayload::ok(
+                server_id,
+                library_scope,
+                "delta_sync",
+                "background",
+            )
+        })
+}
 
 /// Shared handle to OS media controls (MPRIS2 on Linux, Now Playing on macOS, SMTC on Windows).
 /// `None` if souvlaki failed to initialize (e.g. no D-Bus session on Linux).
@@ -117,12 +167,17 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             psysonic_library::commands::library_analysis_progress,
             psysonic_library::commands::library_count_live_tracks,
             psysonic_library::commands::library_get_status,
+            psysonic_library::commands::library_scope_statistics,
+            psysonic_library::commands::library_scope_most_played,
             psysonic_library::commands::library_get_artifact,
+            psysonic_library::commands::library_get_entity_user_ratings,
             psysonic_library::commands::library_get_facts,
             psysonic_library::commands::library_get_offline_path,
             psysonic_library::commands::library_genre_tags_inspect,
             psysonic_library::commands::library_genre_tags_run,
             psysonic_library::commands::library_cluster_rebuild,
+            psysonic_library::commands::library_resolve_entity_sources,
+            psysonic_library::commands::library_resolve_album_overlay,
             psysonic_library::commands::library_sync_bind_session,
             psysonic_library::commands::library_sync_clear_session,
             psysonic_library::commands::library_set_playback_hint,
@@ -131,6 +186,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             psysonic_library::commands::library_sync_verify_integrity,
             psysonic_library::commands::library_sync_cancel,
             psysonic_library::commands::library_put_artifact,
+            psysonic_library::commands::library_put_entity_user_ratings,
             psysonic_library::commands::library_put_fact,
             psysonic_library::commands::library_record_play_session,
             psysonic_library::commands::library_get_player_stats_year_summary,
@@ -355,7 +411,9 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .manage(audio_engine)
-        .manage(Arc::new(psysonic_core::server_http::ServerHttpRegistry::new()))
+        .manage(Arc::new(
+            psysonic_core::server_http::ServerHttpRegistry::new(),
+        ))
         .manage(ShortcutMap::default())
         .manage(discord::DiscordState::new())
         .manage(Arc::new(tokio::sync::Semaphore::new(MAX_DL_CONCURRENCY)) as DownloadSemaphore)
@@ -373,7 +431,7 @@ pub fn run() {
                         & !tauri_plugin_window_state::StateFlags::VISIBLE,
                 )
                 .with_denylist(&["mini"])
-                .build()
+                .build(),
         )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -618,11 +676,11 @@ pub fn run() {
                     .map_err(|e| format!("library store init failed: {e}"))?;
                 let runtime = psysonic_library::LibraryRuntime::new(std::sync::Arc::new(store));
                 app.manage(runtime);
+                library_identity_maintenance::setup_library_identity_maintenance(app.handle());
 
                 let app_for_sched = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     use std::sync::atomic::Ordering;
-                    use std::time::Duration;
                     use tokio::time::MissedTickBehavior;
 
                     let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -646,57 +704,135 @@ pub fn run() {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
                             .unwrap_or(0);
-                        for session in sessions {
-                            let scope = session.library_scope.clone().unwrap_or_default();
-                            let flags_bits = psysonic_library::repos::SyncStateRepository::new(
-                                &state.store,
-                            )
-                            .get_capability_flags(&session.server_id, &scope)
-                            .ok()
-                            .flatten()
-                            .unwrap_or(0);
-                            let flags = psysonic_library::sync::capability::CapabilityFlags::new(
-                                flags_bits,
-                            );
-                            let registry = app_for_sched.state::<Arc<psysonic_core::server_http::ServerHttpRegistry>>();
-                            let subsonic = psysonic_integration::subsonic::subsonic_client_with_registry(
-                                Some(registry.as_ref()),
-                                &session.server_id,
-                                session.base_url.clone(),
-                                session.username.clone(),
-                                session.password.clone(),
-                            );
-                            let mut sched =
-                                psysonic_library::sync::scheduler::BackgroundScheduler::new(
-                                    &state.store,
-                                    &subsonic,
-                                    session.server_id.clone(),
-                                    scope.clone(),
-                                    flags,
-                                )
-                                .with_playback_hint(hint)
-                                .with_http_registry(Some(Arc::clone(&registry)));
-                            if let Some(tok) = session.navidrome_token.clone() {
-                                sched = sched.with_navidrome_credentials(
-                                    psysonic_library::sync::capability::NavidromeProbeCredentials {
-                                        server_url: session.base_url.clone(),
-                                        bearer_token: tok,
-                                    },
+                        let runtime = state.inner();
+                        let registry = Arc::clone(
+                            app_for_sched
+                                .state::<Arc<psysonic_core::server_http::ServerHttpRegistry>>()
+                                .inner(),
+                        );
+                        run_bounded_scheduler_sessions(sessions, |session| {
+                            let registry = Arc::clone(&registry);
+                            let app_for_session = app_for_sched.clone();
+                            async move {
+                                // Acquire per session. A queued writer blocks new
+                                // tasks without waiting for the full snapshot,
+                                // then stale sessions are rejected after release.
+                                let _sync_activity = runtime.sync_activity_guard().await;
+                                if runtime.scheduler_cancel.load(Ordering::SeqCst)
+                                    || !scheduler_session_still_current(runtime, &session)
+                                {
+                                    return;
+                                }
+                                let foreground_active = foreground_blocks_scheduler_session(
+                                    runtime.current_job().as_ref(),
+                                    &session.server_id,
                                 );
+                                let scope = session.library_scope.clone().unwrap_or_default();
+                                let flags_bits = psysonic_library::repos::SyncStateRepository::new(
+                                    &runtime.store,
+                                )
+                                .get_capability_flags(&session.server_id, &scope)
+                                .ok()
+                                .flatten()
+                                .unwrap_or(0);
+                                let flags =
+                                    psysonic_library::sync::capability::CapabilityFlags::new(
+                                        flags_bits,
+                                    );
+                                let subsonic = psysonic_integration::subsonic::subsonic_client_with_registry(
+                                    Some(registry.as_ref()),
+                                    &session.server_id,
+                                    session.base_url.clone(),
+                                    session.username.clone(),
+                                    session.password.clone(),
+                                );
+                                let mut sched =
+                                    psysonic_library::sync::scheduler::BackgroundScheduler::new(
+                                        &runtime.store,
+                                        &subsonic,
+                                        session.server_id.clone(),
+                                        scope.clone(),
+                                        flags,
+                                    )
+                                    .with_playback_hint(hint)
+                                    .with_http_registry(Some(Arc::clone(&registry)));
+                                if let Some(tok) = session.navidrome_token.clone() {
+                                    sched = sched.with_navidrome_credentials(
+                                        psysonic_library::sync::capability::NavidromeProbeCredentials {
+                                            server_url: session.base_url.clone(),
+                                            bearer_token: tok,
+                                        },
+                                    );
+                                }
+                                if foreground_active {
+                                    sched = sched.with_foreground_sync_job_active(true);
+                                }
+                                // Errors and timeouts are logged and stored in
+                                // sync_state by the scheduler. Continue the
+                                // independent server sweep either way.
+                                match sched
+                                    .tick_with_timeout(
+                                        now_ms,
+                                        BACKGROUND_SCHEDULER_TICK_TIMEOUT,
+                                    )
+                                    .await
+                                {
+                                    Ok(report) => {
+                                        let identity_store = Arc::clone(&runtime.store);
+                                        let identity_server_id = session.server_id.clone();
+                                        let identity_error = match tokio::task::spawn_blocking(
+                                            move || {
+                                                psysonic_library::identity::ensure_cluster_keys_built(
+                                                    &identity_store,
+                                                    &identity_server_id,
+                                                )
+                                            },
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(_)) => None,
+                                            Ok(Err(error)) => {
+                                                crate::app_eprintln!(
+                                                    "[library-cluster] background maintenance failed server_id={}: {}",
+                                                    session.server_id,
+                                                    error
+                                                );
+                                                Some(error)
+                                            }
+                                            Err(error) => {
+                                                crate::app_eprintln!(
+                                                    "[library-cluster] background maintenance task failed server_id={}: {}",
+                                                    session.server_id,
+                                                    error
+                                                );
+                                                Some(error.to_string())
+                                            }
+                                        };
+                                        if let Some(mut payload) = scheduler_idle_payload(
+                                            &report,
+                                            &session.server_id,
+                                            &scope,
+                                        ) {
+                                            if let Some(error) = identity_error {
+                                                payload.mark_failed(format!(
+                                                    "identity maintenance failed: {error}"
+                                                ));
+                                            }
+                                            let _ = app_for_session.emit(
+                                                psysonic_library::LibrarySyncProgressPayload::IDLE_EVENT_NAME,
+                                                &payload,
+                                            );
+                                        }
+                                    }
+                                    Err(err) => crate::app_deprintln!(
+                                        "[library-sync] scheduler recorded server failure server_id={}: {}",
+                                        session.server_id,
+                                        err
+                                    ),
+                                }
                             }
-                            let foreground_job = state
-                                .current_job()
-                                .is_some_and(|j| j.server_id == session.server_id);
-                            if foreground_job {
-                                sched = sched.with_foreground_sync_job_active(true);
-                            }
-                            let _ = sched.tick(now_ms).await;
-                            // Background ticks stay silent in PR-5b — Tauri
-                            // emit for the scheduler path lands when the
-                            // Settings panel needs it (PR-5c). Manual
-                            // `library_sync_start` already emits via its
-                            // own orchestrator.
-                        }
+                        })
+                        .await;
                     }
                 });
             }
@@ -1205,19 +1341,31 @@ pub fn run() {
             psysonic_analysis::commands::analysis_get_backfill_queue_stats,
             psysonic_analysis::commands::analysis_prune_pending_to_track_ids,
             psysonic_library::commands::library_get_status,
+            psysonic_library::commands::library_scope_statistics,
+            psysonic_library::commands::library_scope_most_played,
             psysonic_library::commands::library_search,
             psysonic_library::commands::library_live_search,
             psysonic_library::commands::library_advanced_search,
+            psysonic_library::commands::library_list_starred,
             psysonic_library::commands::library_list_lossless_albums,
             psysonic_library::commands::library_list_albums_by_genre,
             psysonic_library::commands::library_genre_tags_inspect,
             psysonic_library::commands::library_genre_tags_run,
             psysonic_library::commands::library_cluster_rebuild,
+            psysonic_library::commands::library_resolve_entity_sources,
+            psysonic_library::commands::library_resolve_album_overlay,
             psysonic_library::commands::library_scope_list_albums,
+            psysonic_library::commands::library_scope_browse,
+            psysonic_library::commands::library_scope_browse_projection_inspect,
+            psysonic_library::commands::library_scope_browse_projection_run,
+            psysonic_library::commands::library_scope_list_mainstage_albums,
+            psysonic_library::commands::library_list_random_artists,
             psysonic_library::commands::library_scope_list_artists,
+            psysonic_library::commands::library_scope_list_composers,
             psysonic_library::commands::library_scope_search_tracks,
             psysonic_library::commands::library_scope_album_detail,
             psysonic_library::commands::library_scope_artist_detail,
+            psysonic_library::commands::library_scope_composer_detail,
             psysonic_library::commands::library_get_artist_lossless_browse,
             psysonic_library::commands::library_search_cross_server,
             psysonic_library::commands::library_get_track,
@@ -1225,6 +1373,7 @@ pub fn run() {
             psysonic_library::commands::library_get_tracks_by_album,
             psysonic_library::commands::library_upsert_songs_from_api,
             psysonic_library::commands::library_get_artifact,
+            psysonic_library::commands::library_get_entity_user_ratings,
             psysonic_library::commands::library_get_facts,
             psysonic_library::commands::library_get_offline_path,
             psysonic_library::commands::library_analysis_progress,
@@ -1242,6 +1391,7 @@ pub fn run() {
             psysonic_library::browse_support::library_get_catalog_year_bounds,
             psysonic_library::browse_support::library_get_genre_album_counts,
             psysonic_library::commands::library_put_artifact,
+            psysonic_library::commands::library_put_entity_user_ratings,
             psysonic_library::commands::library_put_fact,
             psysonic_library::commands::library_record_play_session,
             psysonic_library::commands::library_get_player_stats_year_summary,
@@ -1362,6 +1512,222 @@ pub fn run() {
 }
 
 #[cfg(test)]
+mod scheduler_driver_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::{Notify, Semaphore};
+
+    fn foreground_job(server_id: &str, kind: &str) -> psysonic_library::runtime::CurrentJob {
+        psysonic_library::runtime::CurrentJob {
+            job_id: format!("{server_id}-{kind}"),
+            server_id: server_id.to_string(),
+            kind: kind.to_string(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            abort_handle: None,
+            done: Arc::new(Notify::new()),
+        }
+    }
+
+    #[test]
+    fn initial_sync_blocks_all_servers_but_delta_only_blocks_its_server() {
+        let initial = foreground_job("s1", "initial_sync");
+        assert!(foreground_blocks_scheduler_session(Some(&initial), "s1"));
+        assert!(foreground_blocks_scheduler_session(Some(&initial), "s2"));
+
+        let delta = foreground_job("s1", "delta_sync");
+        assert!(foreground_blocks_scheduler_session(Some(&delta), "s1"));
+        assert!(!foreground_blocks_scheduler_session(Some(&delta), "s2"));
+        assert!(!foreground_blocks_scheduler_session(None, "s1"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_session_does_not_block_an_independent_session() {
+        let slow_started = Arc::new(Notify::new());
+        let release_slow = Arc::new(Notify::new());
+        let fast_finished = Arc::new(AtomicBool::new(false));
+
+        let slow_started_for_task = Arc::clone(&slow_started);
+        let release_slow_for_task = Arc::clone(&release_slow);
+        let fast_finished_for_task = Arc::clone(&fast_finished);
+        let driver = tokio::spawn(async move {
+            run_bounded_scheduler_sessions(["slow", "fast"], |session| {
+                let slow_started = Arc::clone(&slow_started_for_task);
+                let release_slow = Arc::clone(&release_slow_for_task);
+                let fast_finished = Arc::clone(&fast_finished_for_task);
+                async move {
+                    if session == "slow" {
+                        slow_started.notify_one();
+                        release_slow.notified().await;
+                    } else {
+                        fast_finished.store(true, Ordering::SeqCst);
+                    }
+                }
+            })
+            .await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), slow_started.notified())
+            .await
+            .expect("slow session did not start");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !fast_finished.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fast session was suppressed by slow session");
+
+        release_slow.notify_one();
+        driver.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_writer_preempts_remaining_batch_and_stale_session_stays_skipped() {
+        let runtime = Arc::new(psysonic_library::LibraryRuntime::new(Arc::new(
+            psysonic_library::LibraryStore::open_in_memory(),
+        )));
+        let session = |server_id: &str| psysonic_library::runtime::SyncSession {
+            server_id: server_id.into(),
+            base_url: format!("https://{server_id}.example.com"),
+            username: "u".into(),
+            password: "p".into(),
+            navidrome_token: None,
+            library_scope: None,
+        };
+        for server_id in ["s1", "s2", "s3"] {
+            runtime.set_session(session(server_id)).unwrap();
+        }
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let runtime_for_driver = Arc::clone(&runtime);
+        let started_for_driver = Arc::clone(&started);
+        let release_for_driver = Arc::clone(&release);
+        let driver = tokio::spawn(async move {
+            run_bounded_scheduler_sessions(["s1", "s2", "s3"], |server_id| {
+                let runtime = Arc::clone(&runtime_for_driver);
+                let started = Arc::clone(&started_for_driver);
+                let release = Arc::clone(&release_for_driver);
+                async move {
+                    let snapshot = runtime.get_session(server_id).unwrap();
+                    let _activity = runtime.sync_activity_guard().await;
+                    if !scheduler_session_still_current(&runtime, &snapshot) {
+                        return;
+                    }
+                    let ordinal = started.fetch_add(1, Ordering::SeqCst);
+                    if ordinal < 2 {
+                        release.acquire().await.unwrap().forget();
+                    }
+                }
+            })
+            .await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while started.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first scheduler slots did not start");
+
+        let runtime_for_writer = Arc::clone(&runtime);
+        let writer = tokio::spawn(async move {
+            runtime_for_writer
+                .cancel_and_drain_sync(None, None)
+                .await
+                .unwrap()
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        release.add_permits(2);
+        let barrier = tokio::time::timeout(Duration::from_secs(1), writer)
+            .await
+            .expect("writer waited for the full scheduler batch")
+            .unwrap();
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+
+        runtime.clear_session("s3");
+        drop(barrier);
+        driver.await.unwrap();
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn stale_scheduler_session_is_rejected_after_clear_or_rebind() {
+        let runtime = psysonic_library::LibraryRuntime::new(Arc::new(
+            psysonic_library::LibraryStore::open_in_memory(),
+        ));
+        let session = psysonic_library::runtime::SyncSession {
+            server_id: "s1".into(),
+            base_url: "https://one.example.com".into(),
+            username: "u".into(),
+            password: "p".into(),
+            navidrome_token: None,
+            library_scope: None,
+        };
+        runtime.set_session(session.clone()).unwrap();
+        assert!(scheduler_session_still_current(&runtime, &session));
+
+        let mut rebound = session.clone();
+        rebound.base_url = "https://two.example.com".into();
+        runtime.set_session(rebound).unwrap();
+        assert!(!scheduler_session_still_current(&runtime, &session));
+
+        runtime.clear_session("s1");
+        assert!(!scheduler_session_still_current(&runtime, &session));
+    }
+
+    #[test]
+    fn scheduler_idle_payload_only_follows_refreshable_delta() {
+        let skipped = psysonic_library::sync::scheduler::SchedulerTickReport {
+            skipped_not_due: true,
+            skipped_bulk_paused: false,
+            skipped_sync_pass_active: false,
+            delta: None,
+            next_poll_at_ms: 1,
+        };
+        assert!(scheduler_idle_payload(&skipped, "s1", "").is_none());
+
+        let up_to_date = psysonic_library::sync::scheduler::SchedulerTickReport {
+            skipped_not_due: false,
+            skipped_bulk_paused: false,
+            skipped_sync_pass_active: false,
+            delta: Some(psysonic_library::sync::delta::DeltaSyncReport {
+                up_to_date: true,
+                ..Default::default()
+            }),
+            next_poll_at_ms: 1,
+        };
+        assert!(scheduler_idle_payload(&up_to_date, "s1", "").is_none());
+
+        let completed = psysonic_library::sync::scheduler::SchedulerTickReport {
+            skipped_not_due: false,
+            skipped_bulk_paused: false,
+            skipped_sync_pass_active: false,
+            delta: Some(psysonic_library::sync::delta::DeltaSyncReport {
+                changed_count: 1,
+                ..Default::default()
+            }),
+            next_poll_at_ms: 1,
+        };
+        let payload = scheduler_idle_payload(&completed, "s1", "scope").unwrap();
+        assert!(payload.ok);
+        assert_eq!(payload.server_id, "s1");
+        assert_eq!(payload.library_scope, "scope");
+        assert_eq!(payload.source, "background");
+
+        let deferred = psysonic_library::sync::scheduler::SchedulerTickReport {
+            delta: Some(psysonic_library::sync::delta::DeltaSyncReport {
+                deferred_scanning: true,
+                ..Default::default()
+            }),
+            ..completed
+        };
+        assert!(scheduler_idle_payload(&deferred, "s1", "").is_none());
+    }
+}
+
+#[cfg(test)]
 mod specta_export {
     // Freshness gate. Exports to a throwaway temp path and asserts byte-equality
     // with the committed `src/generated/bindings.ts`. A Rust command/DTO change
@@ -1452,17 +1818,25 @@ mod specta_export {
             "get_top_radio_stations",
             "search_radio_browser",
             "library_advanced_search",
+            "library_list_starred",
             "library_get_artist_lossless_browse",
             "library_get_track",
             "library_get_tracks_batch",
             "library_get_tracks_by_album",
             "library_list_albums_by_genre",
             "library_list_lossless_albums",
+            "library_list_random_artists",
             "library_live_search",
             "library_scope_album_detail",
             "library_scope_artist_detail",
+            "library_scope_composer_detail",
             "library_scope_list_albums",
+            "library_scope_browse",
+            "library_scope_browse_projection_inspect",
+            "library_scope_browse_projection_run",
+            "library_scope_list_mainstage_albums",
             "library_scope_list_artists",
+            "library_scope_list_composers",
             "library_scope_search_tracks",
             "library_search",
             "library_search_cross_server",
@@ -1503,12 +1877,18 @@ mod specta_export {
             collected.len()
         );
 
-        let mut uncollected: Vec<&str> =
-            handler.iter().filter(|c| !collected.contains(*c)).map(String::as_str).collect();
+        let mut uncollected: Vec<&str> = handler
+            .iter()
+            .filter(|c| !collected.contains(*c))
+            .map(String::as_str)
+            .collect();
         uncollected.sort_unstable();
 
-        let unexplained: Vec<&str> =
-            uncollected.iter().copied().filter(|c| !UNTYPEABLE.contains(c)).collect();
+        let unexplained: Vec<&str> = uncollected
+            .iter()
+            .copied()
+            .filter(|c| !UNTYPEABLE.contains(c))
+            .collect();
         assert!(
             unexplained.is_empty(),
             "these commands are in generate_handler! but neither collected into \
@@ -1517,8 +1897,11 @@ mod specta_export {
              UNTYPEABLE with the reason: {unexplained:?}"
         );
 
-        let stale: Vec<&str> =
-            UNTYPEABLE.iter().copied().filter(|c| !uncollected.contains(c)).collect();
+        let stale: Vec<&str> = UNTYPEABLE
+            .iter()
+            .copied()
+            .filter(|c| !uncollected.contains(c))
+            .collect();
         assert!(
             stale.is_empty(),
             "these commands are in the UNTYPEABLE allowlist but are no longer \
@@ -1567,10 +1950,17 @@ mod specta_export {
             if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
                 continue;
             }
-            let code = line.split("//").next().unwrap_or("").trim().trim_end_matches(',');
+            let code = line
+                .split("//")
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_end_matches(',');
             let seg = code.rsplit("::").next().unwrap_or("").trim();
             let ok = seg.starts_with(|c: char| c.is_ascii_lowercase())
-                && seg.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
             if ok {
                 out.insert(seg.to_string());
             }
@@ -1615,8 +2005,11 @@ mod specta_export {
         for name in &command_fns {
             *counts.entry(name.as_str()).or_insert(0) += 1;
         }
-        let mut collisions: Vec<&str> =
-            counts.iter().filter(|(_, n)| **n > 1).map(|(name, _)| *name).collect();
+        let mut collisions: Vec<&str> = counts
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .map(|(name, _)| *name)
+            .collect();
         collisions.sort_unstable();
         assert!(
             collisions.is_empty(),
@@ -1697,7 +2090,10 @@ mod specta_export {
 
     /// Extract `name` from a `... fn name(...)` declaration line.
     fn fn_name(line: &str) -> Option<String> {
-        let after = line.split(" fn ").nth(1).or_else(|| line.strip_prefix("fn "))?;
+        let after = line
+            .split(" fn ")
+            .nth(1)
+            .or_else(|| line.strip_prefix("fn "))?;
         let name: String = after
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')

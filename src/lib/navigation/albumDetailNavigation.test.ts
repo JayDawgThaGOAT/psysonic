@@ -38,6 +38,19 @@ describe('albumDetailNavigation', () => {
     expect(navigate).toHaveBeenCalledWith('/album/alb-1', { state: { returnTo: '/artist/a' } });
   });
 
+  it('preserves the owning server when navigating to an album', () => {
+    const navigate = vi.fn();
+    navigateToAlbumDetail(
+      navigate,
+      { pathname: '/search', search: '?q=album', hash: '', state: null },
+      'alb-1',
+      { serverId: 'srv-b' },
+    );
+    expect(navigate).toHaveBeenCalledWith('/album/alb-1?server=srv-b', {
+      state: { returnTo: '/search?q=album' },
+    });
+  });
+
   it('preserves returnTo when opening a related album', () => {
     const navigate = vi.fn();
     navigateToAlbumDetail(
@@ -146,6 +159,19 @@ describe('albumDetailNavigation', () => {
     });
   });
 
+  it('navigates to an owned artist while merging and replacing query scope', () => {
+    const navigate = vi.fn();
+    navigateToArtistDetail(
+      navigate,
+      { pathname: '/artists', search: '?letter=A', hash: '', state: null },
+      'art-1',
+      { serverId: 'srv-b', search: 'lossless=1&server=stale&server=older' },
+    );
+    expect(navigate).toHaveBeenCalledWith('/artist/art-1?lossless=1&server=srv-b', {
+      state: { returnTo: '/artists?letter=A' },
+    });
+  });
+
   it('navigates to composer with returnTo snapshot from Composers browse', () => {
     const navigate = vi.fn();
     navigateToComposerDetail(
@@ -155,6 +181,19 @@ describe('albumDetailNavigation', () => {
     );
     expect(navigate).toHaveBeenCalledWith('/composer/comp-1', {
       state: { returnTo: '/composers' },
+    });
+  });
+
+  it('navigates to the concrete composer owner', () => {
+    const navigate = vi.fn();
+    navigateToComposerDetail(
+      navigate,
+      { pathname: '/composers', search: '?letter=C', hash: '', state: null },
+      'comp-1',
+      { serverId: 'srv-b' },
+    );
+    expect(navigate).toHaveBeenCalledWith('/composer/comp-1?server=srv-b', {
+      state: { returnTo: '/composers?letter=C' },
     });
   });
 
@@ -194,6 +233,8 @@ describe('albumDetailNavigation', () => {
 
   it('skips main scroll reset when Advanced Search return stash carries scrollTop', () => {
     useAdvancedSearchSessionStore.getState().stashReturnSession({
+      browseScopeFingerprint: 'scope-a',
+      librarySyncRevision: 0,
       query: 'jazz',
       genre: '',
       yearFrom: '',
@@ -210,6 +251,7 @@ describe('albumDetailNavigation', () => {
       localMode: false,
       songsServerOffset: 0,
       songsHasMore: false,
+      songsBrowseCursor: null,
       genreNote: false,
       basicSearchMode: false,
       tracksBrowseMode: true,

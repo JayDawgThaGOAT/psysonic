@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { resetAuthStore } from '@/test/helpers/storeReset';
 import { useAuthStore } from '@/store/authStore';
 
@@ -8,7 +8,11 @@ vi.mock('@/lib/api/navidromeAdmin', () => ({
 }));
 
 import { ndLogin } from '@/lib/api/navidromeAdmin';
-import { useNavidromeAdminRole, canManageNavidromeRadio } from './useNavidromeAdminRole';
+import {
+  useNavidromeAdminRole,
+  useNavidromeAdminRoles,
+  canManageNavidromeRadio,
+} from './useNavidromeAdminRole';
 
 beforeEach(() => {
   resetAuthStore();
@@ -110,6 +114,60 @@ describe('useNavidromeAdminRole', () => {
 
     const { result } = renderHook(() => useNavidromeAdminRole());
     await waitFor(() => expect(result.current).toBe('error'));
+  });
+
+  it('resolves admin roles independently for multiple server owners', async () => {
+    const first = seedNavidromeServer();
+    const second = useAuthStore.getState().addServer({
+      name: 'Remote',
+      url: 'https://remote.example.com',
+      username: 'remote',
+      password: 'pw2',
+    });
+    useAuthStore.getState().setSubsonicServerIdentity(second, {
+      type: 'navidrome',
+      serverVersion: '0.62.0',
+      openSubsonic: true,
+    });
+    vi.mocked(ndLogin).mockImplementation(async url => ({
+      token: 't',
+      userId: '1',
+      isAdmin: url.includes('music.example.com'),
+    }));
+
+    const { result } = renderHook(() => useNavidromeAdminRoles([first, second]));
+    await waitFor(() => expect(result.current).toEqual({
+      [first]: 'admin',
+      [second]: 'user',
+    }));
+  });
+
+  it('publishes one owner role without waiting for another probe', async () => {
+    const first = seedNavidromeServer();
+    const second = useAuthStore.getState().addServer({
+      name: 'Remote',
+      url: 'https://remote.example.com',
+      username: 'remote',
+      password: 'pw2',
+    });
+    useAuthStore.getState().setSubsonicServerIdentity(second, {
+      type: 'navidrome',
+      serverVersion: '0.62.0',
+      openSubsonic: true,
+    });
+    let resolveRemote: ((value: { token: string; userId: string; isAdmin: boolean }) => void) | undefined;
+    vi.mocked(ndLogin).mockImplementation(url => url.includes('music.example.com')
+      ? Promise.resolve({ token: 't', userId: '1', isAdmin: false })
+      : new Promise(resolve => { resolveRemote = resolve; }));
+
+    const { result } = renderHook(() => useNavidromeAdminRoles([first, second]));
+    await waitFor(() => expect(result.current).toEqual({
+      [first]: 'user',
+      [second]: 'checking',
+    }));
+
+    act(() => resolveRemote?.({ token: 't2', userId: '2', isAdmin: true }));
+    await waitFor(() => expect(result.current[second]).toBe('admin'));
   });
 });
 

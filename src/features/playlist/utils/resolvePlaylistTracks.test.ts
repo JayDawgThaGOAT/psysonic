@@ -14,7 +14,7 @@ vi.mock('@/features/offline', () => ({
 }));
 
 vi.mock('@/lib/api/subsonicLibrary', () => ({
-  filterSongsToActiveLibrary: (songs: unknown) => filterMock(songs),
+  filterSongsToServerLibrary: (songs: unknown, serverId: string) => filterMock(songs, serverId),
 }));
 
 vi.mock('@/lib/media/songToTrack', () => ({
@@ -41,8 +41,18 @@ describe('resolvePlaylistTracks', () => {
 
     const tracks = await resolvePlaylistTracks('pl-1');
 
-    expect(filterMock).toHaveBeenCalledOnce();
+    expect(filterMock).toHaveBeenCalledWith(expect.anything(), 'srv-1');
     expect(tracks).toEqual([{ id: 'a', track: true }]);
+  });
+
+  it('uses an explicit owner server for a scoped playlist', async () => {
+    resolvePlaylistMock.mockResolvedValue({ playlist: { id: 'pl-1' }, songs: [{ id: 'a' }] });
+    filterMock.mockResolvedValue([{ id: 'a' }]);
+
+    await resolvePlaylistTracks('pl-1', 'srv-2');
+
+    expect(resolvePlaylistMock).toHaveBeenCalledWith('srv-2', 'pl-1');
+    expect(filterMock).toHaveBeenCalledWith(expect.anything(), 'srv-2');
   });
 
   it('uses the full offline list without library filtering', async () => {

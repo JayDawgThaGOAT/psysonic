@@ -200,6 +200,9 @@ export const usePlayerStore = create<PlayerState>()(
           ...current,
           ...blob,
           queueItems: queueItems ?? current.queueItems,
+          ...(queueItems?.length && queueItemsIndex !== undefined
+            ? { queueIndex: Math.max(0, Math.min(queueItems.length - 1, queueItemsIndex)) }
+            : {}),
           ...(queueItemsIndex !== undefined ? { queueItemsIndex } : {}),
         } as PlayerState;
       },
@@ -213,6 +216,9 @@ usePlayerStore.persist.onHydrate(() => {
 usePlayerStore.persist.onFinishHydration(() => {
   playerPersistWritesEnabled = true;
 });
+if (usePlayerStore.persist.hasHydrated()) {
+  playerPersistWritesEnabled = true;
+}
 
 usePlayerStore.subscribe((state, prev) => {
   if (state.volume !== prev.volume || state.repeatMode !== prev.repeatMode) {

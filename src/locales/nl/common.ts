@@ -57,5 +57,10 @@ export const common = {
   more: 'meer',
   yearRange: 'Jaarbereik',
   clearAll: 'Alles wissen',
+  availableSources_one: 'Beschikbaar via {{count}} bron',
+  availableSources_other: 'Beschikbaar via {{count}} bronnen',
+  chooseSource: 'Kies een bron',
+  currentSource: 'Huidige bron',
+  openFromServer: 'Openen vanaf server',
   libraryEmpty: 'Je bibliotheek is leeg.',
 };

@@ -482,9 +482,10 @@ html[data-psy-native-hidden="true"] *::after {
    Note: queue `.eq-bars` are intentionally NOT in this list — three small
    `scaleY` transforms cost nothing GPU-wise, but pausing them looked like
    a "frozen UI" bug to users on WMs that drop window focus on hover. */
-html[data-app-blurred="true"] .player-marquee,
-html[data-app-blurred="true"] .marquee-text,
-html[data-app-blurred="true"] .np-dot-pulse,
+html[data-app-blurred="true"] .marquee-scroll,
+html[data-app-blurred="true"] .nav-np-dot,
+html[data-app-blurred="true"] .bottom-nav-np-dot,
+html[data-app-blurred="true"] .now-playing-dropdown__live-icon--active > svg,
 html[data-app-blurred="true"] .fs-mesh-blob,
 html[data-app-blurred="true"] .fs-portrait-wrap,
 html[data-app-blurred="true"] .spin {

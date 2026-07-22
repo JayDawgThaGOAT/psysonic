@@ -7,6 +7,7 @@ import { migrateThemeSelection } from '@/lib/themes/themeMigration';
 import { getScheduledTheme, useThemeStore } from '../store/themeStore';
 import { gateInjectedThemes, syncInjectedThemes } from '@/lib/themes/themeInjection';
 import { useInstalledThemesStore, type InstalledTheme } from '../store/installedThemesStore';
+import { initializePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
 
 /** Sync backend HTTP User-Agent from the main webview once at startup. */
 export function pushUserAgentToBackend(): void {
@@ -135,6 +136,7 @@ export function runPreReactBootstrap(): void {
   markDevBuildDocument();
   pushUserAgentToBackend();
   pushLoggingModeToBackend();
+  initializePsyLabDebugTraces();
   installQueueUndoHotkey();
   setupMusicNetworkRuntime();
 }

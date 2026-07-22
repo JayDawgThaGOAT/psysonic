@@ -1,47 +1,44 @@
 import { useEffect, useState } from 'react';
 import { Play, X, Trash2, ListPlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getPlaylists, deletePlaylist } from '@/lib/api/subsonicPlaylists';
+import { deletePlaylist } from '@/lib/api/subsonicPlaylists';
 import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
+import { usePlaylistStore } from '@/features/playlist';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { useAuthStore } from '@/store/authStore';
+import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 
 interface Props {
   onClose: () => void;
-  onLoad: (id: string, name: string, mode: 'replace' | 'append') => void;
+  onLoad: (playlist: SubsonicPlaylist, mode: 'replace' | 'append') => void;
 }
 
 export function LoadPlaylistModal({ onClose, onLoad }: Props) {
   const { t } = useTranslation();
-  const [playlists, setPlaylists] = useState<SubsonicPlaylist[]>([]);
-  const [loading, setLoading] = useState(true);
+  const playlists = usePlaylistStore(state => state.playlists);
+  const loading = usePlaylistStore(state => state.playlistsLoading);
+  const fetchPlaylists = usePlaylistStore(state => state.fetchPlaylists);
+  const servers = useAuthStore(state => state.servers);
   const [filter, setFilter] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
-
-  const fetchPlaylists = () => {
-    setLoading(true);
-    getPlaylists().then(data => {
-      setPlaylists(data);
-      setLoading(false);
-    }).catch(e => {
-      console.error(e);
-      setLoading(false);
-    });
-  };
+  const [confirmDelete, setConfirmDelete] = useState<SubsonicPlaylist | null>(null);
+  const serverLabelById = new Map(servers.map(server => [
+    server.id,
+    serverListDisplayLabel(server, servers),
+  ]));
 
   useEffect(() => {
-    // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchPlaylists();
-  }, []);
+    void fetchPlaylists();
+  }, [fetchPlaylists]);
 
-  const handleDelete = async (id: string, name: string) => {
-    setConfirmDelete({ id, name });
+  const handleDelete = async (playlist: SubsonicPlaylist) => {
+    setConfirmDelete(playlist);
   };
 
   const confirmDeletePlaylist = async () => {
     if (!confirmDelete) return;
-    await deletePlaylist(confirmDelete.id);
+    await deletePlaylist(confirmDelete.id, confirmDelete.serverId);
     setConfirmDelete(null);
-    fetchPlaylists();
+    await fetchPlaylists();
   };
 
   return (
@@ -68,12 +65,14 @@ export function LoadPlaylistModal({ onClose, onLoad }: Props) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' }}>
             {playlists.filter(p => p.name.toLowerCase().includes(filter.toLowerCase())).map(p => (
-              <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--bg-hover)', borderRadius: 'var(--radius-md)' }}>
-                <span style={{ fontWeight: 500 }} className="truncate" data-tooltip={p.name}>{p.name}</span>
+              <div key={ownedEntityKey(p)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--bg-hover)', borderRadius: 'var(--radius-md)' }}>
+                <span style={{ fontWeight: 500 }} className="truncate" data-tooltip={p.name}>
+                  {p.name}{p.serverId ? ` · ${serverLabelById.get(p.serverId) ?? p.serverId}` : ''}
+                </span>
                 <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
-                  <button className="nav-btn" onClick={() => onLoad(p.id, p.name, 'replace')} data-tooltip={t('queue.load')} style={{ width: '28px', height: '28px', background: 'transparent' }}><Play size={14} /></button>
-                  <button className="nav-btn" onClick={() => onLoad(p.id, p.name, 'append')} data-tooltip={t('queue.appendToQueue')} style={{ width: '28px', height: '28px', background: 'transparent' }}><ListPlus size={14} /></button>
-                  <button className="nav-btn" onClick={() => handleDelete(p.id, p.name)} data-tooltip={t('queue.delete')} style={{ width: '28px', height: '28px', background: 'transparent', color: 'var(--danger)' }}><Trash2 size={14} /></button>
+                  <button className="nav-btn" onClick={() => onLoad(p, 'replace')} data-tooltip={t('queue.load')} style={{ width: '28px', height: '28px', background: 'transparent' }}><Play size={14} /></button>
+                  <button className="nav-btn" onClick={() => onLoad(p, 'append')} data-tooltip={t('queue.appendToQueue')} style={{ width: '28px', height: '28px', background: 'transparent' }}><ListPlus size={14} /></button>
+                  <button className="nav-btn" onClick={() => handleDelete(p)} data-tooltip={t('queue.delete')} style={{ width: '28px', height: '28px', background: 'transparent', color: 'var(--danger)' }}><Trash2 size={14} /></button>
                 </div>
               </div>
             ))}

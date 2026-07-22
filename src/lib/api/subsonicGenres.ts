@@ -1,10 +1,27 @@
-import { api, libraryFilterParams } from '@/lib/api/subsonicClient';
+import {
+  api,
+  apiForServer,
+  libraryFilterParams,
+  libraryFilterParamsForServer,
+} from '@/lib/api/subsonicClient';
 import type { SubsonicAlbum, SubsonicGenre, SubsonicSong } from '@/lib/api/subsonicTypes';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 
 export async function getGenres(): Promise<SubsonicGenre[]> {
   const data = await api<{ genres: { genre: SubsonicGenre | SubsonicGenre[] } }>('getGenres.view', {
     ...libraryFilterParams(),
   });
+  const raw = data.genres?.genre;
+  if (!raw) return [];
+  return Array.isArray(raw) ? raw : [raw];
+}
+
+export async function getGenresForServer(serverId: string): Promise<SubsonicGenre[]> {
+  const data = await apiForServer<{ genres: { genre: SubsonicGenre | SubsonicGenre[] } }>(
+    serverId,
+    'getGenres.view',
+    { ...libraryFilterParamsForServer(serverId) },
+  );
   const raw = data.genres?.genre;
   if (!raw) return [];
   return Array.isArray(raw) ? raw : [raw];
@@ -22,6 +39,31 @@ export async function getAlbumsByGenre(genre: string, size = 50, offset = 0): Pr
   const raw = data.albumList2?.album;
   if (!raw) return [];
   return Array.isArray(raw) ? raw : [raw];
+}
+
+export async function getAlbumsByGenreForServer(
+  serverId: string,
+  genre: string,
+  size = 50,
+  offset = 0,
+): Promise<SubsonicAlbum[]> {
+  const data = await apiForServer<{ albumList2: { album: SubsonicAlbum | SubsonicAlbum[] } }>(
+    serverId,
+    'getAlbumList2.view',
+    {
+      type: 'byGenre',
+      genre,
+      size,
+      offset,
+      _t: Date.now(),
+      ...libraryFilterParamsForServer(serverId),
+    },
+  );
+  const raw = data.albumList2?.album;
+  if (!raw) return [];
+  const albums = Array.isArray(raw) ? raw : [raw];
+  const ownerServerKey = resolveIndexKey(serverId);
+  return albums.map(album => ({ ...album, serverId: ownerServerKey }));
 }
 
 /** Single page of songs for a genre (Subsonic `getSongsByGenre`, supported by Navidrome). */

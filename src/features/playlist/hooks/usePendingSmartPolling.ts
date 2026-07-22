@@ -1,9 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type React from 'react';
-import { getPlaylist } from '@/lib/api/subsonicPlaylists';
-import type { SubsonicPlaylist } from '@/lib/api/subsonicTypes';
+import { getPlaylistForServer } from '@/lib/api/subsonicPlaylists';
 import { usePlaylistStore } from '@/features/playlist';
 import type { PendingSmartPlaylist } from '@/features/playlist';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 /**
  * Poll Navidrome every 10 s for each pending smart playlist until its
@@ -21,74 +21,89 @@ export function usePendingSmartPolling(
   setPendingSmart: React.Dispatch<React.SetStateAction<PendingSmartPlaylist[]>>,
   fetchPlaylists: () => Promise<void>,
 ): void {
+  const pollingGenerationRef = useRef(0);
   useEffect(() => {
     if (pendingSmart.length === 0) return;
+    const generation = ++pollingGenerationRef.current;
+    let inFlight = false;
     const interval = window.setInterval(async () => {
-      await fetchPlaylists();
-      const listNow = usePlaylistStore.getState().playlists;
-      const hydrated = pendingSmart.map(item => {
-        if (item.id) return item;
-        const found = listNow.find(p => p.name === item.name);
-        return found ? { ...item, id: found.id } : item;
-      });
-      // Detail endpoint tends to reflect fresh metadata earlier than list endpoint.
-      const ids = hydrated.map(p => p.id).filter((v): v is string => Boolean(v));
-      const details = await Promise.all(
-        ids.map(async (id) => {
-          try {
-            const { playlist } = await getPlaylist(id);
-            return playlist;
-          } catch {
-            return null;
-          }
-        }),
-      );
-      const freshById = new Map(
-        details.filter((p): p is SubsonicPlaylist => p !== null).map(p => [p.id, p]),
-      );
-      if (freshById.size > 0) {
-        usePlaylistStore.setState((s) => ({
-          playlists: s.playlists.map((p) => {
-            const fresh = freshById.get(p.id);
-            return fresh ? { ...p, ...fresh } : p;
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        await fetchPlaylists();
+        if (pollingGenerationRef.current !== generation) return;
+        const listNow = usePlaylistStore.getState().playlists;
+        const hydrated = pendingSmart.map(item => {
+          if (item.id) return item;
+          const found = listNow.find(p => p.serverId === item.serverId && p.name === item.name);
+          return found ? { ...item, id: found.id } : item;
+        });
+        // Detail endpoint tends to reflect fresh metadata earlier than list endpoint.
+        const details = await Promise.all(
+          hydrated.filter(item => item.id).map(async (item) => {
+            try {
+              const { playlist } = await getPlaylistForServer(item.serverId, item.id!);
+              return { ...playlist, serverId: item.serverId };
+            } catch {
+              return null;
+            }
           }),
-        }));
-      }
-      const current = usePlaylistStore.getState().playlists;
-      setPendingSmart(() => {
-        const next: PendingSmartPlaylist[] = [];
-        for (const item of hydrated) {
-          const pl = item.id
-            ? current.find(p => p.id === item.id)
-            : current.find(p => p.name === item.name);
-          if (!pl) {
-            next.push({ ...item, attempts: item.attempts + 1 });
-            continue;
-          }
-          const songCount = pl.songCount ?? 0;
-          const currentCover = pl.coverArt;
-          const firstCover = item.firstSeenCoverArt ?? currentCover;
-          const placeholderStillThere = Boolean(firstCover) && currentCover === firstCover;
-          // Wait until we see actual content and cover changed from the first placeholder-ish cover.
-          // Fallback timeout keeps UI from waiting forever on servers that never update cover id.
-          const hardTimeoutReached = item.attempts >= 18; // ~3 minutes (18 * 10s)
-          const emptySettled = songCount === 0 && item.attempts >= 3; // ~30s — valid empty result
-          const ready =
-            hardTimeoutReached
-            || emptySettled
-            || (songCount > 0 && (!placeholderStillThere || hardTimeoutReached));
-          if (!ready) {
-            next.push({
-              ...item,
-              id: pl.id,
-              firstSeenCoverArt: firstCover,
-              attempts: item.attempts + 1,
-            });
-          }
+        );
+        if (pollingGenerationRef.current !== generation) return;
+        const freshById = new Map(
+          details
+            .filter((p): p is NonNullable<typeof p> => p !== null)
+            .map(p => [ownedEntityKey(p), p]),
+        );
+        if (freshById.size > 0) {
+          usePlaylistStore.setState((s) => ({
+            playlists: s.playlists.map((p) => {
+              const fresh = freshById.get(ownedEntityKey(p));
+              return fresh ? { ...p, ...fresh } : p;
+            }),
+          }));
         }
-        return next;
-      });
+        const current = usePlaylistStore.getState().playlists;
+        setPendingSmart(() => {
+          const next: PendingSmartPlaylist[] = [];
+          for (const item of hydrated) {
+            const pl = item.id
+              ? current.find(p => p.serverId === item.serverId && p.id === item.id)
+              : current.find(p => p.serverId === item.serverId && p.name === item.name);
+            if (!pl) {
+              next.push({ ...item, attempts: item.attempts + 1 });
+              continue;
+            }
+            const songCount = pl.songCount ?? 0;
+            const currentCover = pl.coverArt;
+            const firstCover = item.firstSeenCoverArt ?? currentCover;
+            const placeholderStillThere = Boolean(firstCover) && currentCover === firstCover;
+            // Wait until we see actual content and cover changed from the first placeholder-ish cover.
+            // Fallback timeout keeps UI from waiting forever on servers that never update cover id.
+            const hardTimeoutReached = item.attempts >= 18; // ~3 minutes (18 * 10s)
+            const emptySettled = songCount === 0 && item.attempts >= 3; // ~30s — valid empty result
+            const ready =
+              hardTimeoutReached
+              || emptySettled
+              || (songCount > 0 && (!placeholderStillThere || hardTimeoutReached));
+            if (!ready) {
+              next.push({
+                ...item,
+                id: pl.id,
+                firstSeenCoverArt: firstCover,
+                attempts: item.attempts + 1,
+              });
+            }
+          }
+          return next;
+        });
+      } finally {
+        inFlight = false;
+      }
     }, 10000);
-    return () => window.clearInterval(interval);
+    return () => {
+      pollingGenerationRef.current += 1;
+      window.clearInterval(interval);
+    };
   }, [pendingSmart, fetchPlaylists, setPendingSmart]);
 }

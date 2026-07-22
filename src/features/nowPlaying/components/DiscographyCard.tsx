@@ -4,9 +4,11 @@ import { Disc3, ExternalLink, Music } from 'lucide-react';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { AlbumCoverArtImage } from '@/cover/AlbumCoverArtImage';
 import { COVER_DENSE_RAIL_CELL_CSS_PX } from '@/cover/layoutSizes';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface DiscographyCardProps {
   artistId?: string;
+  serverId?: string;
   albums: SubsonicAlbum[];
   currentAlbumId?: string;
   onNavigate: (path: string) => void;
@@ -16,7 +18,7 @@ const DISC_GRID_COLS = 10;
 const DISC_INITIAL_ROWS = 2;
 const DISC_INITIAL = DISC_GRID_COLS * DISC_INITIAL_ROWS;
 
-const DiscographyCard = memo(function DiscographyCard({ artistId, albums, currentAlbumId, onNavigate }: DiscographyCardProps) {
+const DiscographyCard = memo(function DiscographyCard({ artistId, serverId, albums, currentAlbumId, onNavigate }: DiscographyCardProps) {
   const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
   useEffect(() => { setShowAll(false); }, [artistId]);
@@ -36,7 +38,7 @@ const DiscographyCard = memo(function DiscographyCard({ artistId, albums, curren
           {t('nowPlaying.discography', 'Discography')}
         </h3>
         {artistId && (
-          <button className="np-card-link" onClick={() => onNavigate(`/artist/${artistId}`)}>
+          <button className="np-card-link" onClick={() => onNavigate(buildArtistDetailPath(artistId, { serverId }))}>
             {t('nowPlaying.goToArtist')} <ExternalLink size={12} />
           </button>
         )}

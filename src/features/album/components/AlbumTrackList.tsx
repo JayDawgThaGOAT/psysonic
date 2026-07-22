@@ -16,6 +16,7 @@ import { AlbumTrackListMobile } from '@/features/album/components/AlbumTrackList
 import { TracklistColumnPicker } from '@/ui/TracklistColumnPicker';
 import { TracklistHeaderRow } from '@/features/album/components/TracklistHeaderRow';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
+import { ownedEntityKey, ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export type { SortKey } from '@/features/album/utils/albumTrackListHelpers';
 
@@ -33,7 +34,7 @@ interface AlbumTrackListProps {
   onPlaySong: (song: SubsonicSong) => void;
   /** Optional dbl-click handler — currently set only in Orbit mode so the list knows to bind it. */
   onDoubleClickSong?: (song: SubsonicSong) => void;
-  onRate: (songId: string, rating: number) => void;
+  onRate: (song: SubsonicSong, rating: number) => void;
   onToggleSongStar: (song: SubsonicSong, e: React.MouseEvent) => void;
   onContextMenu: (x: number, y: number, track: Track, type: 'song' | 'album' | 'artist' | 'queue-item' | 'album-song') => void;
   sortKey?: SortKey;
@@ -67,7 +68,7 @@ export default function AlbumTrackList({
   const policy = actionPolicy ?? offlineActionPolicy('trackRow', false);
   const { t } = useTranslation();
   const isMobile = useIsMobile();
-  const [contextMenuSongId, setContextMenuSongId] = useState<string | null>(null);
+  const [contextMenuSongKey, setContextMenuSongKey] = useState<string | null>(null);
   const contextMenuOpen = usePlayerStore(s => s.contextMenu.isOpen);
 
   const {
@@ -83,7 +84,7 @@ export default function AlbumTrackList({
   useEffect(() => {
     // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!contextMenuOpen) setContextMenuSongId(null);
+    if (!contextMenuOpen) setContextMenuSongKey(null);
   }, [contextMenuOpen]);
 
   // ── Disc grouping ─────────────────────────────────────────────────────────
@@ -103,7 +104,6 @@ export default function AlbumTrackList({
     (discTitles ?? []).filter(d => d.title?.trim()).map(d => [d.disc, d.title.trim()]),
   );
 
-  const currentTrackId = currentTrack?.id ?? null;
   const displayCols = useMemo(
     () => (policy.canFavorite ? visibleCols : visibleCols.filter(c => c.key !== 'favorite')),
     [policy.canFavorite, visibleCols],
@@ -116,10 +116,10 @@ export default function AlbumTrackList({
         discs={discs}
         discTitleByNum={discTitleByNum}
         isMultiDisc={isMultiDisc}
-        currentTrackId={currentTrackId}
+        currentTrack={currentTrack}
         isPlaying={isPlaying}
-        contextMenuSongId={contextMenuSongId}
-        setContextMenuSongId={setContextMenuSongId}
+        contextMenuSongKey={contextMenuSongKey}
+        setContextMenuSongKey={setContextMenuSongKey}
         onPlaySong={onPlaySong}
         onContextMenu={onContextMenu}
       />
@@ -176,19 +176,20 @@ export default function AlbumTrackList({
           )}
           {discs.get(discNum)!.map(song => {
             const globalIdx = songs.indexOf(song);
+            const songKey = ownedEntityKey(song);
             return (
               <TrackRow
-                key={song.id}
+                key={songKey}
                 song={song}
                 globalIdx={globalIdx}
                 visibleCols={displayCols}
                 gridStyle={gridStyle}
-                currentTrackId={currentTrackId}
+                currentTrack={currentTrack}
                 isPlaying={isPlaying}
-                ratingValue={ratings[song.id] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
-                isStarred={starredSongs.has(song.id)}
+                ratingValue={ratings[songKey] ?? ownedOverrideValue(userRatingOverrides, song) ?? song.userRating ?? 0}
+                isStarred={starredSongs.has(songKey)}
                 inSelectMode={inSelectMode}
-                isContextMenuSong={contextMenuSongId === song.id}
+                isContextMenuSong={contextMenuSongKey === songKey}
                 onPlaySong={onPlaySong}
                 onDoubleClickSong={onDoubleClickSong}
                 onRate={onRate}
@@ -196,7 +197,7 @@ export default function AlbumTrackList({
                 onContextMenu={onContextMenu}
                 onToggleSelect={onToggleSelect}
                 onDragStart={onDragStart}
-                setContextMenuSongId={setContextMenuSongId}
+                setContextMenuSongKey={setContextMenuSongKey}
                 actionPolicy={policy}
               />
             );

@@ -9,9 +9,22 @@ function MigrationModal() {
   const step = useMigrationStore(s => s.step);
   const progress = useMigrationStore(s => s.progress);
   const genreTagsProgress = useMigrationStore(s => s.genreTagsProgress);
+  const scopeBrowseProjectionProgress = useMigrationStore(s => s.scopeBrowseProjectionProgress);
   const inspect = useMigrationStore(s => s.inspect);
   const error = useMigrationStore(s => s.lastError);
   const isGenreTags = step === 'genreTags';
+  const isScopeBrowseProjection = step === 'scopeBrowseProjection';
+  const migrationTitle = isGenreTags
+    ? t('migration.genreTagsTitle')
+    : isScopeBrowseProjection
+      ? t('migration.scopeBrowseProjectionTitle')
+      : t('migration.migrating');
+  const migrationBody = isGenreTags
+    ? t('migration.genreTagsBody')
+    : isScopeBrowseProjection
+      ? t('migration.scopeBrowseProjectionBody')
+      : (progress ? `${progress.stage} - ${progress.table}` : t('migration.working'));
+  const activeProgress = isGenreTags ? genreTagsProgress : isScopeBrowseProjection ? scopeBrowseProjectionProgress : progress;
 
   const migratedRows = (inspect?.library.totalLegacyRows ?? 0) + (inspect?.analysis.totalLegacyRows ?? 0);
   return (
@@ -35,26 +48,20 @@ function MigrationModal() {
       >
         {phase === 'inspecting' && (
           <>
-            <h3>{isGenreTags ? t('migration.genreTagsTitle') : t('migration.preparing')}</h3>
+            <h3>{isGenreTags ? t('migration.genreTagsTitle') : isScopeBrowseProjection ? t('migration.scopeBrowseProjectionTitle') : t('migration.preparing')}</h3>
             <p style={{ color: 'var(--text-muted)' }}>
-              {isGenreTags ? t('migration.genreTagsBody') : t('migration.preparingBody')}
+              {isGenreTags ? t('migration.genreTagsBody') : isScopeBrowseProjection ? t('migration.scopeBrowseProjectionBody') : t('migration.preparingBody')}
             </p>
           </>
         )}
         {phase === 'running' && (
           <>
-            <h3>{isGenreTags ? t('migration.genreTagsTitle') : t('migration.migrating')}</h3>
+            <h3>{migrationTitle}</h3>
             <p style={{ color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-              {isGenreTags
-                ? t('migration.genreTagsBody')
-                : (progress ? `${progress.stage} - ${progress.table}` : t('migration.working'))}
+              {migrationBody}
             </p>
             <p style={{ color: 'var(--text-muted)' }}>
-              {isGenreTags
-                ? (genreTagsProgress
-                  ? `${genreTagsProgress.done} / ${genreTagsProgress.total}`
-                  : t('migration.working'))
-                : (progress ? `${progress.done} / ${progress.total}` : t('migration.working'))}
+              {activeProgress ? `${activeProgress.done} / ${activeProgress.total}` : t('migration.working')}
             </p>
             {!isGenreTags && inspect?.hasSkippedUnknownServerRows ? (
               <p style={{ color: 'var(--text-muted)', marginTop: '0.5rem' }}>
@@ -65,7 +72,7 @@ function MigrationModal() {
         )}
         {phase === 'error' && (
           <>
-            <h3>{isGenreTags ? t('migration.genreTagsFailed') : t('migration.failed')}</h3>
+            <h3>{isGenreTags ? t('migration.genreTagsFailed') : isScopeBrowseProjection ? t('migration.scopeBrowseProjectionFailed') : t('migration.failed')}</h3>
             <p style={{ color: 'var(--text-muted)' }}>{String(error ?? '').slice(0, 200)}</p>
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
               <button className="btn-primary" onClick={() => retryBlockingMigration()}>{t('migration.retry')}</button>

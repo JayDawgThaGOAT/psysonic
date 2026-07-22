@@ -14,10 +14,12 @@ import type {
   LibraryAdvancedSearchResponse,
   LibraryLiveSearchRequest,
   LibraryLiveSearchResponse,
-  LibraryLosslessAlbumsRequest,
-  LibraryLosslessAlbumsResponse,
-  LibraryArtistLosslessBrowseRequest,
+    LibraryLosslessAlbumsRequest,
+    LibraryLosslessAlbumsResponse,
+    LibraryAlbumDto,
+    LibraryArtistLosslessBrowseRequest,
   LibraryArtistLosslessBrowseResponse,
+  LibraryArtistDto,
   LibraryCrossServerSearchResponse,
   LibraryTrackDto,
   TrackRefDto,
@@ -82,6 +84,35 @@ export function libraryAdvancedSearch(
   }));
 }
 
+/** Persisted album/track stars for the Favorites initial local snapshot. */
+export function libraryListStarred(serverId: string): Promise<{
+  albums: LibraryAlbumDto[];
+  tracks: LibraryTrackDto[];
+  readLockWaitMs: number;
+  sqlMs: number;
+  blockedBy: string | null;
+}> {
+  const indexKey = serverIndexKeyForId(serverId);
+  return invoke<{
+    albums: LibraryAlbumDto[];
+    tracks: LibraryTrackDto[];
+    readLockWaitMs: number;
+    sqlMs: number;
+    blockedBy: string | null;
+  }>('library_list_starred', {
+    serverId: indexKey,
+  }).then(response => ({
+    albums: response.albums.map(album => ({
+      ...album,
+      serverId: mapServerIdFromIndexKey(album.serverId, serverId),
+    })),
+    tracks: mapTracksServerId(response.tracks, serverId),
+    readLockWaitMs: response.readLockWaitMs,
+    sqlMs: response.sqlMs,
+    blockedBy: response.blockedBy,
+  }));
+}
+
 export function libraryLiveSearch(request: LibraryLiveSearchRequest): Promise<LibraryLiveSearchResponse> {
   const indexKey = serverIndexKeyForId(request.serverId);
   const libraryScopes = request.libraryScopes?.length
@@ -101,6 +132,21 @@ export function libraryLiveSearch(request: LibraryLiveSearchRequest): Promise<Li
     })),
     tracks: mapTracksServerId(response.tracks, request.serverId),
   }));
+}
+
+/** Bounded random artist sample from one complete local server index. */
+export function libraryListRandomArtists(
+  serverId: string,
+  limit: number,
+): Promise<LibraryArtistDto[]> {
+  const indexKey = serverIndexKeyForId(serverId);
+  return invoke<LibraryArtistDto[]>('library_list_random_artists', {
+    serverId: indexKey,
+    limit,
+  }).then(artists => artists.map(artist => ({
+    ...artist,
+    serverId: mapServerIdFromIndexKey(artist.serverId, serverId),
+  })));
 }
 
 /** Paginated lossless albums from the local track index. */

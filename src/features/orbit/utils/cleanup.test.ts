@@ -9,26 +9,28 @@ import {
 } from '@/features/orbit/api/orbit';
 import { ORBIT_ORPHAN_TTL_MS } from '@/features/orbit/utils/constants';
 
-const { getPlaylists, deletePlaylist } = vi.hoisted(() => ({
-  getPlaylists: vi.fn(),
+const { getPlaylistsForServer, deletePlaylist } = vi.hoisted(() => ({
+  getPlaylistsForServer: vi.fn(),
   deletePlaylist: vi.fn(),
 }));
 
 const { authState, orbitState } = vi.hoisted(() => ({
-  authState: { username: 'me' as string | undefined },
-  orbitState: { sessionId: null as string | null },
+  authState: {
+    servers: [{ id: 'srv-owner', username: 'me' }] as Array<{ id: string; username?: string }>,
+  },
+  orbitState: { sessionId: null as string | null, serverId: 'srv-owner' as string | null },
 }));
 
-vi.mock('@/lib/api/subsonicPlaylists', () => ({ getPlaylists, deletePlaylist }));
+vi.mock('@/lib/api/subsonicPlaylists', () => ({ getPlaylistsForServer, deletePlaylist }));
 vi.mock('@/store/authStore', () => ({
   useAuthStore: {
     getState: () => ({
-      getActiveServer: () => (authState.username ? { username: authState.username } : undefined),
+      servers: authState.servers,
     }),
   },
 }));
 vi.mock('@/features/orbit/store/orbitStore', () => ({
-  useOrbitStore: { getState: () => ({ sessionId: orbitState.sessionId }) },
+  useOrbitStore: { getState: () => orbitState },
 }));
 
 import { cleanupOrphanedOrbitPlaylists } from '@/features/orbit/utils/cleanup';
@@ -55,18 +57,21 @@ function outboxComment(ageMs: number): string {
 }
 
 beforeEach(() => {
-  authState.username = 'me';
+  authState.servers = [{ id: 'srv-owner', username: 'me' }];
   orbitState.sessionId = null;
+  orbitState.serverId = 'srv-owner';
   deletePlaylist.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
-  getPlaylists.mockReset();
+  getPlaylistsForServer.mockReset();
 });
 
 async function runWith(playlists: FakePlaylist[]): Promise<string[]> {
-  getPlaylists.mockResolvedValue(playlists);
+  getPlaylistsForServer.mockResolvedValue(playlists);
   await cleanupOrphanedOrbitPlaylists();
+  expect(getPlaylistsForServer).toHaveBeenCalledWith('srv-owner', true);
+  for (const call of deletePlaylist.mock.calls) expect(call[1]).toBe('srv-owner');
   return deletePlaylist.mock.calls.map(c => c[0] as string);
 }
 
@@ -120,6 +125,21 @@ describe('cleanupOrphanedOrbitPlaylists', () => {
     expect(deleted).toEqual([]);
   });
 
+  it('does not protect a same-id session on a different server', async () => {
+    const sid = 'dddd4444';
+    orbitState.sessionId = sid;
+    orbitState.serverId = 'srv-other';
+    const deleted = await runWith([
+      {
+        id: 'p4',
+        name: orbitSessionPlaylistName(sid),
+        owner: 'me',
+        comment: sessionComment(sid, ORBIT_ORPHAN_TTL_MS + 60_000),
+      },
+    ]);
+    expect(deleted).toEqual(['p4']);
+  });
+
   it('keeps a fresh outbox but prunes a stale one', async () => {
     const sid = 'eeee5555';
     const deleted = await runWith([
@@ -152,5 +172,24 @@ describe('cleanupOrphanedOrbitPlaylists', () => {
       },
     ]);
     expect(deleted).toEqual([]);
+  });
+
+  it('sweeps stale owned playlists on every configured server', async () => {
+    authState.servers = [
+      { id: 'srv-owner', username: 'me' },
+      { id: 'srv-other', username: 'also-me' },
+    ];
+    getPlaylistsForServer.mockImplementation(async (serverId: string) => ([{
+      id: `${serverId}-stale`,
+      name: orbitSessionPlaylistName('abcd1234'),
+      owner: serverId === 'srv-owner' ? 'me' : 'also-me',
+      comment: sessionComment('abcd1234', ORBIT_ORPHAN_TTL_MS + 60_000),
+    }]));
+
+    await expect(cleanupOrphanedOrbitPlaylists()).resolves.toBe(2);
+    expect(getPlaylistsForServer).toHaveBeenCalledWith('srv-owner', true);
+    expect(getPlaylistsForServer).toHaveBeenCalledWith('srv-other', true);
+    expect(deletePlaylist).toHaveBeenCalledWith('srv-owner-stale', 'srv-owner');
+    expect(deletePlaylist).toHaveBeenCalledWith('srv-other-stale', 'srv-other');
   });
 });

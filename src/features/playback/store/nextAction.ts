@@ -1,10 +1,19 @@
-import { getSimilarSongs2, getTopSongs } from '@/lib/api/subsonicArtists';
+import {
+  getSimilarSongs2ForServer,
+  getTopSongsForServer,
+} from '@/lib/api/subsonicArtists';
 import { audioStop } from '@/lib/api/audio';
 import { buildInfiniteQueueCandidates } from '@/features/playback/utils/playback/buildInfiniteQueueCandidates';
 import { songToTrack } from '@/lib/media/songToTrack';
-import { ensureQueueServerPinned } from '@/features/playback/utils/playback/playbackServer';
+import {
+  ensureQueueServerPinned,
+  playbackProfileIdForTrack,
+} from '@/features/playback/utils/playback/playbackServer';
 import { useAuthStore } from '@/store/authStore';
-import { setIsAudioPaused } from '@/features/playback/store/engineState';
+import {
+  getPlayGeneration,
+  setIsAudioPaused,
+} from '@/features/playback/store/engineState';
 import {
   isInfiniteQueueFetching,
   setInfiniteQueueFetching,
@@ -18,12 +27,18 @@ import { seedQueueResolver } from '@/features/playback/store/queueTrackResolver'
 import {
   addRadioSessionSeen,
   getCurrentRadioArtistId,
+  getCurrentRadioServerId,
   hasRadioSessionSeen,
   isRadioFetching,
   setRadioFetching,
 } from '@/features/playback/store/radioSessionState';
 import { finalizePlayQueueAtTrackEnd } from '@/features/playback/store/queueSync';
 import { applySkipStarOnManualNext } from '@/features/playback/store/skipStarRating';
+import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import {
+  queueItemIdentityKey,
+  queueTrackIdentityKey,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 type SetState = (
   partial: Partial<PlayerState> | ((state: PlayerState) => Partial<PlayerState>),
@@ -36,12 +51,17 @@ type GetState = () => PlayerState;
  * resolve without a network round-trip), then play the first appended track at
  * its new tail index. Refs in / Track for the play call only — thin-state.
  */
-function appendTracksAndPlayFirst(set: SetState, get: GetState, fresh: Track[]): void {
+function appendTracksAndPlayFirst(
+  set: SetState,
+  get: GetState,
+  fresh: Track[],
+  serverId: string,
+): void {
   if (fresh.length === 0) return;
   // Pin the server *before* reading state so the appended refs (and the
   // resolver seed) carry the canonical server key — otherwise queue rows for
   // the appended tracks render as the resolver placeholder. See PR #892.
-  const serverId = ensureQueueServerPinned();
+  ensureQueueServerPinned(fresh);
   const state = get();
   if (serverId) seedQueueResolver(serverId, fresh);
   const incoming: QueueItemRef[] = toQueueItemRefs(serverId, fresh);
@@ -52,15 +72,30 @@ function appendTracksAndPlayFirst(set: SetState, get: GetState, fresh: Track[]):
   get().playTrack(fresh[0], undefined, false, false, playAt);
 }
 
+function buildFreshRadioTracks(
+  sourceList: SubsonicSong[],
+  existingIdentities: Set<string>,
+  serverId: string,
+): Track[] {
+  const fresh: Track[] = [];
+  for (const raw of sourceList) {
+    if (fresh.length >= 10) break;
+    const track = { ...songToTrack(raw), serverId };
+    const identity = queueTrackIdentityKey(track.id, serverId);
+    if (existingIdentities.has(identity) || hasRadioSessionSeen(identity)) continue;
+    addRadioSessionSeen(identity);
+    fresh.push({ ...track, radioAdded: true as const });
+  }
+  return fresh;
+}
+
 /** Repeat-off queue tail: stop transport and finalize server play queue at EOF. */
 function stopAtNaturalQueueEnd(set: SetState, get: GetState): void {
   const { currentTrack, queueItems } = get();
   if (currentTrack && queueItems.length > 0) {
     void finalizePlayQueueAtTrackEnd(queueItems, currentTrack);
   }
-  audioStop().catch(console.error);
-  setIsAudioPaused(false);
-  set({ isPlaying: false, progress: 0, buffered: 0, currentTime: 0 });
+  get().stop();
 }
 
 /**
@@ -93,6 +128,8 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
     const nextRef = queueItems[nextIdx];
     const nextTrack = resolveQueueTrack(nextRef);
     get().playTrack(nextTrack, undefined, manual, false, nextIdx);
+    const topUpGeneration = getPlayGeneration();
+    const topUpServerId = playbackProfileIdForTrack(nextTrack, nextRef);
     // Proactively top up auto-added tracks when ≤ 2 remain ahead,
     // so the queue never runs dry without a visible loading pause.
     // Skipped while in Orbit — the host's queue is the source of
@@ -104,20 +141,20 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
       const remainingAuto = queueItems.slice(nextIdx + 1).filter(r => r.autoAdded).length;
       if (remainingAuto <= 2) {
         setInfiniteQueueFetching(true);
-        const existingIds = new Set(get().queueItems.map(r => r.trackId));
-        buildInfiniteQueueCandidates(currentTrack, existingIds, 5).then(newTracks => {
+        const existingIdentities = new Set(get().queueItems.map(queueItemIdentityKey));
+        buildInfiniteQueueCandidates(nextTrack, topUpServerId, existingIdentities, 5).then(newTracks => {
           // Re-check at resolution time — the user may have joined
           // an Orbit session between scheduling and resolving.
-          if (isInOrbitSession()) return;
+          if (isInOrbitSession() || getPlayGeneration() !== topUpGeneration) return;
           if (newTracks.length > 0) {
             // Pin before set so the appended refs carry the canonical server
             // key; without this the auto-added rows render as '…' / 0:00
             // when the queue was populated without a queue-replacing playTrack
             // (see PR #892).
-            const serverId = ensureQueueServerPinned();
+            ensureQueueServerPinned(newTracks);
             set(state => {
-              if (serverId) seedQueueResolver(serverId, newTracks);
-              const newItems = [...state.queueItems, ...toQueueItemRefs(serverId, newTracks)];
+              if (topUpServerId) seedQueueResolver(topUpServerId, newTracks);
+              const newItems = [...state.queueItems, ...toQueueItemRefs(topUpServerId, newTracks)];
               return { queueItems: newItems };
             });
           }
@@ -132,41 +169,40 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
     if (nextRef.radioAdded && !isRadioFetching() && !isInOrbitSession()) {
       const remainingRadio = queueItems.slice(nextIdx + 1).filter(r => r.radioAdded).length;
       if (remainingRadio <= 2) {
-        // H2: nextTrack may be a placeholder if its ref is still cold — empty
-        // artist/artistId would seed `getSimilarSongs2('')` and silently
-        // return nothing, leaving radio dry. Prefer the just-played
-        // currentTrack (always fully resolved in playerStore) and the stored
-        // radio seed artist; fall back to nextTrack metadata only when those
-        // are missing. Skip the top-up entirely when no stable seed exists
-        // rather than firing a non-deterministic empty request.
+        // nextTrack may be a placeholder if its ref is still cold. Prefer its
+        // metadata, then the stored radio seed. Only borrow currentTrack
+        // metadata when it belongs to the same owner as the new playing ref.
+        const currentServerId = currentTrack
+          ? playbackProfileIdForTrack(currentTrack, queueItems[queueIndex])
+          : '';
+        const currentSharesOwner = currentServerId === topUpServerId;
+        const storedSeedSharesOwner = getCurrentRadioServerId() === topUpServerId;
         const seedArtistId =
-          currentTrack?.artistId
-          ?? getCurrentRadioArtistId()
-          ?? nextTrack.artistId
+          nextTrack.artistId
+          ?? (storedSeedSharesOwner ? getCurrentRadioArtistId() : undefined)
+          ?? (currentSharesOwner ? currentTrack?.artistId : undefined)
           ?? null;
-        const seedArtistName = currentTrack?.artist || nextTrack.artist;
+        const seedArtistName = nextTrack.artist
+          || (currentSharesOwner ? currentTrack?.artist : '')
+          || '';
         if (seedArtistId && seedArtistName) {
           setRadioFetching(true);
-          Promise.all([getSimilarSongs2(seedArtistId), getTopSongs(seedArtistName)])
+          Promise.all([
+            getSimilarSongs2ForServer(topUpServerId, seedArtistId),
+            getTopSongsForServer(topUpServerId, seedArtistName),
+          ])
             .then(([similar, top]) => {
               // Re-check — the user may have joined an Orbit session between
               // scheduling this fetch and its resolution (mirrors the
               // infinite-queue branch). The finally() still clears the flag.
-              if (isInOrbitSession()) return;
-              const existingIds = new Set(get().queueItems.map(r => r.trackId));
+              if (isInOrbitSession() || getPlayGeneration() !== topUpGeneration) return;
+              const existingIdentities = new Set(get().queueItems.map(queueItemIdentityKey));
               // Lead with similar (other artists) for variety; top tracks
               // of the upcoming artist are only a fallback when similar
               // is empty. Single-pass loop dedupes against the live queue,
               // the session seen-set, and intra-batch overlap (issue #500).
               const sourceList = similar.length > 0 ? similar : top;
-              const fresh: Track[] = [];
-              for (const raw of sourceList) {
-                if (fresh.length >= 10) break;
-                const t = songToTrack(raw);
-                if (existingIds.has(t.id) || hasRadioSessionSeen(t.id)) continue;
-                addRadioSessionSeen(t.id);
-                fresh.push({ ...t, radioAdded: true as const });
-              }
+              const fresh = buildFreshRadioTracks(sourceList, existingIdentities, topUpServerId);
               if (fresh.length > 0) {
                 // Trim played tracks from the front to keep the queue bounded.
                 // Without trimming the queue grows unboundedly, making every
@@ -175,13 +211,13 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
                 // navigate backwards a few songs. Trimmed ids stay in the seen-set.
                 const HISTORY_KEEP = 5;
                 // Pin before set; same reasoning as the infinite top-up above.
-                const serverId = ensureQueueServerPinned();
+                ensureQueueServerPinned(fresh);
                 set(state => {
-                  if (serverId) seedQueueResolver(serverId, fresh);
+                  if (topUpServerId) seedQueueResolver(topUpServerId, fresh);
                   const trimStart = Math.max(0, state.queueIndex - HISTORY_KEEP);
                   const newItems = [
                     ...state.queueItems.slice(trimStart),
-                    ...toQueueItemRefs(serverId, fresh),
+                    ...toQueueItemRefs(topUpServerId, fresh),
                   ];
                   return {
                     queueItems: newItems,
@@ -216,10 +252,18 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
     // Queue exhausted. Check radio first (independent of infinite queue setting),
     // then infinite queue, then stop.
     if (currentTrack?.radioAdded && !isRadioFetching()) {
-      const artistId = currentTrack.artistId ?? getCurrentRadioArtistId() ?? null;
+      const currentRef = queueItems[queueIndex];
+      const topUpServerId = playbackProfileIdForTrack(currentTrack, currentRef);
+      const storedSeedSharesOwner = getCurrentRadioServerId() === topUpServerId;
+      const artistId = currentTrack.artistId
+        ?? (storedSeedSharesOwner ? getCurrentRadioArtistId() : null);
       if (artistId) {
+        const topUpGeneration = getPlayGeneration();
         setRadioFetching(true);
-        Promise.all([getSimilarSongs2(artistId), getTopSongs(currentTrack.artist)])
+        Promise.all([
+          getSimilarSongs2ForServer(topUpServerId, artistId),
+          getTopSongsForServer(topUpServerId, currentTrack.artist),
+        ])
           .then(([similar, top]) => {
             setRadioFetching(false);
             // The user may have joined an Orbit session while this
@@ -230,26 +274,21 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
               set({ isPlaying: false, progress: 0, buffered: 0, currentTime: 0 });
               return;
             }
-            const existingIds = new Set(get().queueItems.map(r => r.trackId));
+            if (getPlayGeneration() !== topUpGeneration) return;
+            const existingIdentities = new Set(get().queueItems.map(queueItemIdentityKey));
             // Same source preference + dedup contract as the proactive
             // top-up: similar first, top only as a fallback (issue #500).
             const sourceList = similar.length > 0 ? similar : top;
-            const fresh: Track[] = [];
-            for (const raw of sourceList) {
-              if (fresh.length >= 10) break;
-              const t = songToTrack(raw);
-              if (existingIds.has(t.id) || hasRadioSessionSeen(t.id)) continue;
-              addRadioSessionSeen(t.id);
-              fresh.push({ ...t, radioAdded: true as const });
-            }
+            const fresh = buildFreshRadioTracks(sourceList, existingIdentities, topUpServerId);
             if (fresh.length > 0) {
-              appendTracksAndPlayFirst(set, get, fresh);
+              appendTracksAndPlayFirst(set, get, fresh, topUpServerId);
             } else {
               stopAtNaturalQueueEnd(set, get);
             }
           })
           .catch(() => {
             setRadioFetching(false);
+            if (getPlayGeneration() !== topUpGeneration) return;
             stopAtNaturalQueueEnd(set, get);
           });
         return;
@@ -258,9 +297,14 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
     const { infiniteQueueEnabled } = useAuthStore.getState();
     if (infiniteQueueEnabled && repeatMode === 'off') {
       if (isInfiniteQueueFetching()) return;
+      const currentRef = queueItems[queueIndex];
+      const topUpServerId = currentTrack
+        ? playbackProfileIdForTrack(currentTrack, currentRef)
+        : '';
+      const topUpGeneration = getPlayGeneration();
       setInfiniteQueueFetching(true);
-      const existingIds = new Set(get().queueItems.map(r => r.trackId));
-      buildInfiniteQueueCandidates(currentTrack, existingIds, 5).then(newTracks => {
+      const existingIdentities = new Set(get().queueItems.map(queueItemIdentityKey));
+      buildInfiniteQueueCandidates(currentTrack, topUpServerId, existingIdentities, 5).then(newTracks => {
         setInfiniteQueueFetching(false);
         // The user may have joined an Orbit session while this
         // fetch was in flight — bail without invoking playTrack.
@@ -270,13 +314,15 @@ export function runNext(set: SetState, get: GetState, manual: boolean): void {
           set({ isPlaying: false, progress: 0, buffered: 0, currentTime: 0 });
           return;
         }
+        if (getPlayGeneration() !== topUpGeneration) return;
         if (newTracks.length === 0) {
           stopAtNaturalQueueEnd(set, get);
           return;
         }
-        appendTracksAndPlayFirst(set, get, newTracks);
+        appendTracksAndPlayFirst(set, get, newTracks, topUpServerId);
       }).catch(() => {
         setInfiniteQueueFetching(false);
+        if (getPlayGeneration() !== topUpGeneration) return;
         stopAtNaturalQueueEnd(set, get);
       });
     } else {

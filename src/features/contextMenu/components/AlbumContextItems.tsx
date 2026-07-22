@@ -9,6 +9,8 @@ import StarRating from '@/ui/StarRating';
 import { AlbumToPlaylistSubmenu } from '@/features/contextMenu/components/AlbumArtistToPlaylistSubmenu';
 import { MultiAlbumToPlaylistSubmenu } from '@/features/contextMenu/components/MultiAlbumToPlaylistSubmenu';
 import type { ContextMenuItemsProps } from '@/features/contextMenu/components/contextMenuItemTypes';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import { ownedEntityKey, ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export default function AlbumContextItems(props: ContextMenuItemsProps) {
   const {
@@ -31,7 +33,9 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
           const albumRatingDisabled = entityRatingSupport === 'track_only';
           return (
             <>
-              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(`/album/${album.id}`))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(
+                buildAlbumDetailPath(album.id, { serverId: album.serverId }),
+              ))}>
                 <Play size={14} /> {t('contextMenu.openAlbum')}
               </div>
               <div className="context-menu-item" onClick={() => handleAction(async () => {
@@ -55,13 +59,15 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                 <ListPlus size={14} /> {t('contextMenu.enqueueAlbum')}
               </div>
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(`/artist/${album.artistId}`))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => goLibrary(
+                buildArtistDetailPath(album.artistId, { serverId: album.serverId }),
+              ))}>
                 <User size={14} /> {t('contextMenu.goToArtist')}
               </div>
               {offlinePolicy.canFavorite && (
                 <div className="context-menu-item" onClick={() => handleAction(() => {
-                  const starred = isStarred(album.id, album.starred);
-                  setStarredOverride(album.id, !starred);
+                  const starred = isStarred(album.id, album.starred, album.serverId);
+                  setStarredOverride(ownedEntityKey(album), !starred);
                   const meta = {
                     serverId: album.serverId,
                     name: album.name,
@@ -72,8 +78,8 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   };
                   return starred ? unstar(album.id, 'album', meta) : star(album.id, 'album', meta);
                 })}>
-                  <Heart size={14} fill={isStarred(album.id, album.starred) ? 'currentColor' : 'none'} />
-                  {isStarred(album.id, album.starred) ? t('contextMenu.unfavoriteAlbum') : t('contextMenu.favoriteAlbum')}
+                  <Heart size={14} fill={isStarred(album.id, album.starred, album.serverId) ? 'currentColor' : 'none'} />
+                  {isStarred(album.id, album.starred, album.serverId) ? t('contextMenu.unfavoriteAlbum') : t('contextMenu.favoriteAlbum')}
                 </div>
               )}
               {offlinePolicy.canRate && (
@@ -88,7 +94,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   <StarRating
                     value={keyboardRating?.kind === 'album' && keyboardRating.id === album.id
                       ? keyboardRating.value
-                      : userRatingOverrides[album.id] ?? album.userRating ?? 0}
+                      : ownedOverrideValue(userRatingOverrides, album) ?? album.userRating ?? 0}
                     disabled={albumRatingDisabled}
                     labelKey="entityRating.albumAriaLabel"
                     onChange={r => { setKeyboardRating({ kind: 'album', id: album.id, value: r }); applyAlbumRating(album, r); }}
@@ -96,11 +102,11 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                 </div>
               )}
               <div className="context-menu-divider" />
-              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('album', album.id))}>
+              <div className="context-menu-item" onClick={() => handleAction(() => copyShareLink('album', album.id, album.serverId))}>
                 <Share2 size={14} /> {t('contextMenu.shareLink')}
               </div>
               {offlinePolicy.canDownload && (
-                <div className="context-menu-item" onClick={() => handleAction(() => downloadAlbum(album.name, album.id))}>
+                <div className="context-menu-item" onClick={() => handleAction(() => downloadAlbum(album.name, album.id, album.serverId))}>
                   <Download size={14} /> {t('contextMenu.download')}
                 </div>
               )}
@@ -114,7 +120,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === `album:${album.id}` && (
-                    <AlbumToPlaylistSubmenu albumId={album.id} triggerId={`album:${album.id}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <AlbumToPlaylistSubmenu albumId={album.id} serverId={album.serverId} triggerId={`album:${album.id}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}
@@ -125,11 +131,12 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
         {type === 'multi-album' && (() => {
           const albums = item as SubsonicAlbum[];
           const albumIds = albums.map(a => a.id);
+          const albumServerIds = new Set(albums.map(a => a.serverId).filter(Boolean));
           const albumRatingDisabled = entityRatingSupport === 'track_only';
           const multiAlbumRatingId = [...albumIds].sort().join('\x1e');
           const unifiedAlbumRating = (() => {
             if (albums.length === 0) return 0;
-            const vals = albums.map(a => userRatingOverrides[a.id] ?? a.userRating ?? 0);
+            const vals = albums.map(a => ownedOverrideValue(userRatingOverrides, a) ?? a.userRating ?? 0);
             const first = vals[0];
             return vals.every(v => v === first) ? first : 0;
           })();
@@ -152,7 +159,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
               })}>
                 <ListPlus size={14} /> {t('contextMenu.enqueueAlbums', { count: albums.length })}
               </div>
-              {offlinePolicy.canAddToPlaylist && (
+              {offlinePolicy.canAddToPlaylist && albumServerIds.size <= 1 && (
                 <div
                   className={`context-menu-item context-menu-item--submenu ${playlistSubmenuOpen && playlistSongIds[0] === `multi-album:${albumIds.join(',')}` ? 'active' : ''}`}
                   data-playlist-trigger-id={`multi-album:${albumIds.join(',')}`}
@@ -162,7 +169,7 @@ export default function AlbumContextItems(props: ContextMenuItemsProps) {
                   <ListMusic size={14} /> {t('contextMenu.addToPlaylist')}
                   <ChevronRight size={13} style={{ marginLeft: 'auto' }} />
                   {playlistSubmenuOpen && playlistSongIds[0] === `multi-album:${albumIds.join(',')}` && (
-                    <MultiAlbumToPlaylistSubmenu albumIds={albumIds} triggerId={`multi-album:${albumIds.join(',')}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
+                    <MultiAlbumToPlaylistSubmenu albums={albums} triggerId={`multi-album:${albumIds.join(',')}`} onDone={() => { setPlaylistSubmenuOpen(false); closeContextMenu(); }} />
                   )}
                 </div>
               )}

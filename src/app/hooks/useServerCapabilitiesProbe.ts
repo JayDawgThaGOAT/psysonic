@@ -1,12 +1,10 @@
 import { useEffect } from 'react';
-import { getMusicFolders } from '@/lib/api/subsonicLibrary';
 import { probeEntityRatingSupport } from '@/lib/api/subsonicStarRating';
 import { useAuthStore } from '@/store/authStore';
 import { cleanupOrphanedOrbitPlaylists } from '@/features/orbit';
 
 /**
  * Per-server one-shot probe run after login:
- *  - Fetches the server's music folders (falls back to []).
  *  - Probes which entity types support star ratings (falls back to
  *    `track_only` for old/non-Navidrome servers).
  *  - Sweeps leftover Orbit session / outbox playlists from crashed or
@@ -18,7 +16,6 @@ import { cleanupOrphanedOrbitPlaylists } from '@/features/orbit';
 export function useServerCapabilitiesProbe(): void {
   const isLoggedIn = useAuthStore(s => s.isLoggedIn);
   const activeServerId = useAuthStore(s => s.activeServerId);
-  const setMusicFolders = useAuthStore(s => s.setMusicFolders);
   const setEntityRatingSupport = useAuthStore(s => s.setEntityRatingSupport);
 
   useEffect(() => {
@@ -27,12 +24,6 @@ export function useServerCapabilitiesProbe(): void {
     let cancelled = false;
     (async () => {
       const stillThisServer = () => !cancelled && useAuthStore.getState().activeServerId === serverAtStart;
-      try {
-        const folders = await getMusicFolders();
-        if (stillThisServer()) setMusicFolders(folders);
-      } catch {
-        if (stillThisServer()) setMusicFolders([]);
-      }
       try {
         const level = await probeEntityRatingSupport();
         if (stillThisServer()) setEntityRatingSupport(serverAtStart, level);
@@ -43,7 +34,7 @@ export function useServerCapabilitiesProbe(): void {
     return () => {
       cancelled = true;
     };
-  }, [isLoggedIn, activeServerId, setMusicFolders, setEntityRatingSupport]);
+  }, [isLoggedIn, activeServerId, setEntityRatingSupport]);
 
   useEffect(() => {
     if (!isLoggedIn || !activeServerId) return;

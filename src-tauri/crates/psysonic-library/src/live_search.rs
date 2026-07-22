@@ -46,9 +46,9 @@ pub fn run_live_search(
         });
     }
 
-    let scope_pairs = ordered_library_scope_pairs(server_id, library_scope, library_scopes);
+    let scope_pairs = ordered_library_scope_pairs(server_id, library_scope, library_scopes)?;
     if multi_library_merge_enabled(&scope_pairs) {
-        crate::identity::ensure_cluster_keys_built(store, server_id)?;
+        crate::scope_merge::ensure_cluster_keys_for_scopes(store, &scope_pairs)?;
         return run_live_search_multi_scope(
             store,
             &scope_pairs,
@@ -63,7 +63,7 @@ pub fn run_live_search(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| scope_pairs.first().map(|p| p.library_id.clone()));
+        .or_else(|| scope_pairs.first().and_then(|p| p.library_id.clone()));
 
     store.with_read_conn(|conn| {
         let scopes = scopes_from_option(effective_scope.as_deref());
@@ -829,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_scope_live_search_dedupes_album_and_artist_with_priority() {
+    fn multi_scope_live_search_dedupes_album_and_artist_but_preserves_tracks() {
         use crate::dto::LibraryScopePair;
         use crate::identity::rebuild_cluster_keys;
 
@@ -864,16 +864,27 @@ mod tests {
                 },
             ])
             .unwrap();
+        store
+            .with_conn_mut("test.multi_scope_artists", |conn| {
+                conn.execute(
+                    "INSERT INTO artist (server_id, id, name, synced_at) VALUES \
+                     ('s1', 'ar-a', 'Shared Artist', 1), \
+                     ('s1', 'ar-b', 'Shared Artist', 1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
         rebuild_cluster_keys(&store, None).unwrap();
 
         let scopes = vec![
             LibraryScopePair {
                 server_id: "s1".into(),
-                library_id: "lib-a".into(),
+                library_id: Some("lib-a".into()),
             },
             LibraryScopePair {
                 server_id: "s1".into(),
-                library_id: "lib-b".into(),
+                library_id: Some("lib-b".into()),
             },
         ];
         let resp = run_live_search(
@@ -891,8 +902,9 @@ mod tests {
         assert_eq!(resp.artists[0].id, "ar-a");
         assert_eq!(resp.albums.len(), 1);
         assert_eq!(resp.albums[0].id, "alb-a");
-        assert_eq!(resp.tracks.len(), 1);
+        assert_eq!(resp.tracks.len(), 2);
         assert_eq!(resp.tracks[0].id, "t-a");
+        assert_eq!(resp.tracks[1].id, "t-b");
     }
 
     /// Manual: `cargo test -p psysonic-library bench_disk_live_search --release -- --ignored --nocapture`

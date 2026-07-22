@@ -1,6 +1,6 @@
 import type React from 'react';
 import type { TFunction } from 'i18next';
-import { uploadArtistImage } from '@/lib/api/subsonicArtists';
+import { uploadArtistImageForServer } from '@/lib/api/subsonicArtists';
 import { setRating, star, unstar } from '@/lib/api/subsonicStarRating';
 import type { SubsonicArtist } from '@/lib/api/subsonicTypes';
 import { useAuthStore } from '@/store/authStore';
@@ -13,14 +13,14 @@ export interface RunArtistEntityRatingDeps {
   id: string | undefined;
   rating: number;
   artistEntityRatingSupport: string;
-  activeServerId: string;
+  serverId: string;
   t: TFunction;
   setArtistEntityRating: (v: number) => void;
   setArtist: React.Dispatch<React.SetStateAction<SubsonicArtist | null>>;
 }
 
 export async function runArtistEntityRating(deps: RunArtistEntityRatingDeps): Promise<void> {
-  const { artist, id, rating, artistEntityRatingSupport, activeServerId, t, setArtistEntityRating, setArtist } = deps;
+  const { artist, id, rating, artistEntityRatingSupport, serverId, t, setArtistEntityRating, setArtist } = deps;
   if (!artist || artist.id !== id) return;
   const artistId = artist.id;
   const ratingAtStart = artist.userRating ?? 0;
@@ -29,12 +29,13 @@ export async function runArtistEntityRating(deps: RunArtistEntityRatingDeps): Pr
 
   if (artistEntityRatingSupport !== 'full') return;
 
+  const ownerServerId = artist.serverId ?? serverId;
   try {
-    await setRating(artistId, rating);
+    await setRating(artistId, rating, { serverId: ownerServerId, kind: 'artist' });
     setArtist(a => (a && a.id === artistId ? { ...a, userRating: rating } : a));
   } catch (err) {
     setArtistEntityRating(ratingAtStart);
-    useAuthStore.getState().setEntityRatingSupport(activeServerId, 'track_only');
+    useAuthStore.getState().setEntityRatingSupport(ownerServerId, 'track_only');
     showToast(
       typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
       4500,
@@ -70,13 +71,16 @@ export async function runArtistToggleStar(deps: RunArtistToggleStarDeps): Promis
 
 export interface RunArtistShareDeps {
   artist: SubsonicArtist;
+  serverId: string;
   t: TFunction;
 }
 
 export async function runArtistShare(deps: RunArtistShareDeps): Promise<void> {
-  const { artist, t } = deps;
+  const { artist, serverId, t } = deps;
   try {
-    const ok = await copyEntityShareLink('artist', artist.id);
+    const ok = await copyEntityShareLink('artist', artist.id, {
+      serverId: artist.serverId ?? serverId,
+    });
     if (ok) showToast(t('contextMenu.shareCopied'));
     else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
   } catch {
@@ -87,24 +91,26 @@ export async function runArtistShare(deps: RunArtistShareDeps): Promise<void> {
 export interface RunArtistImageUploadDeps {
   e: React.ChangeEvent<HTMLInputElement>;
   artist: SubsonicArtist | null;
+  serverId: string;
   t: TFunction;
   setUploading: (v: boolean) => void;
   setCoverRevision: React.Dispatch<React.SetStateAction<number>>;
 }
 
 export async function runArtistImageUpload(deps: RunArtistImageUploadDeps): Promise<void> {
-  const { e, artist, t, setUploading, setCoverRevision } = deps;
+  const { e, artist, serverId, t, setUploading, setCoverRevision } = deps;
   const file = e.target.files?.[0];
   e.target.value = '';
   if (!file || !artist) return;
   setUploading(true);
   try {
-    await uploadArtistImage(artist.id, file);
+    const ownerServerId = artist.serverId ?? serverId;
+    await uploadArtistImageForServer(ownerServerId, artist.id, file);
     const coverId = artist.coverArt || artist.id;
-    await invalidateCoverArt(coverId);
+    await invalidateCoverArt(coverId, ownerServerId);
     // Also invalidate with bare artist.id in case coverArt differs
     if (artist.coverArt && artist.coverArt !== artist.id) {
-      await invalidateCoverArt(artist.id);
+      await invalidateCoverArt(artist.id, ownerServerId);
     }
     setCoverRevision(r => r + 1);
     showToast(t('artistDetail.uploadImage'));

@@ -1,5 +1,5 @@
 /**
- * Three mutables that coordinate the gapless preloader. Most of the surface
+ * Preload identity, URL and switch-time mutables coordinate the gapless preloader. Most of the surface
  * is straight get/set — the interesting bit is `clearPreloadingIds` (atomic
  * clear of both) and `markGaplessSwitch` (timestamp side effect).
  */
@@ -8,10 +8,12 @@ import {
   _resetGaplessPreloadStateForTest,
   clearPreloadingIds,
   getBytePreloadingId,
+  getBytePreloadingUrl,
   getGaplessPreloadingId,
   getLastGaplessSwitchTime,
   markGaplessSwitch,
   setBytePreloadingId,
+  setBytePreloadingRequest,
   setGaplessPreloadingId,
 } from '@/features/playback/store/gaplessPreloadState';
 
@@ -29,6 +31,7 @@ describe('initial state', () => {
   it('is null / 0 for unread accessors', () => {
     expect(getGaplessPreloadingId()).toBeNull();
     expect(getBytePreloadingId()).toBeNull();
+    expect(getBytePreloadingUrl()).toBeNull();
     expect(getLastGaplessSwitchTime()).toBe(0);
   });
 });
@@ -42,6 +45,14 @@ describe('preloading-id accessors', () => {
   it('round-trips through the byte guard', () => {
     setBytePreloadingId('t2');
     expect(getBytePreloadingId()).toBe('t2');
+  });
+
+  it('keeps the requested URL beside the server-qualified byte identity', () => {
+    setBytePreloadingRequest('["srv","t2"]', 'https://srv/stream?id=t2');
+    expect(getBytePreloadingId()).toBe('["srv","t2"]');
+    expect(getBytePreloadingUrl()).toBe('https://srv/stream?id=t2');
+    setBytePreloadingId(null);
+    expect(getBytePreloadingUrl()).toBeNull();
   });
 
   it('keeps the two guards independent', () => {
@@ -65,6 +76,7 @@ describe('clearPreloadingIds', () => {
     clearPreloadingIds();
     expect(getGaplessPreloadingId()).toBeNull();
     expect(getBytePreloadingId()).toBeNull();
+    expect(getBytePreloadingUrl()).toBeNull();
   });
 
   it('does not touch the gapless-switch timestamp', () => {

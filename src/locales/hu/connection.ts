@@ -32,6 +32,7 @@ export const connection = {
   retry: 'Újra',
   serverSettings: 'Szerverbeállítások',
   switchServerTitle: 'Szerverváltás',
+  multiServer: 'Több szerver',
   switchServerHint: 'Kattints másik mentett szerver kiválasztásához.',
   manageServers: 'Szerverek kezelése…',
   switchFailed: 'A váltás nem sikerült — a szerver nem érhető el.',

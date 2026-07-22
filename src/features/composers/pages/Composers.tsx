@@ -1,11 +1,9 @@
 import type { SubsonicArtist } from '@/lib/api/subsonicTypes';
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ndListArtistsByRole } from '@/lib/api/navidromeBrowse';
 import { LayoutGrid, List } from 'lucide-react';
 import StarFilterButton from '@/ui/StarFilterButton';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
-import { useAuthStore } from '@/store/authStore';
 import { useTranslation } from 'react-i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { APP_MAIN_SCROLL_VIEWPORT_ID, COMPOSERS_INPAGE_SCROLL_VIEWPORT_ID } from '@/constants/appScroll';
@@ -19,7 +17,6 @@ import { useNavigateToComposer } from '@/features/composers/hooks/useNavigateToC
 import { peekComposerBrowseScrollRestore } from '@/features/composers/store/composerBrowseSessionStore';
 import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
 import { readComposerBrowseRestore } from '@/lib/navigation/albumDetailNavigation';
-import { filterArtistsWithRoleAlbumCredits } from '@/lib/library/composerBrowse';
 import { ALL_SENTINEL, artistLetterBucket } from '@/features/artist';
 import { useLibraryIgnoredArticles } from '@/lib/library/hooks/useLibraryIgnoredArticles';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
@@ -29,6 +26,8 @@ import { useVirtualizerScrollMargin } from '@/lib/hooks/useVirtualizerScrollMarg
 import { useClientSliceInfiniteScroll } from '@/lib/hooks/useClientSliceInfiniteScroll';
 import { useInpageScrollViewport } from '@/lib/hooks/useInpageScrollViewport';
 import InpageScrollSentinel from '@/ui/InpageScrollSentinel';
+import { ownedEntityKey, ownedOverrideValue } from '@/lib/util/ownedEntityKey';
+import { useComposerCatalog } from '@/features/composers/hooks/useComposerCatalog';
 
 const ALPHABET = [ALL_SENTINEL, '#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
 
@@ -80,16 +79,11 @@ function ComposerRowAvatar({ artist }: { artist: SubsonicArtist }) {
 export default function Composers() {
   const perfFlags = usePerfProbeFlags();
   const { t } = useTranslation();
-  const [composers, setComposers] = useState<SubsonicArtist[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<'unsupported' | 'transient' | null>(null);
-  const [reloadTick, setReloadTick] = useState(0);
+  const { composers, loading, loadError, reload, serverId, scopeKey } = useComposerCatalog();
 
   const scrollSnapshotRef = useRef<ComposerBrowseScrollSnapshot>({ scrollTop: 0, visibleCount: 0 });
-  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
-  const serverId = useAuthStore(s => s.activeServerId ?? '');
   const restoreVisibleCountRef = useRef<number | undefined>(
-    peekComposerBrowseScrollRestore(serverId)?.visibleCount,
+    peekComposerBrowseScrollRestore(scopeKey)?.visibleCount,
   );
 
   const {
@@ -99,13 +93,12 @@ export default function Composers() {
     setStarredOnly,
     viewMode,
     setViewMode,
-  } = useComposersBrowseFilters(serverId, scrollSnapshotRef);
+  } = useComposersBrowseFilters(scopeKey, scrollSnapshotRef);
 
   const composersSearchQuery = useScopedBrowseSearchQuery('composers');
 
-  // Full composer catalog is loaded via ndListArtistsByRole (Navidrome role stats,
-  // correctly split multi-name credits). Generic artist index/search3 returns joined
-  // performer strings — do not race that path on this page (report: zunoz, v1.47 RC3).
+  // The catalog comes from the local contributor projection. Text search stays
+  // client-side so typing never fans out across selected servers.
   const { textSearchLoading, effectiveFilter } = useBrowseArtistTextSearch(
     composersSearchQuery,
     false,
@@ -138,39 +131,11 @@ export default function Composers() {
     loadMore: sliceLoadMore,
   } = useClientSliceInfiniteScroll({
     pageSize: PAGE_SIZE,
-    resetDeps: [composersSearchQuery, letterFilter, starredOnly, viewMode, composerSource, serverId],
+    resetDeps: [composersSearchQuery, letterFilter, starredOnly, viewMode, composerSource, scopeKey],
     getScrollRoot,
     scrollRootEl: scrollBodyEl,
     restoreDisplayCount: restoreVisibleCountRef.current,
   });
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setLoadError(null);
-    // One large fetch — same shape as `getArtists()`. Server-side pagination is
-    // an option but Symfonium-style classical libs rarely exceed a few thousand
-    // composers, and a single round-trip beats N infinite-scroll calls when the
-    // list is alphabetised + filtered locally.
-    ndListArtistsByRole('composer', 0, 10000)
-      .then(data => {
-        if (cancelled) return;
-        setComposers(filterArtistsWithRoleAlbumCredits(data));
-        setLoading(false);
-      })
-      .catch(err => {
-        if (cancelled) return;
-        const msg = String(err);
-        console.warn('[psysonic] composers list failed:', err);
-        // "Unsupported" only when the server explicitly rejects the request
-        // shape. Network-layer errors (TLS handshake EOF, timeouts, 5xx) get
-        // a retry button instead of a misleading "needs Navidrome 0.55+".
-        const looksUnsupported = /\b(400|404|422|501)\b/.test(msg);
-        setLoadError(looksUnsupported ? 'unsupported' : 'transient');
-        setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [musicLibraryFilterVersion, reloadTick]);
 
   const starredOverrides = usePlayerStore(s => s.starredOverrides);
   const ignoredArticles = useLibraryIgnoredArticles(serverId);
@@ -184,7 +149,7 @@ export default function Composers() {
       out = out.filter(a => a.name.toLowerCase().includes(needle));
     }
     if (starredOnly) {
-      out = out.filter(a => a.id in starredOverrides ? starredOverrides[a.id] : !!a.starred);
+      out = out.filter(a => ownedOverrideValue(starredOverrides, a) ?? !!a.starred);
     }
     return out;
   }, [composerSource, letterFilter, effectiveFilter, starredOnly, starredOverrides, ignoredArticles]);
@@ -198,7 +163,7 @@ export default function Composers() {
   };
 
   const { isScrollRestorePending } = useComposersBrowseScrollRestore({
-    serverId,
+    serverId: scopeKey,
     scrollBodyEl,
     visibleCount,
     loading: loading || textSearchLoading,
@@ -280,7 +245,7 @@ export default function Composers() {
       const row = composerListFlatRows[index];
       if (!row) return index;
       if (row.kind === 'letter') return `letter:${row.letter}`;
-      return `composer:${row.artist.id}`;
+      return `composer:${ownedEntityKey(row.artist)}`;
     },
     overscan: composerListOverscan,
     scrollMargin: composerListScrollMargin,
@@ -298,8 +263,7 @@ export default function Composers() {
     letterFilter,
     starredOnly,
     viewMode,
-    serverId,
-    musicLibraryFilterVersion,
+    scopeKey,
   ].join('\0');
 
   useArtistsBrowseScrollReset({
@@ -322,7 +286,7 @@ export default function Composers() {
           {loadError === 'unsupported' ? t('composers.unsupported') : t('composers.loadFailed')}
           {loadError === 'transient' && (
             <div style={{ marginTop: '1rem' }}>
-              <button className="btn btn-surface" onClick={() => setReloadTick(t => t + 1)}>
+              <button className="btn btn-surface" onClick={reload}>
                 {t('composers.retry')}
               </button>
             </div>
@@ -399,7 +363,7 @@ export default function Composers() {
         {!loading && viewMode === 'grid' && (
           <VirtualCardGrid
             items={visible}
-            itemKey={(a, _i) => a.id}
+            itemKey={(a, _i) => ownedEntityKey(a)}
             rowVariant="composer"
             disableVirtualization={composerBrowsePlainLayout}
             layoutSignal={visible.length}
@@ -409,7 +373,7 @@ export default function Composers() {
             renderItem={artist => (
               <div
                 className="composer-card"
-                onClick={() => navigateToComposer(artist.id)}
+                onClick={() => navigateToComposer(artist.id, { serverId: artist.serverId })}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   openContextMenu(e.clientX, e.clientY, artist, 'artist', undefined, undefined, undefined, 'composer');
@@ -435,14 +399,14 @@ export default function Composers() {
                   <div className="artist-list">
                     {groups[letter].map(artist => (
                       <button
-                        key={artist.id}
+                        key={ownedEntityKey(artist)}
                         className="artist-row"
-                        onClick={() => navigateToComposer(artist.id)}
+                        onClick={() => navigateToComposer(artist.id, { serverId: artist.serverId })}
                         onContextMenu={(e) => {
                           e.preventDefault();
                           openContextMenu(e.clientX, e.clientY, artist, 'artist', undefined, undefined, undefined, 'composer');
                         }}
-                        id={`composer-${artist.id}`}
+                        id={`composer-${ownedEntityKey(artist)}`}
                       >
                         <ComposerRowAvatar artist={artist} />
                         <div style={{ textAlign: 'left' }}>
@@ -501,12 +465,12 @@ export default function Composers() {
                       <button
                         type="button"
                         className="artist-row"
-                        onClick={() => navigateToComposer(artist.id)}
+                        onClick={() => navigateToComposer(artist.id, { serverId: artist.serverId })}
                         onContextMenu={(e) => {
                           e.preventDefault();
                           openContextMenu(e.clientX, e.clientY, artist, 'artist', undefined, undefined, undefined, 'composer');
                         }}
-                        id={`composer-${artist.id}`}
+                        id={`composer-${ownedEntityKey(artist)}`}
                       >
                         <ComposerRowAvatar artist={artist} />
                         <div style={{ textAlign: 'left' }}>

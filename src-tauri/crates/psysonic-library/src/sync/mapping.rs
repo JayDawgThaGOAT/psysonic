@@ -76,7 +76,11 @@ pub fn subsonic_song_to_track_row(
             .and_then(|v| v.as_f64()),
         content_hash: None,
         server_updated_at: None,
-        server_created_at: None,
+        server_created_at: raw_value
+            .get("created")
+            .or_else(|| raw_value.get("createdAt"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_iso_ms_str),
         deleted: false,
         synced_at,
         raw_json: raw_value.to_string(),
@@ -118,7 +122,7 @@ pub fn navidrome_song_to_track_row(
         album: string_field(raw, "album").unwrap_or_default(),
         album_id: string_field(raw, "albumId"),
         album_artist: string_field(raw, "albumArtist"),
-        duration_sec: raw.get("duration").and_then(|v| v.as_i64()).unwrap_or(0),
+        duration_sec: duration_seconds(raw),
         track_number: raw.get("trackNumber").and_then(|v| v.as_i64()),
         disc_number: raw.get("discNumber").and_then(|v| v.as_i64()),
         year: raw.get("year").and_then(|v| v.as_i64()),
@@ -161,6 +165,19 @@ fn json_string_field(raw: &Value, key: &str) -> Option<String> {
 
 fn string_field(raw: &Value, key: &str) -> Option<String> {
     json_string_field(raw, key)
+}
+
+/// Navidrome's native API reports seconds as either an integer or a decimal.
+/// The local index stores whole seconds, so round rather than silently dropping
+/// a valid fractional value to zero.
+fn duration_seconds(raw: &Value) -> i64 {
+    let seconds = raw.get("duration").and_then(Value::as_f64).unwrap_or(0.0);
+    let rounded = seconds.round();
+    if rounded.is_finite() && (0.0..=i64::MAX as f64).contains(&rounded) {
+        rounded as i64
+    } else {
+        0
+    }
 }
 
 fn parse_iso_ms(s: Option<&str>) -> Option<i64> {
@@ -303,6 +320,7 @@ mod tests {
             "duration": 240,
             "track": 3,
             "year": 2024,
+            "created": "2024-01-01T00:00:00Z",
             "musicBrainzId": "mb-1",
             "replayGain": { "trackGain": -1.2, "albumGain": -0.8, "trackPeak": 0.91 }
         });
@@ -315,6 +333,7 @@ mod tests {
         assert_eq!(row.replay_gain_track_db, Some(-1.2));
         assert_eq!(row.replay_gain_album_db, Some(-0.8));
         assert_eq!(row.replay_gain_peak, Some(0.91));
+        assert!(row.server_created_at.unwrap_or(0) > 0);
         // Fallback library_id kicks in when the song didn't ship one.
         assert_eq!(row.library_id.as_deref(), Some("lib-fb"));
         assert!(row.raw_json.contains("replayGain"));
@@ -355,6 +374,7 @@ mod tests {
         assert_eq!(row.mbid_recording.as_deref(), Some("mb-1"));
         assert_eq!(row.replay_gain_track_db, Some(-1.2));
         assert_eq!(row.library_id.as_deref(), Some("1"));
+        assert!(row.server_created_at.unwrap_or(0) > 0);
         assert!(row.server_updated_at.unwrap_or(0) > 0);
     }
 
@@ -367,6 +387,19 @@ mod tests {
         });
         let row = navidrome_song_to_track_row("s1", &raw, 1, None).unwrap();
         assert_eq!(row.library_id.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn navidrome_song_rounds_decimal_duration_seconds() {
+        let raw = json!({
+            "id": "tr_1",
+            "title": "Hello",
+            "duration": 229.85,
+        });
+
+        let row = navidrome_song_to_track_row("s1", &raw, 1, None).unwrap();
+
+        assert_eq!(row.duration_sec, 230);
     }
 
     #[test]

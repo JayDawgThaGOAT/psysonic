@@ -23,6 +23,8 @@ import { playAlbum, playAlbumShuffled } from '@/features/playback/utils/playback
 import { useLongPressAction } from '@/lib/hooks/useLongPressAction';
 import { LongPressWaveOverlay } from '@/ui/LongPressWaveOverlay';
 import { albumArtistDisplayName, deriveAlbumArtistRefs } from '@/features/album';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 
 const INTERVAL_MS = 10000;
 const HERO_ALBUM_COUNT = 8;
@@ -312,35 +314,43 @@ export default function Hero({ albums: albumsProp }: HeroProps = {}) {
   }, [albums.length, startTimer]);
 
   const album = albums[activeIdx] ?? null;
+  const albumOwnerKey = album
+    ? (album.serverId ? `${album.serverId}:${album.id}` : album.id)
+    : '';
   const heroArtistLabel = useMemo(
     () => (album ? albumArtistDisplayName(album) : ''),
     [album],
   );
 
-  // Lazily fetch format label for the currently-visible album (cached by id)
+  // Lazily fetch format label for the currently-visible album (cached by owner + id)
   const [albumFormats, setAlbumFormats] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (!album || albumFormats[album.id] !== undefined) return;
+    if (!album || albumFormats[albumOwnerKey] !== undefined) return;
     const serverId = resolveMediaServerId(album.serverId);
     if (!serverId) return;
     resolveAlbum(serverId, album.id).then(data => {
       if (!data) {
-        setAlbumFormats(prev => ({ ...prev, [album.id]: '' }));
+        setAlbumFormats(prev => ({ ...prev, [albumOwnerKey]: '' }));
         return;
       }
       const fmts = [...new Set(data.songs.map(s => s.suffix).filter((f): f is string => !!f))];
-      setAlbumFormats(prev => ({ ...prev, [album.id]: fmts.map(f => f.toUpperCase()).join(' / ') }));
+      setAlbumFormats(prev => ({ ...prev, [albumOwnerKey]: fmts.map(f => f.toUpperCase()).join(' / ') }));
     }).catch(() => {
-      setAlbumFormats(prev => ({ ...prev, [album.id]: '' }));
+      setAlbumFormats(prev => ({ ...prev, [albumOwnerKey]: '' }));
     });
-    // Intentionally keyed on album?.id only: the format label is fetched once per
-    // album id and cached in albumFormats. Depending on the album object or the
+    // Intentionally keyed on owner + album id: the format label is fetched once per
+    // owned album and cached in albumFormats. Depending on the album object or the
     // albumFormats map would re-run on every render / cache write.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [album?.id]);
+  }, [albumOwnerKey]);
 
-  const heroCoverRef = useAlbumCoverRef(album?.id, album?.coverArt);
+  const heroCoverScope = useMemo(
+    () => coverServerScopeForServerId(album?.serverId),
+    [album?.serverId],
+  );
+  const heroCoverRef = useAlbumCoverRef(album?.id, album?.coverArt, heroCoverScope);
   const albumId = album?.id;
+  const albumServerId = album?.serverId;
 
   // Mainstage hero backdrop — the album artist's fanart (banner → 16:9 fanart),
   // but its LAST fallback is the album's own Navidrome cover, not the artist
@@ -358,11 +368,11 @@ export default function Hero({ albums: albumsProp }: HeroProps = {}) {
   const heroBanner = useArtistBanner(heroArtistId, {
     artistName: heroArtist?.name,
     albumTitle: album?.name,
-  });
+  }, heroCoverScope);
   const heroFanart = useArtistFanart(heroArtistId, {
     artistName: heroArtist?.name,
     albumTitle: album?.name,
-  });
+  }, heroCoverScope);
   // Last-fallback layer: the album's own Navidrome cover (HERO_BG_CSS_PX, full
   // res), resolved scope-true from the album cover ref already in hand.
   const ndAlbum = useCoverArt(heroCoverRef, HERO_BG_CSS_PX, { surface: 'sparse', fullRes: true });
@@ -370,15 +380,19 @@ export default function Hero({ albums: albumsProp }: HeroProps = {}) {
   const heroBackdrop = useHeroBackdrop(
     mainstageBackdrop.sources,
     { banner: heroBanner, fanart: heroFanart, navidrome: ndAlbumUrl },
-    albumId,
+    albumOwnerKey || undefined,
   );
   const showHeroBackdrop =
     mainstageBackdrop.enabled &&
     !perfFlags.disableMainstageHeroBackdrop &&
     heroInView;
   const { isHolding, pressBind } = useLongPressAction({
-    onShortPress: () => { if (albumId) playAlbum(albumId); },
-    onLongPress: () => { if (albumId) playAlbumShuffled(albumId); },
+    onShortPress: () => {
+      if (albumId) playAlbum(albumId, albumServerId ? { serverId: albumServerId } : undefined);
+    },
+    onLongPress: () => {
+      if (albumId) playAlbumShuffled(albumId, albumServerId ? { serverId: albumServerId } : undefined);
+    },
   });
 
   if (!album) return <div className="hero-placeholder" />;
@@ -389,14 +403,16 @@ export default function Hero({ albums: albumsProp }: HeroProps = {}) {
       className="hero"
       role="banner"
       aria-label={t('hero.eyebrow')}
-      onClick={() => navigateToAlbum(album.id)}
+      onClick={() => navigateToAlbum(album.id, {
+        search: appendServerQuery(undefined, album.serverId),
+      })}
       style={{ cursor: 'pointer' }}
     >
       {showHeroBackdrop && <HeroBg url={heroBackdrop.url} position={heroBackdrop.position} />}
       {showHeroBackdrop && <div className="hero-overlay" aria-hidden="true" />}
 
       {/* key causes re-mount → animate-fade-in triggers on each album change */}
-      <div className="hero-content" key={album.id}>
+      <div className="hero-content" key={albumOwnerKey}>
         {heroCoverRef && !isMobile && (
           <CoverArtImage
             coverRef={heroCoverRef}
@@ -415,7 +431,7 @@ export default function Hero({ albums: albumsProp }: HeroProps = {}) {
             {album.year && <span className="badge">{album.year}</span>}
             {album.genre && <span className="badge">{album.genre}</span>}
             {!isMobile && album.songCount && <span className="badge">{album.songCount} Tracks</span>}
-            {!isMobile && albumFormats[album.id] && <span className="badge">{albumFormats[album.id]}</span>}
+            {!isMobile && albumFormats[albumOwnerKey] && <span className="badge">{albumFormats[albumOwnerKey]}</span>}
           </div>
           {isMobile ? (
             <div className="hero-actions-mobile" onClick={e => e.stopPropagation()}>
@@ -439,7 +455,10 @@ export default function Hero({ albums: albumsProp }: HeroProps = {}) {
                     if (!serverId) return;
                     const albumData = await resolveAlbum(serverId, album.id);
                     if (!albumData) return;
-                    usePlayerStore.getState().enqueue(albumData.songs.map(songToTrack));
+                    usePlayerStore.getState().enqueue(albumData.songs.map(song => ({
+                      ...songToTrack(song),
+                      serverId,
+                    })));
                   } catch (_) { /* ignore: best-effort */ }
                 }}
                 aria-label={t('hero.enqueue')}
@@ -472,7 +491,10 @@ export default function Hero({ albums: albumsProp }: HeroProps = {}) {
                     if (!serverId) return;
                     const albumData = await resolveAlbum(serverId, album.id);
                     if (!albumData) return;
-                    const tracks = albumData.songs.map(songToTrack);
+                    const tracks = albumData.songs.map(song => ({
+                      ...songToTrack(song),
+                      serverId,
+                    }));
                     usePlayerStore.getState().enqueue(tracks);
                   } catch (_) { /* ignore: best-effort */ }
                 }}

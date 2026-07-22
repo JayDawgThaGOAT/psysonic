@@ -6,6 +6,7 @@ import { useOfflineStore } from '@/features/offline';
 import { lyricsCache } from '@/features/lyrics/hooks/useLyrics';
 import { useLyrics } from '@/features/lyrics/hooks/useLyrics';
 import type { Track } from '@/lib/media/trackTypes';
+import { lyricsCacheKey } from '@/features/lyrics/utils/lyricsPersistentCache';
 
 /**
  * The embedded path reads a local file's tags through Rust and never touches the
@@ -67,5 +68,26 @@ describe('useLyrics — embedded Enhanced LRC', () => {
     await waitFor(() => expect(result.current.source).toBe('embedded'));
     expect(result.current.syncedLines).toHaveLength(2);
     expect(result.current.wordLines).toBeNull();
+  });
+
+  it('reads local media and RAM cache from the playing track owner', async () => {
+    const getLocalUrl = vi.fn(() => 'psysonic-local://C:/music/song.flac');
+    vi.spyOn(useOfflineStore, 'getState').mockReturnValue({
+      getLocalUrl,
+    } as unknown as ReturnType<typeof useOfflineStore.getState>);
+    onInvoke('get_embedded_lyrics', () => PLAIN_LRC);
+    const ownedTrack = { ...track, serverId: 'srv-owner' };
+
+    const { result, unmount } = renderHook(() => useLyrics(ownedTrack));
+    await waitFor(() => expect(result.current.source).toBe('embedded'));
+    expect(getLocalUrl).toHaveBeenCalledWith('track-1', 'srv-owner');
+    expect(lyricsCache.has(lyricsCacheKey('srv-owner', 'track-1'))).toBe(true);
+    expect(lyricsCache.has(lyricsCacheKey('srv-a', 'track-1'))).toBe(false);
+    unmount();
+
+    useAuthStore.setState({ activeServerId: 'srv-b' });
+    const { result: cachedResult } = renderHook(() => useLyrics(ownedTrack));
+    await waitFor(() => expect(cachedResult.current.source).toBe('embedded'));
+    expect(getLocalUrl).toHaveBeenCalledTimes(1);
   });
 });

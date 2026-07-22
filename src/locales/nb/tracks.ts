@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'Finn et spor etter tittel, artist eller album…',
   count_one: '{{count}} spor',
   count_other: '{{count}} spor',
+  copyDiagnostics: 'Kopier tidsrapport',
 };

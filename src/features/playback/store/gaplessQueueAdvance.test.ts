@@ -22,7 +22,7 @@ import {
   maybeReconcileGaplessFromProgress,
 } from '@/features/playback/store/gaplessQueueAdvance';
 
-const ref = (trackId: string): QueueItemRef => ({ serverId: 's1', trackId });
+const ref = (trackId: string, serverId = 's1'): QueueItemRef => ({ serverId, trackId });
 
 const track = (id: string, extra: Partial<Track> = {}): Track => ({
   id,
@@ -64,6 +64,24 @@ describe('applyGaplessQueueAdvance', () => {
     expect(usePlayerStore.getState().queueIndex).toBe(1);
     expect(getPlaybackProgressSnapshot().currentTime).toBe(0);
     expect(getPlaybackProgressSnapshot().progress).toBe(0);
+  });
+
+  it('advances between equal raw ids owned by different servers', () => {
+    const a = track('shared', { serverId: 'srv-a' });
+    const b = track('shared', { serverId: 'srv-b' });
+    seedQueueResolver('srv-a', [a]);
+    seedQueueResolver('srv-b', [b]);
+    usePlayerStore.setState({
+      currentTrack: a,
+      queueItems: [ref('shared', 'srv-a'), ref('shared', 'srv-b')],
+      queueIndex: 0,
+    });
+
+    const result = applyGaplessQueueAdvance({ engineDurationHint: 210, source: 'track-switched' });
+
+    expect(result.advanced).toBe(true);
+    expect(usePlayerStore.getState().queueIndex).toBe(1);
+    expect(usePlayerStore.getState().currentTrack?.serverId).toBe('srv-b');
   });
 });
 

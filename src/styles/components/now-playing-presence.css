@@ -27,3 +27,38 @@
   box-shadow: none;
   opacity: 0.5;
 }
+
+/* Keep the original Live icon pulse inside its own paint boundary. Discrete
+ * steps avoid asking WebKitGTK to composite a smooth animation every frame. */
+.now-playing-dropdown__live-icon {
+  position: relative;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  contain: strict;
+  isolation: isolate;
+}
+
+.now-playing-dropdown__live-icon--active {
+  color: var(--accent);
+}
+
+.now-playing-dropdown__live-icon > svg {
+  position: relative;
+}
+
+.now-playing-dropdown__live-icon--active > svg {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: opacity;
+  animation: pulse 1.5s steps(15, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .now-playing-dropdown__live-icon--active > svg {
+    animation: none;
+  }
+}

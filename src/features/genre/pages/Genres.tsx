@@ -6,14 +6,20 @@ import { Tags } from 'lucide-react';
 import { APP_MAIN_SCROLL_VIEWPORT_ID } from '@/constants/appScroll';
 import { useAuthStore } from '@/store/authStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
-import { fetchGenreCatalog, filterGenresWithContent } from '@/features/playback/utils/playback/genreBrowsePlayback';
+import {
+  fetchGenreCatalog,
+  fetchScopedGenreCatalog,
+  filterGenresWithContent,
+  peekScopedGenreCatalog,
+} from '@/features/playback/utils/playback/genreBrowsePlayback';
 import { libraryScopeCacheKeyForServer } from '@/lib/api/subsonicClient';
 import { peekGenreCatalogCache } from '@/lib/library/genreCatalogCountsCache';
 import { genreColor } from '@/lib/library/genreColor';
 import { useOfflineBrowseContext, offlineLocalBrowseEnabled } from '@/features/offline';
 import { useOfflineLocalBrowseReloadKey } from '@/store/localPlaybackBrowseRevision';
-import { useOfflineLocalLibrarySyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
+import { useLibrarySyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 import { useLocalPlaybackStore } from '@/store/localPlaybackStore';
+import { deriveLibraryBrowseIndexScopes } from '@/lib/library/libraryBrowseScope';
 
 const SCROLL_KEY = 'genres-scroll';
 const FONT_MIN_REM = 0.78;
@@ -25,47 +31,69 @@ export default function Genres() {
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const selectedIndexScopes = deriveLibraryBrowseIndexScopes(useAuthStore.getState());
   const libraryScopeKey = libraryScopeCacheKeyForServer(serverId);
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const localPlaybackEntries = useLocalPlaybackStore(s => s.entries);
-  const librarySyncRevision = useOfflineLocalLibrarySyncRevision(serverId || null);
+  const librarySyncRevision = useLibrarySyncRevision();
   const offlineLocalBrowseReloadKey = useOfflineLocalBrowseReloadKey(
     serverId,
     offlineBrowseActive,
   );
   const skipGenreCatalogCache = offlineBrowseActive
     && offlineLocalBrowseEnabled(serverId, localPlaybackEntries);
-  const cachedGenres = serverId && !skipGenreCatalogCache
-    ? peekGenreCatalogCache(serverId, libraryScopeKey, true)
-    : null;
+  const cachedGenres = !offlineBrowseActive
+    ? peekScopedGenreCatalog(selectedIndexScopes, true)
+    : serverId && !skipGenreCatalogCache
+      ? peekGenreCatalogCache(serverId, libraryScopeKey, true)
+      : null;
   const [rawGenres, setRawGenres] = useState<SubsonicGenre[]>(cachedGenres ?? []);
   const [loading, setLoading] = useState(!cachedGenres);
 
   useEffect(() => {
     let cancelled = false;
     const scopeKey = libraryScopeCacheKeyForServer(serverId);
-    const cached = serverId && !skipGenreCatalogCache
-      ? peekGenreCatalogCache(serverId, scopeKey, true)
-      : null;
+    const scopes = deriveLibraryBrowseIndexScopes(useAuthStore.getState());
+    const useSelectedIndexCounts = scopes.length > 0 && !offlineBrowseActive;
+    const cached = useSelectedIndexCounts
+      ? peekScopedGenreCatalog(scopes, true)
+      : serverId && !skipGenreCatalogCache
+        ? peekGenreCatalogCache(serverId, scopeKey, true)
+        : null;
     if (cached) {
       // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setRawGenres(cached);
       setLoading(false);
     } else {
+      setRawGenres([]);
       setLoading(true);
     }
-    void fetchGenreCatalog(serverId, indexEnabled)
+    const load = useSelectedIndexCounts
+      ? fetchScopedGenreCatalog(scopes)
+      : fetchGenreCatalog(serverId, indexEnabled);
+    void load
       .then(data => {
         if (!cancelled) setRawGenres(data);
       })
+      .catch(() => {})
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [serverId, indexEnabled, musicLibraryFilterVersion, offlineBrowseActive, skipGenreCatalogCache, librarySyncRevision, offlineLocalBrowseReloadKey]);
+  }, [
+    serverId,
+    indexEnabled,
+    musicLibraryFilterVersion,
+    libraryBrowseScopeVersion,
+    offlineBrowseActive,
+    skipGenreCatalogCache,
+    librarySyncRevision,
+    offlineLocalBrowseReloadKey,
+  ]);
 
   const genres = useMemo(
     () => filterGenresWithContent([...rawGenres]).sort((a, b) => b.albumCount - a.albumCount),

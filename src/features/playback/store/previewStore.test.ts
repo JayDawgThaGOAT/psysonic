@@ -273,6 +273,27 @@ describe('previewStore — startPreview', () => {
     expect(invokeMock).not.toHaveBeenCalledWith('audio_preview_play', expect.anything());
   });
 
+  it('treats the same raw id on another server as a different preview', async () => {
+    useAuthStore.setState({
+      servers: [
+        { id: 'srv-a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'srv-b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
+    });
+    usePreviewStore.setState({
+      previewingId: 'shared',
+      previewingTrack: { id: 'shared', title: 'A', artist: 'Artist', serverId: 'srv-a' },
+    });
+
+    await usePreviewStore.getState().startPreview({ ...song('shared'), serverId: 'srv-b' }, 'suggestions');
+
+    expect(invokeMock).toHaveBeenCalledWith('audio_preview_play', expect.objectContaining({
+      id: 'shared',
+      url: expect.stringContaining('b.test'),
+    }));
+    expect(usePreviewStore.getState().previewingTrack?.serverId).toBe('srv-b');
+  });
+
   it('rolls back optimistic state when the engine invoke rejects', async () => {
     usePreviewStore.setState({
       previewingId: 'older',

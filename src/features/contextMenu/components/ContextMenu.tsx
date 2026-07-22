@@ -23,6 +23,7 @@ import {
   type OfflineSurface,
 } from '@/features/offline';
 import ContextMenuItems from '@/features/contextMenu/components/ContextMenuItems';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 function contextMenuSurfaceForType(type: string | null): OfflineSurface {
   switch (type) {
@@ -38,6 +39,15 @@ function contextMenuSurfaceForType(type: string | null): OfflineSurface {
     default:
       return 'contextMenuSong';
   }
+}
+
+function contextMenuServerIds(item: unknown): string[] {
+  const items = Array.isArray(item) ? item : [item];
+  return [...new Set(items.flatMap(candidate => {
+    if (!candidate || typeof candidate !== 'object' || !('serverId' in candidate)) return [];
+    const serverId = (candidate as { serverId?: unknown }).serverId;
+    return typeof serverId === 'string' && serverId ? [serverId] : [];
+  }))];
 }
 
 export { AddToPlaylistSubmenu };
@@ -68,9 +78,6 @@ export default function ContextMenu() {
     }))
   );
   const auth = useAuthStore();
-  const entityRatingSupport =
-    auth.activeServerId ? auth.entityRatingSupportByServer[auth.activeServerId] ?? 'unknown' : 'unknown';
-  const audiomuseNavidromeEnabled = !!(auth.activeServerId && auth.audiomuseNavidromeByServer[auth.activeServerId]);
   const menuRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
@@ -170,15 +177,34 @@ export default function ContextMenu() {
     queueIndex,
     playlistId,
     playlistSongIndex,
+    playlistSongRemove,
     shareKindOverride,
     pinToPlaybackServer = false,
   } = contextMenu;
+  const itemServerIds = contextMenuServerIds(item);
+  const capabilityServerIds = itemServerIds.length > 0
+    ? itemServerIds
+    : auth.activeServerId ? [auth.activeServerId] : [];
+  const ratingSupports = capabilityServerIds.map(
+    serverId => auth.entityRatingSupportByServer[serverId] ?? 'unknown',
+  );
+  const entityRatingSupport = ratingSupports.includes('track_only')
+    ? 'track_only'
+    : ratingSupports.length > 0 && ratingSupports.every(value => value === 'full')
+      ? 'full'
+      : 'unknown';
+  const singleOwnerServerId = capabilityServerIds.length === 1 ? capabilityServerIds[0] : undefined;
+  const audiomuseNavidromeEnabled = Boolean(
+    singleOwnerServerId && auth.audiomuseNavidromeByServer[singleOwnerServerId],
+  );
   const navigateLibrary = pinToPlaybackServer
     ? navigatePlaybackLibrary
     : (path: string) => { navigate(path); };
 
-  const isStarred = (id: string, itemStarred?: string) =>
-    id in starredOverrides ? starredOverrides[id] : !!itemStarred;
+  const isStarred = (id: string, itemStarred?: string, serverId?: string) => {
+    const key = ownedEntityKey({ id, serverId });
+    return key in starredOverrides ? starredOverrides[key] : !!itemStarred;
+  };
 
   const { applySongRating, applyAlbumRating, applyArtistRating, getRatingValueByKind, commitRatingByKind } =
     useContextMenuRating({ type, item, userRatingOverrides, setUserRatingOverride, entityRatingSupport, t });
@@ -204,12 +230,12 @@ export default function ContextMenu() {
   };
 
   const copyShareLink = useCallback(
-    (kind: EntityShareKind, id: string) => copyShareLinkAction(kind, id, t),
+    (kind: EntityShareKind, id: string, serverId?: string) => copyShareLinkAction(kind, id, t, serverId),
     [t],
   );
 
-  const startRadio = (artistId: string, artistName: string, seedTrack?: Track) =>
-    startRadioAction(artistId, artistName, playTrack, seedTrack);
+  const startRadio = (artistId: string, artistName: string, seedTrack?: Track, serverId?: string) =>
+    startRadioAction(artistId, artistName, playTrack, seedTrack, serverId);
 
   const startInstantMix = (song: Track) => startInstantMixAction(song, t);
 
@@ -238,6 +264,7 @@ export default function ContextMenu() {
           queueIndex={queueIndex}
           playlistId={playlistId}
           playlistSongIndex={playlistSongIndex}
+          playlistSongRemove={playlistSongRemove}
           shareKindOverride={shareKindOverride}
           playTrack={playTrack}
           playNext={playNext}

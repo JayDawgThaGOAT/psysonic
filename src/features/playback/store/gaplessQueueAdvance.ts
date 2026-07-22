@@ -34,6 +34,7 @@ import {
 } from '@/features/playback/utils/playback/playbackServer';
 import { resolvePlaybackUrlForTrack } from '@/features/playback/utils/playback/resolvePlaybackUrl';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { syncQueueToServer } from '@/features/playback/store/queueSync';
 import { useAuthStore } from '@/store/authStore';
 import { setIsAudioPaused } from '@/features/playback/store/engineState';
@@ -45,6 +46,10 @@ import {
 import { isSeekDebouncePending } from '@/features/playback/store/seekDebounce';
 import { getSeekTarget } from '@/features/playback/store/seekTargetState';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
+import {
+  queueItemRefMatchesTrack,
+  sameQueueTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 export type GaplessQueueAdvanceResult = {
   advanced: boolean;
@@ -133,8 +138,9 @@ function applyGaplessSuccessorUi(
     queueIndex: newIndex,
     engineRequested: useAuthStore.getState().normalizationEngine,
   });
-  void refreshWaveformForTrack(nextTrack.id);
-  void refreshLoudnessForTrack(nextTrack.id);
+  const analysisRef = analysisTrackRef(nextTrack.id, switchServerId);
+  void refreshWaveformForTrack(analysisRef);
+  void refreshLoudnessForTrack(analysisRef);
   usePlayerStore.getState().updateReplayGainForCurrentTrack();
 
   playbackReportStart(nextTrack.id, playbackProfileIdForTrack(nextTrack, switchRef));
@@ -188,7 +194,7 @@ export function applyGaplessQueueAdvance(opts?: {
     ? { ...resolved, duration: hint }
     : resolved;
 
-  if (currentTrack && repeatMode !== 'one' && currentTrack.id === nextTrack.id && queueIndex === newIndex) {
+  if (currentTrack && repeatMode !== 'one' && sameQueueTrack(currentTrack, nextTrack) && queueIndex === newIndex) {
     return { advanced: false, nextTrack, newIndex };
   }
 
@@ -230,9 +236,9 @@ export function maybeReconcileGaplessFromProgress(
     store.repeatMode,
     store.currentTrack,
   );
-  if (!nextTrack || nextTrack.id === store.currentTrack.id) return;
+  if (!nextTrack || sameQueueTrack(nextTrack, store.currentTrack)) return;
   const slotRef = store.queueItems[store.queueIndex];
-  if (!slotRef || slotRef.trackId !== store.currentTrack.id) return;
+  if (!queueItemRefMatchesTrack(slotRef, store.currentTrack)) return;
   if (store.repeatMode !== 'one' && newIndex <= store.queueIndex) return;
 
   applyGaplessQueueAdvance({

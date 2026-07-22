@@ -14,14 +14,14 @@ import { OptionalBrowseTrackRowCoverThumb } from '@/cover/TrackRowCoverThumb';
 
 export interface FavoriteSongRowCallbacks {
   activate: (song: SubsonicSong, index: number, e: React.MouseEvent) => void;
-  dblOrbit: (songId: string, e: React.MouseEvent) => void;
+  dblOrbit: (song: SubsonicSong, e: React.MouseEvent) => void;
   context: (song: SubsonicSong, e: React.MouseEvent) => void;
   mouseDownRow: (song: SubsonicSong, e: React.MouseEvent) => void;
   toggleSelect: (songId: string, index: number, shift: boolean) => void;
   play: (index: number) => void;
   startPreview: (song: SubsonicSong) => void;
-  rate: (songId: string, rating: number) => void;
-  remove: (songId: string) => void;
+  rate: (song: SubsonicSong, rating: number) => void;
+  remove: (song: SubsonicSong) => void;
   navArtist: (artistId: string, serverId?: string) => void;
   navAlbum: (albumId: string, serverId?: string) => void;
 }
@@ -56,7 +56,7 @@ function FavoriteSongRow({
       style={gridStyle}
       role="row"
       onClick={e => cb.activate(song, i, e)}
-      onDoubleClick={orbitActive ? e => cb.dblOrbit(song.id, e) : undefined}
+      onDoubleClick={orbitActive ? e => cb.dblOrbit(song, e) : undefined}
       onContextMenu={e => cb.context(song, e)}
       onMouseDown={e => cb.mouseDownRow(song, e)}
     >
@@ -128,7 +128,7 @@ function FavoriteSongRow({
               {(song.suffix || (showBitrate && song.bitRate)) && <span className="track-codec">{codecLabel(song, showBitrate)}</span>}
             </div>
           );
-          case 'rating': return <StarRating key="rating" value={ratingValue} onChange={r => cb.rate(song.id, r)} />;
+          case 'rating': return <StarRating key="rating" value={ratingValue} onChange={r => cb.rate(song, r)} />;
           case 'duration': return <div key="duration" className="track-duration">{formatTrackTime(song.duration)}</div>;
           case 'playCount': return (
             <div key="playCount" className="track-duration">{song.playCount ?? '—'}</div>
@@ -141,7 +141,7 @@ function FavoriteSongRow({
           );
           case 'remove': return (
             <div key="remove" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <button className="btn-icon fav-remove-btn" data-tooltip={t('favorites.removeSong')} onClick={e => { e.stopPropagation(); cb.remove(song.id); }} aria-label={t('favorites.removeSong')}>
+              <button className="btn-icon fav-remove-btn" data-tooltip={t('favorites.removeSong')} onClick={e => { e.stopPropagation(); cb.remove(song); }} aria-label={t('favorites.removeSong')}>
                 <X size={14} />
               </button>
             </div>

@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} nummers',
   mainstageEmptyTitle: 'Je Hoofdpodium is leeg',
   mainstageEmptyBody: 'Alle secties zijn uitgeschakeld. Schakel secties weer in of verberg het Hoofdpodium in de zijbalk.',
-  mainstageEmptyCta: 'Personalisatie openen'
+  mainstageEmptyCta: 'Personalisatie openen',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: '{{section}} inschakelen',
+    generationInfo: 'Generatie-informatie',
+    duration: 'Duur',
+    itemCount: 'Items',
+    status: 'Status',
+    detail: 'Detail',
+    unavailable: 'N/B',
+    statuses: {
+      idle: 'Inactief', loading: 'Laden', ready: 'Gereed', empty: 'Leeg',
+      error: 'Fout', timeout: 'Time-out', disabled: 'Uitgeschakeld'
+    }
+  }
 };

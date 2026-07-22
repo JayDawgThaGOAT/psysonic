@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { uniqueAlbumIdsFromSongs } from '@/cover/warmDiskPeek';
+import {
+  uniqueAlbumCoverSourcesFromSongs,
+  uniqueAlbumIdsFromSongs,
+} from '@/cover/warmDiskPeek';
 
 describe('uniqueAlbumIdsFromSongs', () => {
   it('dedupes by albumId and respects limit', () => {
@@ -17,5 +20,18 @@ describe('uniqueAlbumIdsFromSongs', () => {
 
   it('skips empty album ids', () => {
     expect(uniqueAlbumIdsFromSongs([{ albumId: '' }, { albumId: '  ' }, { albumId: 'x' }])).toEqual(['x']);
+  });
+});
+
+describe('uniqueAlbumCoverSourcesFromSongs', () => {
+  it('preserves equal album ids owned by different servers', () => {
+    expect(uniqueAlbumCoverSourcesFromSongs([
+      { albumId: 'same', coverArt: 'cover-a', serverId: 'a' },
+      { albumId: 'same', coverArt: 'cover-b', serverId: 'b' },
+      { albumId: 'same', coverArt: 'duplicate-a', serverId: 'a' },
+    ])).toEqual([
+      { albumId: 'same', coverArt: 'cover-a', serverId: 'a' },
+      { albumId: 'same', coverArt: 'cover-b', serverId: 'b' },
+    ]);
   });
 });

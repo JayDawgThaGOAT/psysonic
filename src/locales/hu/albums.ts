@@ -38,4 +38,5 @@ export const albums = {
   noFavorites: 'Egyetlen kedvenc album sem felel meg a jelenlegi szűrőknek.',
   noCompilations: 'Egyetlen válogatás sem felel meg a jelenlegi szűrőknek.',
   noMatchingFilters: 'Egyetlen album sem felel meg a jelenlegi szűrőknek.',
+  copyDiagnostics: 'Időzítési jelentés másolása',
 };

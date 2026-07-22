@@ -20,4 +20,18 @@ export const home = {
   mainstageEmptyTitle: 'Раздел «Для вас» пуст',
   mainstageEmptyBody: 'Все разделы отключены. Включите разделы снова или скройте «Для вас» из боковой панели.',
   mainstageEmptyCta: 'Открыть персонализацию',
+  diagnostics: {
+    copyAll: 'Скопировать диагностику Mainstage',
+    enableSection: 'Включить {{section}}',
+    generationInfo: 'Информация о генерации',
+    duration: 'Длительность',
+    itemCount: 'Элементы',
+    status: 'Статус',
+    detail: 'Подробности',
+    unavailable: 'Н/Д',
+    statuses: {
+      idle: 'Ожидание', loading: 'Загрузка', ready: 'Готово', empty: 'Пусто',
+      error: 'Ошибка', timeout: 'Время истекло', disabled: 'Отключено'
+    }
+  },
 };

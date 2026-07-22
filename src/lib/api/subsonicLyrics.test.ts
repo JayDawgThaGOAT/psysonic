@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SubsonicStructuredLyrics } from '@/lib/api/subsonicTypes';
 
-const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }));
+const { apiMock, apiForServerMock } = vi.hoisted(() => ({
+  apiMock: vi.fn(),
+  apiForServerMock: vi.fn(),
+}));
 
-vi.mock('@/lib/api/subsonicClient', () => ({ api: apiMock }));
+vi.mock('@/lib/api/subsonicClient', () => ({ api: apiMock, apiForServer: apiForServerMock }));
 
 import { getLyricsBySongId, isMainLyricsKind, pickMainStructuredLyrics } from '@/lib/api/subsonicLyrics';
 
@@ -13,6 +16,7 @@ function lyrics(overrides: Partial<SubsonicStructuredLyrics> = {}): SubsonicStru
 
 beforeEach(() => {
   apiMock.mockReset();
+  apiForServerMock.mockReset();
 });
 
 describe('isMainLyricsKind', () => {
@@ -67,6 +71,17 @@ describe('getLyricsBySongId', () => {
     apiMock.mockResolvedValue({ lyricsList: { structuredLyrics: [lyrics()] } });
     await getLyricsBySongId('song-1', { enhanced: true });
     expect(apiMock).toHaveBeenCalledWith('getLyricsBySongId.view', { id: 'song-1', enhanced: true });
+  });
+
+  it('uses the explicit owning server without consulting the active client', async () => {
+    apiForServerMock.mockResolvedValue({ lyricsList: { structuredLyrics: [lyrics()] } });
+    await getLyricsBySongId('song-1', { serverId: 'srv-owner' });
+    expect(apiForServerMock).toHaveBeenCalledWith(
+      'srv-owner',
+      'getLyricsBySongId.view',
+      { id: 'song-1' },
+    );
+    expect(apiMock).not.toHaveBeenCalled();
   });
 
   it('returns null when the track has no lyrics', async () => {

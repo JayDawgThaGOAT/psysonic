@@ -37,8 +37,8 @@ export async function invalidateCacheKey(cacheKey: string): Promise<void> {
   }
 }
 
-export async function invalidateCoverArt(entityId: string): Promise<void> {
-  const serverId = useAuthStore.getState().getActiveServer()?.id ?? '_';
+export async function invalidateCoverArt(entityId: string, ownerServerId?: string): Promise<void> {
+  const serverId = ownerServerId ?? useAuthStore.getState().getActiveServer()?.id ?? '_';
   await Promise.all(
     COVER_ART_REGISTERED_SIZES.map(size =>
       invalidateCacheKey(`${serverId}:cover:${entityId}:${size}`),

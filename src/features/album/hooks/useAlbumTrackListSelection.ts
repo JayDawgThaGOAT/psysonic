@@ -3,6 +3,7 @@ import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useSelectionStore } from '@/store/selectionStore';
 import { useDragDrop } from '@/lib/dnd/DragDropContext';
 import { songToTrack } from '@/lib/media/songToTrack';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 interface UseAlbumTrackListSelectionArgs {
   songs: SubsonicSong[];
@@ -68,7 +69,7 @@ export function useAlbumTrackListSelection({
       if (shift && lastSelectedIdxRef.current !== null) {
         const from = Math.min(lastSelectedIdxRef.current, globalIdx);
         const to   = Math.max(lastSelectedIdxRef.current, globalIdx);
-        songs.slice(from, to + 1).forEach(s => next.add(s.id));
+        songs.slice(from, to + 1).forEach(s => next.add(ownedEntityKey(s)));
       } else {
         if (next.has(id)) next.delete(id);
         else next.add(id);
@@ -80,9 +81,10 @@ export function useAlbumTrackListSelection({
 
   const onDragStart = useCallback((song: SubsonicSong, me: MouseEvent) => {
     const { selectedIds } = useSelectionStore.getState();
-    if (selectedIds.has(song.id) && selectedIds.size > 1) {
+    const songKey = ownedEntityKey(song);
+    if (selectedIds.has(songKey) && selectedIds.size > 1) {
       const tracks = songs
-        .filter(s => selectedIds.has(s.id))
+        .filter(s => selectedIds.has(ownedEntityKey(s)))
         .map(s => songToTrack(s));
       psyDrag.startDrag(
         { data: JSON.stringify({ type: 'songs', tracks }), label: `${tracks.length} Songs` },
@@ -100,7 +102,7 @@ export function useAlbumTrackListSelection({
     if (allSelected) {
       useSelectionStore.getState().clearAll();
     } else {
-      useSelectionStore.getState().setSelectedIds(() => new Set(songs.map(s => s.id)));
+      useSelectionStore.getState().setSelectedIds(() => new Set(songs.map(ownedEntityKey)));
     }
   }, [allSelected, songs]);
 

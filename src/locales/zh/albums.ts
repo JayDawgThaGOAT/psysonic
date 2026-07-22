@@ -38,4 +38,5 @@ export const albums = {
   noFavorites: '没有符合当前筛选条件的收藏专辑。',
   noCompilations: '没有符合当前筛选条件的合辑。',
   noMatchingFilters: '没有符合当前筛选条件的专辑。',
+  copyDiagnostics: '复制耗时报告',
 };

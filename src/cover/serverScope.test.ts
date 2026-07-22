@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useAuthStore } from '../store/authStore';
 import { COVER_SCOPE_ACTIVE } from './types';
-import { coverServerScopeForServerId } from './serverScope';
+import {
+  coverServerScopeForOwnerServerId,
+  coverServerScopeForServerId,
+} from './serverScope';
 
 describe('coverServerScopeForServerId', () => {
   beforeEach(() => {
@@ -30,5 +33,15 @@ describe('coverServerScopeForServerId', () => {
 
   it('falls back to active scope for unknown ids', () => {
     expect(coverServerScopeForServerId('missing')).toBe(COVER_SCOPE_ACTIVE);
+  });
+
+  it('keeps an unknown required owner isolated from the active server', () => {
+    expect(coverServerScopeForOwnerServerId('owner-index-key')).toEqual({
+      kind: 'server',
+      serverId: 'owner-index-key',
+      url: '',
+      username: '',
+      password: '',
+    });
   });
 });

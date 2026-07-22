@@ -16,9 +16,18 @@ interface Props {
   className?: string;
   style?: React.CSSProperties;
   disabled?: boolean;
+  ariaLabel?: string;
 }
 
-export default function CustomSelect({ value, options, onChange, className = '', style, disabled }: Props) {
+export default function CustomSelect({
+  value,
+  options,
+  onChange,
+  className = '',
+  style,
+  disabled,
+  ariaLabel,
+}: Props) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -92,6 +101,7 @@ export default function CustomSelect({ value, options, onChange, className = '',
         onClick={() => { if (!disabled) setOpen(v => !v); }}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={ariaLabel}
       >
         <span className="custom-select-label">{selected?.label ?? value}</span>
         <ChevronDown size={14} className={`custom-select-chevron ${open ? 'open' : ''}`} />

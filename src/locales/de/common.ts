@@ -67,5 +67,10 @@ export const common = {
   more: 'mehr',
   yearRange: 'Jahresbereich',
   clearAll: 'Alles zurücksetzen',
+  availableSources_one: 'Aus {{count}} Quelle verfügbar',
+  availableSources_other: 'Aus {{count}} Quellen verfügbar',
+  chooseSource: 'Quelle auswählen',
+  currentSource: 'Aktuelle Quelle',
+  openFromServer: 'Von diesem Server öffnen',
   libraryEmpty: 'Deine Bibliothek ist leer.',
 };

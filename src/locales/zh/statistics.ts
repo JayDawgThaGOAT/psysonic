@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: '音频总时长',
   genreInsights: '流派洞察',
   formatDistribution: '格式分布',
-  formatSample: '{{n}} 首曲目的样本',
+  formatSample: '共 {{n}} 首曲目',
   computing: '计算中…',
   genreSongs: '{{count}} 首歌曲',
   genreAlbums: '{{count}} 张专辑',

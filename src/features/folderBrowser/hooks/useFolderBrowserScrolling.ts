@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Column, NavPos } from '@/features/folderBrowser/utils/folderBrowserHelpers';
+import {
+  folderBrowserEntryKey,
+  type Column, type NavPos,
+} from '@/features/folderBrowser/utils/folderBrowserHelpers';
 
 interface Args {
   columns: Column[];
@@ -42,10 +45,12 @@ export function useFolderBrowserScrolling({
     if (!wrapperRef.current) return;
     requestAnimationFrame(() => {
       columns.forEach((col, colIndex) => {
-        const selectedId = col.selectedId;
-        if (!selectedId) return;
+        const selectedKey = col.selectedKey;
+        if (!selectedKey) return;
+        const selectedRowIndex = col.items.findIndex(item => folderBrowserEntryKey(item) === selectedKey);
+        if (selectedRowIndex < 0) return;
         const row = wrapperRef.current?.querySelector<HTMLElement>(
-          `.folder-col[data-folder-col-index="${colIndex}"] .folder-col-row[data-item-id="${selectedId}"]`,
+          `.folder-col[data-folder-col-index="${colIndex}"] .folder-col-row[data-row-index="${selectedRowIndex}"]`,
         );
         row?.scrollIntoView({ block: 'nearest' });
       });
@@ -58,7 +63,7 @@ export function useFolderBrowserScrolling({
       }
 
       const fallbackColIndex = [...columns]
-        .map((c, i) => (c.selectedId ? i : -1))
+        .map((c, i) => (c.selectedKey ? i : -1))
         .filter(i => i >= 0)
         .pop();
       const baseColIndex = keyboardPos?.colIndex ?? fallbackColIndex ?? Math.max(0, columns.length - 1);

@@ -57,5 +57,10 @@ export const common = {
   more: '更多',
   yearRange: '年份范围',
   clearAll: '清除全部',
+  availableSources_one: '可从 {{count}} 个来源获取',
+  availableSources_other: '可从 {{count}} 个来源获取',
+  chooseSource: '选择来源',
+  currentSource: '当前来源',
+  openFromServer: '从此服务器打开',
   libraryEmpty: '你的音乐库是空的。',
 };

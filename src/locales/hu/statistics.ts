@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: 'Teljes lejátszási idő',
   genreInsights: 'Műfaj-betekintés',
   formatDistribution: 'Formátumeloszlás',
-  formatSample: '{{n}} szám mintája',
+  formatSample: '{{n}} szám alapján',
   computing: 'Számítás…',
   genreSongs: '{{count}} dal',
   genreAlbums: '{{count}} album',

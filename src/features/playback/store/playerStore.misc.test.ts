@@ -45,6 +45,7 @@ vi.mock('@/music-network', () => ({
 vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/store/orbitRuntime')>()),
   orbitBulkGuard: vi.fn(async () => true),
+  orbitAllowsTrackServer: vi.fn(() => true),
 }));
 
 import { usePlayerStore } from '@/features/playback/store/playerStore';
@@ -119,8 +120,12 @@ describe('openContextMenu / closeContextMenu', () => {
 
 describe('openSongInfo / closeSongInfo', () => {
   it('opens with the song id and clears on close', () => {
-    usePlayerStore.getState().openSongInfo('song-1');
-    expect(usePlayerStore.getState().songInfoModal).toEqual({ isOpen: true, songId: 'song-1' });
+    usePlayerStore.getState().openSongInfo('song-1', 'srv-owner');
+    expect(usePlayerStore.getState().songInfoModal).toEqual({
+      isOpen: true,
+      songId: 'song-1',
+      serverId: 'srv-owner',
+    });
 
     usePlayerStore.getState().closeSongInfo();
     expect(usePlayerStore.getState().songInfoModal).toEqual({ isOpen: false, songId: null });
@@ -233,7 +238,7 @@ describe('stop', () => {
   });
 
   it('keeps the waveform of the still-shown track and re-hydrates it from the DB', () => {
-    const track = makeTrack({ id: 'wf-keep' });
+    const track = makeTrack({ id: 'wf-keep', serverId: 'server-a' });
     seedQueue([track], { index: 0, currentTrack: track });
     usePlayerStore.setState({ isPlaying: true, waveformBins: [10, 20, 30] });
     onInvoke('analysis_get_waveform_for_track', () => null);

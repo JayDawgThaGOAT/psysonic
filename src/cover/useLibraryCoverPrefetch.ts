@@ -6,9 +6,16 @@ import {
   resolveArtistCoverRefsFromLibrary,
   resolveTrackCoverRefsFromLibrary,
 } from './resolveEntryLibrary';
-import { COVER_SCOPE_ACTIVE, type CoverPrefetchPriority, type CoverServerScope, type CoverSurfaceKind } from './types';
+import {
+  COVER_SCOPE_ACTIVE,
+  type CoverArtRef,
+  type CoverPrefetchPriority,
+  type CoverServerScope,
+  type CoverSurfaceKind,
+} from './types';
 
 export type LibraryCoverPrefetchBucket = {
+  refs?: ReadonlyArray<CoverArtRef>;
   albums?: ReadonlyArray<{ id: string; coverArt?: string | null }>;
   artists?: ReadonlyArray<{ id: string; coverArt?: string | null }>;
   songs?: ReadonlyArray<Pick<SubsonicSong, 'id' | 'albumId' | 'coverArt' | 'discNumber'>>;
@@ -27,10 +34,10 @@ export function useLibraryCoverPrefetch(
     let cancelled = false;
     const unregisters: Array<() => void> = [];
 
-    void (async () => {
-      for (const bucket of buckets) {
+    void Promise.all(buckets.map(async bucket => {
         const scope = bucket.serverScope ?? COVER_SCOPE_ACTIVE;
         const refs = [
+          ...(bucket.refs ?? []),
           ...(bucket.albums?.length
             ? await resolveAlbumCoverRefsFromLibrary(bucket.albums, scope)
             : []),
@@ -42,15 +49,14 @@ export function useLibraryCoverPrefetch(
             : []),
         ];
         const capped = bucket.limit != null ? refs.slice(0, bucket.limit) : refs;
-        if (cancelled || capped.length === 0) continue;
+        if (cancelled || capped.length === 0) return;
         unregisters.push(
           coverPrefetchRegister(capped, {
             surface: bucket.surface ?? 'dense',
             priority: bucket.priority,
           }),
         );
-      }
-    })();
+    }));
 
     return () => {
       cancelled = true;

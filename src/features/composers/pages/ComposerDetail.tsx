@@ -1,12 +1,12 @@
 import { star, unstar } from '@/lib/api/subsonicStarRating';
-import { getArtist, getArtistInfo } from '@/lib/api/subsonicArtists';
+import { getArtistForServer, getArtistInfoForServer } from '@/lib/api/subsonicArtists';
 import type { SubsonicArtist, SubsonicAlbum, SubsonicArtistInfo } from '@/lib/api/subsonicTypes';
 import { useEffect, useState, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { ndListAlbumsByArtistRole } from '@/lib/api/navidromeBrowse';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlbumCard } from '@/features/album';
 import { ArtistHeroCover } from '@/cover/artistHero';
-import { coverArtRef } from '@/cover/ref';
+import { artistCoverRef } from '@/cover/ref';
+import { coverServerScopeForServerId } from '@/cover';
 import { useCoverLightboxSrc } from '@/cover/lightbox';
 import { ArrowLeft, Users, Heart, Feather, Share2 } from 'lucide-react';
 import WikipediaIcon from '@/ui/WikipediaIcon';
@@ -20,11 +20,19 @@ import { sanitizeHtml } from '@/lib/util/sanitizeHtml';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
 import { albumGridWarmCovers } from '@/cover/layoutSizes';
 import { VirtualCardGrid } from '@/ui/VirtualCardGrid';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { tryLoadComposerDetailMultiScope } from '@/lib/library/loadComposerDetailMultiScope';
+import { readDetailServerId } from '@/lib/navigation/detailServerScope';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { useLibraryIndexStore } from '@/store/libraryIndexStore';
+import { loadNetworkComposerAlbums } from '@/lib/library/composerBrowse';
 
 export default function ComposerDetail() {
   const { t } = useTranslation();
   const perfFlags = usePerfProbeFlags();
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [artist, setArtist] = useState<SubsonicArtist | null>(null);
   const [albums, setAlbums] = useState<SubsonicAlbum[]>([]);
@@ -37,24 +45,62 @@ export default function ComposerDetail() {
 
   const setStarredOverride = usePlayerStore(s => s.setStarredOverride);
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const browseScope = getLibraryBrowseScope();
+  const ownerServerId = readDetailServerId(searchParams, activeServerId);
+  const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(ownerServerId));
+  const librarySyncRevision = useLibraryScopeSyncRevision(browseScope.serverIds);
 
-  // Subsonic `getArtist.view` only follows AlbumArtist relations, so for a
-  // composer-only credit it returns the right name + bio but zero albums.
-  // Native API `/api/album?_filters={"role_composer_id":"<id>"}` is the only
-  // endpoint that walks the participants graph for non-AlbumArtist roles.
+  // Local projection renders first. Explicit-owner network calls only enrich
+  // the header, or provide the legacy single-server fallback when no index row exists.
   useEffect(() => {
-    if (!id) return;
+    if (!id || !ownerServerId) return;
     let cancelled = false;
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    Promise.all([
-      getArtist(id).catch(() => null),
-      ndListAlbumsByArtistRole(id, 'composer', 0, 500).catch(err => {
-        console.warn('[psysonic] composer albums load failed:', err);
-        return [] as SubsonicAlbum[];
-      }),
-    ]).then(([artistData, composerAlbums]) => {
+    setArtist(null);
+    setAlbums([]);
+    setIsStarred(false);
+    void (async () => {
+      const scope = getLibraryBrowseScope();
+      const local = indexEnabled && scope.pairs.length > 0
+        ? await tryLoadComposerDetailMultiScope(scope.pairs, ownerServerId, id)
+        : null;
+      if (cancelled) return;
+      if (local) {
+        setArtist(local.composer);
+        setIsStarred(!!local.composer.starred);
+        setAlbums(local.albums);
+        setLoading(false);
+        const enriched = await getArtistForServer(ownerServerId, id).catch(() => null);
+        if (!cancelled && enriched) {
+          setArtist(current => ({
+            ...enriched.artist,
+            ...current,
+            coverArt: enriched.artist.coverArt || current?.coverArt,
+            starred: enriched.artist.starred,
+            serverId: ownerServerId,
+          }));
+          setIsStarred(!!enriched.artist.starred);
+        }
+        return;
+      }
+      if (indexEnabled && scope.pairs.length > 0) {
+        setLoading(false);
+        return;
+      }
+      const selectedLibraryIds = scope.pairs
+        .filter(pair => pair.serverId === ownerServerId)
+        .flatMap(pair => pair.libraryId === null ? [] : [pair.libraryId]);
+      const [artistData, composerAlbums] = await Promise.all([
+        getArtistForServer(ownerServerId, id).catch(() => null),
+        loadNetworkComposerAlbums(ownerServerId, id, selectedLibraryIds).catch(err => {
+          console.warn('[psysonic] composer albums load failed:', err);
+          return [] as SubsonicAlbum[];
+        }),
+      ]);
       if (cancelled) return;
       if (artistData) {
         setArtist(artistData.artist);
@@ -62,9 +108,16 @@ export default function ComposerDetail() {
       }
       setAlbums(composerAlbums);
       setLoading(false);
-    });
+    })();
     return () => { cancelled = true; };
-  }, [id, musicLibraryFilterVersion]);
+  }, [
+    id,
+    ownerServerId,
+    indexEnabled,
+    musicLibraryFilterVersion,
+    libraryBrowseScopeVersion,
+    librarySyncRevision,
+  ]);
 
   // Bio + Last.fm image — Last.fm matches by name, so well-known composers
   // (Bach, Mozart, Chopin) hit; obscure ones get an empty bio. Failure is
@@ -74,27 +127,29 @@ export default function ComposerDetail() {
   // The info reset lives here, not in the load effect, or a scope bump would
   // wipe the bio without re-fetching it.
   useEffect(() => {
-    if (!id) return;
+    if (!id || !ownerServerId) return;
     let cancelled = false;
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setInfo(null);
-    getArtistInfo(id, { similarArtistCount: 0 })
+    getArtistInfoForServer(ownerServerId, id, { similarArtistCount: 0 })
       .then(i => { if (!cancelled) setInfo(i ?? null); })
       .catch(() => { if (!cancelled) setInfo(null); });
     return () => { cancelled = true; };
-  }, [id]);
+  }, [id, ownerServerId]);
 
   useEffect(() => {
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHeaderCoverFailed(false);
-  }, [id]);
+  }, [id, ownerServerId]);
 
   const coverId = artist?.coverArt || artist?.id || '';
   const coverFallbackRef = useMemo(
-    () => (coverId ? coverArtRef(coverId) : null),
-    [coverId],
+    () => (coverId && ownerServerId
+      ? artistCoverRef(id ?? coverId, coverId, coverServerScopeForServerId(ownerServerId))
+      : null),
+    [coverId, id, ownerServerId],
   );
   const { open: openLightbox, lightbox } = useCoverLightboxSrc(coverFallbackRef, {
     alt: artist?.name ?? t('composerDetail.unknownComposer'),
@@ -104,7 +159,7 @@ export default function ComposerDetail() {
     if (!artist) return;
     const next = !isStarred;
     setIsStarred(next);
-    setStarredOverride(artist.id, next);
+    setStarredOverride(ownedEntityKey(artist), next);
     try {
       const meta = {
         serverId: artist.serverId,
@@ -116,7 +171,7 @@ export default function ComposerDetail() {
     } catch (err) {
       console.warn('[psysonic] composer star failed:', err);
       setIsStarred(!next);
-      setStarredOverride(artist.id, !next);
+      setStarredOverride(ownedEntityKey(artist), !next);
     }
   };
 
@@ -129,7 +184,7 @@ export default function ComposerDetail() {
   const handleShareComposer = async () => {
     if (!id || !artist) return;
     try {
-      const ok = await copyEntityShareLink('composer', artist.id);
+      const ok = await copyEntityShareLink('composer', artist.id, { serverId: artist.serverId });
       if (ok) showToast(t('contextMenu.shareCopied'));
       else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
     } catch {
@@ -279,7 +334,7 @@ export default function ComposerDetail() {
       ) : (
         <VirtualCardGrid
           items={albums}
-          itemKey={(a, i) => `${a.id}-${i}`}
+          itemKey={(a, i) => `${ownedEntityKey(a)}-${i}`}
           rowVariant="album"
           disableVirtualization={perfFlags.disableMainstageVirtualLists}
           layoutSignal={albums.length}

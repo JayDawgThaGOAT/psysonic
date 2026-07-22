@@ -18,6 +18,9 @@ pub enum PassKind {
     DeltaMismatch,
     /// Initial sync — unlimited (only user cancel stops it).
     InitialSync,
+    /// Manual integrity verification — finite captured row set, internally
+    /// chunked, but no total request cap before the pass is complete.
+    VerifyIntegrity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,13 +34,14 @@ impl RequestBudget {
     pub const POLL_TICK_CAP: u32 = 1;
     pub const DELTA_LIGHT_CAP: u32 = 50;
     pub const DELTA_MISMATCH_CAP: u32 = 200;
+    pub const VERIFY_CHUNK_SIZE: u32 = 200;
 
     pub fn for_pass(kind: PassKind) -> Self {
         let cap = match kind {
             PassKind::PollTick => Some(Self::POLL_TICK_CAP),
             PassKind::DeltaLight => Some(Self::DELTA_LIGHT_CAP),
             PassKind::DeltaMismatch => Some(Self::DELTA_MISMATCH_CAP),
-            PassKind::InitialSync => None,
+            PassKind::InitialSync | PassKind::VerifyIntegrity => None,
         };
         Self { kind, cap }
     }
@@ -89,5 +93,12 @@ mod tests {
         let b = RequestBudget::for_pass(PassKind::InitialSync);
         assert!(b.is_unlimited());
         assert!(b.has_room(u32::MAX));
+    }
+
+    #[test]
+    fn verify_is_full_pass_with_bounded_chunks() {
+        let b = RequestBudget::for_pass(PassKind::VerifyIntegrity);
+        assert!(b.is_unlimited());
+        assert_eq!(RequestBudget::VERIFY_CHUNK_SIZE, 200);
     }
 }

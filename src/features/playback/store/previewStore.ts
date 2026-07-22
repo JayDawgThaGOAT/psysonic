@@ -1,4 +1,4 @@
-import { buildStreamUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildStreamUrl, buildStreamUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import type { TrackPreviewLocation } from '@/store/authStoreTypes';
 import { create } from 'zustand';
@@ -13,6 +13,7 @@ export interface PreviewingTrack {
   title: string;
   artist: string;
   coverArt?: string;
+  serverId?: string;
 }
 
 export interface PreviewSongInput {
@@ -22,11 +23,12 @@ export interface PreviewSongInput {
   coverArt?: string;
   duration?: number;
   suffix?: string;
+  serverId?: string;
 }
 
 /** Map a browse/playlist song row into preview input (keeps Subsonic suffix for format hints). */
 export function previewInputFromSong(
-  song: Pick<SubsonicSong, 'id' | 'title' | 'artist' | 'coverArt' | 'duration' | 'suffix'>,
+  song: Pick<SubsonicSong, 'id' | 'title' | 'artist' | 'coverArt' | 'duration' | 'suffix' | 'serverId'>,
 ): PreviewSongInput {
   return {
     id: song.id,
@@ -35,6 +37,7 @@ export function previewInputFromSong(
     coverArt: song.coverArt,
     duration: song.duration,
     suffix: song.suffix,
+    serverId: song.serverId,
   };
 }
 
@@ -108,15 +111,18 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     // this guards keyboard shortcuts / programmatic callers.
     if (isOrbitPlaybackSyncActive()) return;
 
-    const current = get().previewingId;
-    if (current === song.id) {
+    const currentId = get().previewingId;
+    const current = get().previewingTrack;
+    if (currentId === song.id && (!current || current.serverId === song.serverId)) {
       await get().stopPreview();
       return;
     }
 
     const previewDuration = auth.trackPreviewDurationSec;
     const startRatio = auth.trackPreviewStartRatio;
-    const url = buildStreamUrl(song.id);
+    const url = song.serverId
+      ? buildStreamUrlForServer(song.serverId, song.id)
+      : buildStreamUrl(song.id);
     const trackDuration = Math.max(song.duration ?? 0, 0);
     const startSec = trackDuration > previewDuration * 1.5
       ? trackDuration * startRatio
@@ -129,6 +135,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         title: song.title,
         artist: song.artist,
         coverArt: song.coverArt,
+        serverId: song.serverId,
       },
       elapsed: 0,
       duration: previewDuration,

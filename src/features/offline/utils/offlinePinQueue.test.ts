@@ -119,6 +119,35 @@ describe('offlinePinQueue', () => {
     expect(useOfflineJobStore.getState().pinQueue).toHaveLength(1);
   });
 
+  it('keeps same-id pins from different servers separate', async () => {
+    const gate = { unblock: undefined as (() => void) | undefined };
+    registerOfflinePinExecutor(async () => {
+      await new Promise<void>(resolve => {
+        gate.unblock = resolve;
+      });
+    });
+    const base = {
+      albumId: 'shared',
+      albumName: 'Shared',
+      albumArtist: 'A',
+      coverArt: undefined,
+      year: undefined,
+      songs: [],
+      type: 'playlist' as const,
+    };
+
+    expect(enqueueOfflinePin({ ...base, serverId: 'server-a' })).toBe(true);
+    expect(enqueueOfflinePin({ ...base, serverId: 'server-b' })).toBe(true);
+    await vi.waitFor(() => expect(useOfflineJobStore.getState().pinQueue).toHaveLength(2));
+    expect(isAlbumPinQueued('shared', 'server-b')).toBe(true);
+    expect(dequeueOfflinePin('shared', 'server-b')).toBe(true);
+    expect(useOfflineJobStore.getState().pinQueue).toEqual([
+      expect.objectContaining({ albumId: 'shared', serverId: 'server-a', status: 'downloading' }),
+    ]);
+
+    gate.unblock?.();
+  });
+
   it('does not replace the in-flight task when a download is active', async () => {
     let capturedTrackIds: string[] = [];
     const gate = { unblock: undefined as (() => void) | undefined };

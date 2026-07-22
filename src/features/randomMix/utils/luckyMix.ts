@@ -5,7 +5,6 @@ import type { QueueItemRef } from '@/lib/media/trackTypes';
 import { songToTrack } from '@/lib/media/songToTrack';
 import { frontendDebugLog } from '@/lib/api/debugLog';
 import i18n from '@/lib/i18n';
-import { librarySelectionForServer } from '@/lib/api/subsonicClient';
 import { runWithLuckyMixLibraryScope } from '@/lib/library/luckyMixScopeOverride';
 import { useAuthStore } from '@/store/authStore';
 import { pushQueueUndoFromGetter } from '@/features/playback/store/queueUndo';
@@ -37,9 +36,11 @@ import {
   pickGoodRatedSongs,
 } from '@/features/randomMix/utils/luckyMixHelpers';
 import {
-  isPartialMultiLibrarySelection,
-  pickLuckyMixTargetLibrary,
+  luckyMixLibraryCandidates,
+  pickLuckyMixTarget,
 } from '@/features/randomMix/utils/luckyMixLibraryPick';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { switchActiveServer } from '@/utils/server/switchActiveServer';
 
 /**
  * Sentinel thrown inside the build loop when `useLuckyMixStore.cancelRequested`
@@ -71,9 +72,11 @@ export async function buildAndPlayLuckyMix(): Promise<void> {
   const albumDebug = (albums: SubsonicAlbum[]) =>
     albums.map(a => ({ id: a.id, name: a.name, artist: a.artist, playCount: a.playCount ?? 0 }));
   const activeServerId = auth.activeServerId;
+  const effectiveLibraryServerIds = deriveEffectiveLibraryBrowseServerIds(auth);
   const available = isLuckyMixAvailable({
     activeServerId,
     audiomuseByServer: auth.audiomuseNavidromeByServer,
+    libraryBrowseServerIds: effectiveLibraryServerIds,
     showLuckyMixMenu:  auth.showLuckyMixMenu,
   });
   const mixRatingCfg = getMixMinRatingsConfigFromAuth();
@@ -120,6 +123,21 @@ export async function buildAndPlayLuckyMix(): Promise<void> {
   const unsubPlayer: { current: (() => void) | null } = { current: null };
   let startedPlayback = false;
   try {
+    const candidates = luckyMixLibraryCandidates({
+      servers: auth.servers,
+      libraryBrowseServerIds: effectiveLibraryServerIds,
+      musicFoldersByServer: auth.musicFoldersByServer,
+      libraryBrowseSelectionByServer: auth.libraryBrowseSelectionByServer,
+      audiomuseByServer: auth.audiomuseNavidromeByServer,
+    });
+    if (candidates.length === 0) throw new Error('no-audiomuse-library');
+    const target = await pickLuckyMixTarget(candidates);
+    logStep('library_scope_pick', { candidates, target });
+    if (target.serverId !== activeServerId) {
+      const server = auth.servers.find(entry => entry.id === target.serverId);
+      if (!server || !(await switchActiveServer(server))) throw new Error('lucky-mix-server-switch-failed');
+    }
+
     // Browsed server ≠ queue server: stop A's stream so Now Playing does not call
     // ensurePlaybackServerActive() and revert the UI mid-build.
     if (shouldHandoffQueueToActiveServer()) {
@@ -367,14 +385,7 @@ export async function buildAndPlayLuckyMix(): Promise<void> {
     }
     };
 
-    if (activeServerId && isPartialMultiLibrarySelection(activeServerId)) {
-      const candidates = librarySelectionForServer(activeServerId);
-      const targetLibraryId = await pickLuckyMixTargetLibrary(activeServerId, candidates);
-      logStep('library_scope_pick', { candidates, targetLibraryId });
-      await runWithLuckyMixLibraryScope(targetLibraryId, runBuild);
-    } else {
-      await runBuild();
-    }
+    await runWithLuckyMixLibraryScope(target.libraryId, runBuild);
   } catch (err) {
     // Cancellation is a user-initiated path, not an error. Silent teardown.
     if (err instanceof LuckyMixCancelled) {

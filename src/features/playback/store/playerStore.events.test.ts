@@ -47,6 +47,7 @@ vi.mock('@/music-network', () => {
 vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/store/orbitRuntime')>()),
   orbitBulkGuard: vi.fn(async () => true),
+  orbitAllowsTrackServer: vi.fn(() => true),
 }));
 
 import { usePlayerStore } from '@/features/playback/store/playerStore';
@@ -57,6 +58,14 @@ import {
 } from '@/test/mocks/tauri';
 import { resetPlayerStore, resetAuthStore } from '@/test/helpers/storeReset';
 import { makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import {
+  _resetGaplessPreloadStateForTest,
+  getBytePreloadingId,
+  setBytePreloadingRequest,
+} from '@/features/playback/store/gaplessPreloadState';
+import { queueTrackIdentityKey } from '@/features/playback/utils/playback/queueIdentity';
+import { usePlaybackAlternativeStore } from '@/features/playback/store/playbackAlternativeStore';
+import { bumpPlayGeneration } from '@/features/playback/store/engineState';
 
 function stubPlaybackInvokes(): void {
   onInvoke('audio_play', () => undefined);
@@ -69,6 +78,7 @@ function stubPlaybackInvokes(): void {
   onInvoke('audio_set_normalization', () => undefined);
   onInvoke('discord_update_presence', () => undefined);
   onInvoke('frontend_debug_log', () => undefined);
+  onInvoke('library_resolve_entity_sources', () => []);
 }
 
 let cleanupListeners: (() => void) | null = null;
@@ -77,6 +87,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   resetPlayerStore();
   resetAuthStore();
+  _resetGaplessPreloadStateForTest();
   stubPlaybackInvokes();
   cleanupListeners = initAudioListeners();
 });
@@ -231,6 +242,65 @@ describe('audio:ended', () => {
     // Queue not advanced.
     expect(s.queueIndex).toBe(0);
     expect(s.currentTrack?.id).toBe(queue[0].id);
+  });
+});
+
+describe('audio:error', () => {
+  it('skips the failed slot when no alternative source exists', async () => {
+    const queue = makeTracks(2);
+    seedQueue(queue, { index: 0, currentTrack: queue[0] });
+    const next = vi.fn();
+    usePlayerStore.setState({ isPlaying: true, next });
+
+    emitTauriEvent('audio:error', 'decoder failed');
+    await vi.waitFor(() => expect(usePlaybackAlternativeStore.getState().status).toBe('ready'));
+    vi.advanceTimersByTime(1_500);
+
+    const player = usePlayerStore.getState();
+    expect(next).toHaveBeenCalledWith(false);
+    expect(player.queueIndex).toBe(0);
+    expect(player.currentTrack?.id).toBe(queue[0].id);
+    expect(player.isPlaying).toBe(false);
+    expect(usePlaybackAlternativeStore.getState().failure).toEqual(expect.objectContaining({
+      queueIndex: 0,
+      detail: 'decoder failed',
+    }));
+  });
+
+  it('does not skip after the user changes playback generation', async () => {
+    const queue = makeTracks(2);
+    seedQueue(queue, { index: 0, currentTrack: queue[0] });
+    const next = vi.fn();
+    usePlayerStore.setState({ isPlaying: true, next });
+
+    emitTauriEvent('audio:error', 'decoder failed');
+    await vi.waitFor(() => expect(usePlaybackAlternativeStore.getState().status).toBe('ready'));
+    bumpPlayGeneration();
+    vi.advanceTimersByTime(1_500);
+
+    expect(next).not.toHaveBeenCalled();
+  });
+});
+
+describe('audio preload events', () => {
+  it('does not let a stale cancellation clear a newer owner-qualified request', () => {
+    const identity = queueTrackIdentityKey('shared', 'srv-b');
+    const currentUrl = 'https://b.test/stream?id=shared';
+    setBytePreloadingRequest(identity, currentUrl);
+
+    emitTauriEvent('audio:preload-cancelled', {
+      url: 'https://a.test/stream?id=shared',
+      trackId: 'shared',
+    });
+
+    expect(getBytePreloadingId()).toBe(identity);
+
+    emitTauriEvent('audio:preload-ready', {
+      url: currentUrl,
+      trackId: 'shared',
+    });
+
+    expect(usePlayerStore.getState().enginePreloadedTrackId).toBe(identity);
   });
 });
 

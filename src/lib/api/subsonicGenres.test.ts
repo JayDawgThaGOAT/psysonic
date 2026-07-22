@@ -1,12 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchAllSongsByGenre, getSongsByGenre } from '@/lib/api/subsonicGenres';
+import {
+  fetchAllSongsByGenre,
+  getAlbumsByGenreForServer,
+  getGenresForServer,
+  getSongsByGenre,
+} from '@/lib/api/subsonicGenres';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { resetAuthStore } from '@/test/helpers/storeReset';
+import { useAuthStore } from '@/store/authStore';
 
-const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }));
+const { apiMock, apiForServerMock } = vi.hoisted(() => ({ apiMock: vi.fn(), apiForServerMock: vi.fn() }));
 
 vi.mock('@/lib/api/subsonicClient', () => ({
   api: apiMock,
+  apiForServer: apiForServerMock,
   libraryFilterParams: () => ({}),
+  libraryFilterParamsForServer: () => ({ musicFolderId: ['folder-a'] }),
 }));
 
 function songs(n: number, startId = 0): SubsonicSong[] {
@@ -24,6 +33,41 @@ describe('getSongsByGenre', () => {
   it('returns an empty array when the genre has no songs', async () => {
     apiMock.mockResolvedValue({ songsByGenre: {} });
     expect(await getSongsByGenre('Empty')).toEqual([]);
+  });
+});
+
+describe('getGenresForServer', () => {
+  beforeEach(() => {
+    apiForServerMock.mockReset();
+    resetAuthStore();
+  });
+
+  it('uses the selected server and its library filter', async () => {
+    apiForServerMock.mockResolvedValue({ genres: { genre: { value: 'Jazz', songCount: 3, albumCount: 2 } } });
+
+    await expect(getGenresForServer('server-b')).resolves.toEqual([
+      { value: 'Jazz', songCount: 3, albumCount: 2 },
+    ]);
+    expect(apiForServerMock).toHaveBeenCalledWith('server-b', 'getGenres.view', {
+      musicFolderId: ['folder-a'],
+    });
+  });
+
+  it('stamps genre albums with the canonical owner key', async () => {
+    useAuthStore.setState({
+      servers: [{
+        id: 'server-b',
+        name: 'B',
+        url: 'https://b.test/rest',
+        username: 'u',
+        password: 'p',
+      }],
+    });
+    apiForServerMock.mockResolvedValue({ albumList2: { album: [{ id: 'album-1' }] } });
+
+    await expect(getAlbumsByGenreForServer('server-b', 'Jazz')).resolves.toEqual([
+      { id: 'album-1', serverId: 'b.test/rest' },
+    ]);
   });
 });
 

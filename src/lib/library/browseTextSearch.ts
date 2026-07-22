@@ -4,9 +4,18 @@
 import { getStarred } from '@/lib/api/subsonicStarRating';
 import { getArtists } from '@/lib/api/subsonicArtists';
 import type { ArtistCreditMode } from '@/lib/api/library';
-import { search, searchSongsPaged } from '@/lib/api/subsonicSearch';
+import {
+  search,
+  searchSongsPaged,
+  searchSongsPagedForServer,
+} from '@/lib/api/subsonicSearch';
 import type { SearchResults, SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subsonicTypes';
-import { libraryAdvancedSearch, libraryGetArtistLosslessBrowse, libraryListLosslessAlbums } from '@/lib/api/library';
+import {
+  libraryAdvancedSearch,
+  libraryGetArtistLosslessBrowse,
+  libraryListLosslessAlbums,
+  libraryListRandomArtists,
+} from '@/lib/api/library';
 import {
   libraryScopeForServer,
   libraryScopePairsForServer,
@@ -32,9 +41,15 @@ import {
   type LibrarySearchDebugEntry,
   type LibrarySearchSurface,
 } from './libraryDevLog';
-import { libraryIsReady, waitForLibraryBrowseReady } from './libraryReady';
+import {
+  libraryIsReady,
+  resolveReadyLibraryBrowseScope,
+  waitForLibraryBrowseReady,
+} from './libraryReady';
 import { artistBrowseTimed, emitArtistsBrowseDebug } from './artistBrowseDebug';
 import { raceSearchSources, type SearchRaceWinner } from './searchRace';
+import type { LibraryScopePair } from '@/lib/api/library/scopeReads';
+import { getLibraryBrowseScope, type LibraryBrowseScope } from './libraryBrowseScope';
 
 export type { LibrarySearchSurface };
 
@@ -249,7 +264,6 @@ export async function runLocalBrowseArtists(
     serverId,
     emptyBrowseOpts(query, creditMode),
     limit,
-    false,
     true,
     true,
   );
@@ -286,7 +300,6 @@ export async function runLocalBrowseAlbums(
     serverId,
     albumBrowseOpts(query, losslessOnly),
     limit,
-    false,
     true,
     true,
   );
@@ -315,15 +328,21 @@ export async function runLocalBrowseSongPage(
   query: string,
   offset: number,
   pageSize: number,
+  browseScope: LibraryBrowseScope = getLibraryBrowseScope(),
 ): Promise<SubsonicSong[] | null> {
-  if (!serverId || !(await libraryIsReady(serverId))) return null;
+  if (!serverId) return null;
+  const readyScope = await resolveReadyLibraryBrowseScope(
+    browseScope.anchorServerId ?? serverId,
+    browseScope,
+  );
+  if (!readyScope) return null;
   const q = query.trim();
   if (!q) return null;
   try {
     const resp = await libraryAdvancedSearch({
-      serverId,
-      libraryScope: libraryScopeForServer(serverId) ?? undefined,
-      libraryScopes: libraryScopePairsForServer(serverId),
+      serverId: readyScope.anchorServerKey,
+      libraryScope: readyScope.pairs.length > 0 ? undefined : libraryScopeForServer(readyScope.anchorServerKey),
+      libraryScopes: readyScope.pairs.length > 0 ? readyScope.pairs : libraryScopePairsForServer(readyScope.anchorServerKey),
       query: q,
       entityTypes: ['track'],
       limit: pageSize,
@@ -342,11 +361,14 @@ export async function runNetworkBrowseSongPage(
   query: string,
   offset: number,
   pageSize: number,
+  serverId?: string | null,
 ): Promise<SubsonicSong[] | null> {
   const q = query.trim();
   if (!q) return null;
   try {
-    return await searchSongsPaged(q, pageSize, offset);
+    return serverId
+      ? await searchSongsPagedForServer(serverId, q, pageSize, offset)
+      : await searchSongsPaged(q, pageSize, offset);
   } catch {
     return null;
   }
@@ -357,14 +379,15 @@ export async function runLocalBrowseFullSearch(
   serverId: string | null | undefined,
   query: string,
   songsLimit: number,
+  browseScope: LibraryBrowseScope = getLibraryBrowseScope(),
 ): Promise<SearchResults | null> {
   const page = await runLocalAdvancedSearch(
     serverId,
     fullSearchOpts(query),
     songsLimit,
-    false,
     true,
     true,
+    browseScope,
   );
   if (!page) return null;
   return {
@@ -378,9 +401,10 @@ export async function runLocalBrowseFullSearch(
 export async function runNetworkBrowseFullSearch(
   query: string,
   songsLimit: number,
+  serverId?: string | null,
 ): Promise<SearchResults | null> {
   try {
-    const page = await runNetworkAdvancedTextSearch(fullSearchOpts(query), songsLimit);
+    const page = await runNetworkAdvancedTextSearch(fullSearchOpts(query), songsLimit, serverId);
     if (!page) return null;
     return {
       artists: page.artists,
@@ -398,8 +422,9 @@ export async function loadMoreLocalBrowseSongs(
   query: string,
   offset: number,
   pageSize: number,
+  browseScope: LibraryBrowseScope = getLibraryBrowseScope(),
 ): Promise<SubsonicSong[]> {
-  return loadMoreLocalSongs(serverId, songBrowseOpts(query), offset, pageSize);
+  return loadMoreLocalSongs(serverId, songBrowseOpts(query), offset, pageSize, browseScope);
 }
 
 export type { AlbumBrowseSort } from './albumBrowseSort';
@@ -441,9 +466,16 @@ export async function runLocalLosslessAlbums(
   serverId: string | null | undefined,
   limit: number,
   offset: number,
-): Promise<{ albums: SubsonicAlbum[]; hasMore: boolean } | null> {
+): Promise<{
+  albums: SubsonicAlbum[];
+  hasMore: boolean;
+  diagnostics?: { readyCheckMs: number; queryMs: number };
+} | null> {
+  const readyStartedAt = performance.now();
   if (!serverId || !(await libraryIsReady(serverId))) return null;
+  const readyCheckMs = Math.round(performance.now() - readyStartedAt);
   try {
+    const queryStartedAt = performance.now();
     const resp = await libraryListLosslessAlbums({
       serverId,
       libraryScope: libraryScopeForServer(serverId) ?? undefined,
@@ -455,6 +487,10 @@ export async function runLocalLosslessAlbums(
     return {
       albums: resp.albums.map(albumToAlbum),
       hasMore: resp.hasMore,
+      diagnostics: {
+        readyCheckMs,
+        queryMs: Math.round(performance.now() - queryStartedAt),
+      },
     };
   } catch {
     return null;
@@ -506,6 +542,24 @@ export async function runLocalRandomAlbums(
     });
     if (resp.source !== 'local') return null;
     return resp.albums.map(albumToAlbum);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Random artist sample from a complete local index. Scoped selections must use
+ * the server so the selection remains authoritative.
+ */
+export async function runLocalRandomArtists(
+  serverId: string | null | undefined,
+  limit: number,
+): Promise<SubsonicArtist[] | null> {
+  if (!serverId || librarySelectionForServer(serverId).length > 0 || !(await libraryIsReady(serverId))) {
+    return null;
+  }
+  try {
+    return (await libraryListRandomArtists(serverId, limit)).map(artistToArtist);
   } catch {
     return null;
   }
@@ -588,6 +642,7 @@ export async function fetchLocalArtistCatalogChunk(
   chunkSize: number,
   creditMode: ArtistCreditMode = 'album',
   letterBucket?: string | null,
+  options?: { libraryScopes?: LibraryScopePair[]; starredOnly?: boolean },
 ): Promise<ArtistCatalogChunkResult | null> {
   if (!serverId) return null;
   const { ready, waitedMs } = await artistBrowseTimed(
@@ -605,10 +660,15 @@ export async function fetchLocalArtistCatalogChunk(
       'rust_advanced_search',
       () => libraryAdvancedSearch({
         serverId,
-        libraryScope: libraryScopeForServer(serverId) ?? undefined,
-        libraryScopes: libraryScopePairsForServer(serverId),
+        libraryScope: options?.libraryScopes?.length
+          ? undefined
+          : libraryScopeForServer(serverId) ?? undefined,
+        libraryScopes: options?.libraryScopes?.length
+          ? options.libraryScopes
+          : libraryScopePairsForServer(serverId),
         entityTypes: ['artist'],
         artistCreditMode: creditMode,
+        starredOnly: options?.starredOnly,
         ...(bucket ? { artistLetterBucket: bucket } : {}),
         sort: [{ field: 'name', dir: 'asc' }],
         limit: chunkSize,

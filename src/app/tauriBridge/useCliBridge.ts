@@ -68,7 +68,7 @@ export function useCliBridge(navigate: NavigateFunction) {
           );
           if (shuffled.length > 0) {
             const aid = song.artistId?.trim() || undefined;
-            usePlayerStore.getState().enqueueRadio(shuffled, aid);
+            usePlayerStore.getState().enqueueRadio(shuffled, aid, serverId ?? undefined);
           }
         }
       } catch (err) {

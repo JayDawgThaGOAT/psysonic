@@ -40,6 +40,8 @@ import { VirtualCardGrid } from '@/ui/VirtualCardGrid';
 import { LOSSLESS_MODE_QUERY } from '@/lib/library/losslessMode';
 import { sortArtistAlbumsByYear } from '@/features/artist/utils/sortArtistAlbums';
 import { readDetailServerId } from '@/lib/navigation/detailServerScope';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
+import { deriveEntitySourceScopes } from '@/lib/library/libraryBrowseScope';
 
 
 export default function ArtistDetail() {
@@ -48,15 +50,41 @@ export default function ArtistDetail() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const losslessOnly = searchParams.get('lossless') === '1';
+  const authActiveServerId = useAuthStore(s => s.activeServerId);
+  const activeServerId = readDetailServerId(searchParams, authActiveServerId) ?? '';
+  const sourceServers = useAuthStore(s => s.servers);
+  const sourceBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const sourceSelections = useAuthStore(s => s.libraryBrowseSelectionByServer);
+  const sourceMusicFoldersByServer = useAuthStore(s => s.musicFoldersByServer);
   const {
     artist, setArtist, albums, topSongs, info, featuredAlbums,
-    loading, artistInfoLoading, featuredLoading,
+    loading, topSongsLoading, artistInfoLoading, featuredLoading,
     isStarred, setIsStarred,
   } = useArtistDetailData(id, { losslessOnly });
+  const artistOwnerServerId = artist?.serverId ?? activeServerId;
+  const entitySourceScopes = useMemo(() => deriveEntitySourceScopes({
+    servers: sourceServers,
+    activeServerId: authActiveServerId,
+    libraryBrowseServerIds: sourceBrowseServerIds,
+    musicFoldersByServer: sourceMusicFoldersByServer,
+    libraryBrowseSelectionByServer: sourceSelections,
+  }, artistOwnerServerId), [
+    artistOwnerServerId,
+    authActiveServerId,
+    sourceBrowseServerIds,
+    sourceMusicFoldersByServer,
+    sourceSelections,
+    sourceServers,
+  ]);
   const [radioLoading, setRadioLoading] = useState(false);
   const [playAllLoading, setPlayAllLoading] = useState(false);
   const [openedLink, setOpenedLink] = useState<string | null>(null);
-  const { similarArtists, similarLoading } = useArtistSimilarArtists(artist, info, artistInfoLoading);
+  const { similarArtists, similarLoading } = useArtistSimilarArtists(
+    artist,
+    info,
+    artistInfoLoading,
+    activeServerId,
+  );
   const [uploading, setUploading] = useState(false);
   const [similarCollapsed, setSimilarCollapsed] = useState(true);
   const [coverRevision, setCoverRevision] = useState(0);
@@ -65,8 +93,6 @@ export default function ArtistDetail() {
 
   const playTrack = usePlayerStore(state => state.playTrack);
   const enqueue = usePlayerStore(state => state.enqueue);
-  const authActiveServerId = useAuthStore(s => s.activeServerId);
-  const activeServerId = readDetailServerId(searchParams, authActiveServerId) ?? '';
   const audiomuseNavidromeEnabled = useAuthStore(
     s => !!(activeServerId && s.audiomuseNavidromeByServer[activeServerId]),
   );
@@ -79,7 +105,7 @@ export default function ArtistDetail() {
   // call order will mismatch between renders.
   const sectionConfig = useArtistLayoutStore(s => s.sections);
   const entityRatingSupportByServer = useAuthStore(s => s.entityRatingSupportByServer);
-  const artistEntityRatingSupport = entityRatingSupportByServer[activeServerId] ?? 'unknown';
+  const artistEntityRatingSupport = entityRatingSupportByServer[artistOwnerServerId] ?? 'unknown';
   const offlineCtx = useOfflineBrowseContext();
   const artistActionPolicy = offlineActionPolicy('artistDetail', offlineCtx.active);
 
@@ -96,7 +122,7 @@ export default function ArtistDetail() {
   }, [id, artist?.id, artist?.userRating]);
 
   const handleArtistEntityRating = (rating: number) => runArtistEntityRating({
-    artist, id, rating, artistEntityRatingSupport, activeServerId, t,
+    artist, id, rating, artistEntityRatingSupport, serverId: artistOwnerServerId, t,
     setArtistEntityRating, setArtist,
   });
 
@@ -124,7 +150,7 @@ export default function ArtistDetail() {
 
   const handleShareArtist = () => {
     if (!id || !artist) return;
-    return runArtistShare({ artist, t });
+    return runArtistShare({ artist, serverId: artistOwnerServerId, t });
   };
 
   const playTopSongWithContinuation = (startIndex: number) => runArtistDetailPlayTopSong({
@@ -137,12 +163,16 @@ export default function ArtistDetail() {
   });
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => runArtistImageUpload({
-    e, artist, t, setUploading, setCoverRevision,
+    e, artist, serverId: artistOwnerServerId, t, setUploading, setCoverRevision,
   });
 
   // Cover URLs — must run every render (before early returns) or hook order breaks.
   const coverId = artist ? (artist.coverArt || artist.id) : '';
-  const artistCoverRefResolved = useArtistCoverRef(artist?.id, artist?.coverArt, undefined, {
+  const artistCoverServerScope = useMemo(
+    () => coverServerScopeForServerId(artist?.serverId ?? activeServerId),
+    [artist?.serverId, activeServerId],
+  );
+  const artistCoverRefResolved = useArtistCoverRef(artist?.id, artist?.coverArt, artistCoverServerScope, {
     libraryResolve: true,
   });
   const artistCoverFallback = useCoverArt(artistCoverRefResolved, 80, { surface: 'sparse' });
@@ -233,6 +263,7 @@ export default function ArtistDetail() {
     id: sa.id,
     name: sa.name,
     albumCount: sa.albumCount,
+    serverId: 'serverId' in sa && typeof sa.serverId === 'string' ? sa.serverId : activeServerId,
   }));
   const showAudiomuseSimilar = audiomuseNavidromeEnabled && serverSimilarArtists.length > 0;
   const showNetworkSimilar =
@@ -246,7 +277,7 @@ export default function ArtistDetail() {
   const sectionHasData = (id: ArtistSectionId): boolean => {
     switch (id) {
       case 'bio':       return !!info?.biography;
-      case 'topTracks': return topSongs.length > 0;
+      case 'topTracks': return topSongsLoading || topSongs.length > 0;
       case 'similar':   return showSimilarSection;
       case 'albums':    return true; // always renders (empty state included)
       case 'featured':  return featuredLoading || featuredAlbums.length > 0;
@@ -289,6 +320,10 @@ export default function ArtistDetail() {
         headerCoverFailed={headerCoverFailed}
         setHeaderCoverFailed={setHeaderCoverFailed}
         actionPolicy={artistActionPolicy}
+        serverId={activeServerId}
+        sourceScopes={entitySourceScopes}
+        sourceServers={sourceServers}
+        sourceMusicFoldersByServer={sourceMusicFoldersByServer}
       />
 
       {losslessOnly && <LosslessModeBanner />}
@@ -315,6 +350,7 @@ export default function ArtistDetail() {
             <ArtistDetailTopTracks
               key="topTracks"
               topSongs={topSongs}
+              loading={topSongsLoading}
               albums={albums}
               marginTop={sectionMt('topTracks')}
               playTopSongWithContinuation={playTopSongWithContinuation}
@@ -333,6 +369,7 @@ export default function ArtistDetail() {
               serverSimilarArtists={serverSimilarArtists}
               similarCollapsed={similarCollapsed}
               setSimilarCollapsed={setSimilarCollapsed}
+              serverId={activeServerId}
             />
           );
 

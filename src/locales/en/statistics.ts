@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: 'Total Playtime',
   genreInsights: 'Genre Insights',
   formatDistribution: 'Format Distribution',
-  formatSample: 'Sample of {{n}} tracks',
+  formatSample: 'Across {{n}} tracks',
   computing: 'Computing…',
   genreSongs: '{{count}} Songs',
   genreAlbums: '{{count}} Albums',

@@ -46,3 +46,7 @@ export function filterQueueRefsForActiveServer(refs: QueueItemRef[]): QueueItemR
 export function activeServerQueueTrackIds(refs: QueueItemRef[]): string[] {
   return filterQueueRefsForActiveServer(refs).map(r => r.trackId);
 }
+
+export function queueTrackIdsForServerProfile(refs: QueueItemRef[], profileId: string): string[] {
+  return filterQueueRefsForServerProfile(refs, profileId).map(ref => ref.trackId);
+}

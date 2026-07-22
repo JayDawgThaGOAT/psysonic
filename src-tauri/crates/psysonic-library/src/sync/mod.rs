@@ -41,7 +41,9 @@ pub use progress::{ChannelProgress, NoopProgress, Progress, ProgressEvent};
 pub use scheduler::{BackgroundScheduler, SchedulerTickReport, DEFAULT_TOMBSTONE_THRESHOLD_PCT};
 pub use strategy::IngestStrategy;
 pub use supervisor::SyncSupervisor;
-pub use tombstone::{should_auto_reconcile, TombstoneReconciler, TombstoneReport};
+pub use tombstone::{
+    should_auto_reconcile, should_auto_reconcile_scope, TombstoneReconciler, TombstoneReport,
+};
 
 /// Wall-clock milliseconds since the Unix epoch, saturating to `i64::MAX`.
 pub(crate) fn now_unix_ms() -> i64 {

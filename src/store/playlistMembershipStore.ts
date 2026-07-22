@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { useAuthStore } from '@/store/authStore';
 
 /**
  * In-memory playlist song-id membership cache, keyed by `serverId:playlistId`.
@@ -15,55 +14,74 @@ import { useAuthStore } from '@/store/authStore';
 interface PlaylistMembershipStore {
   /** Song-id lists keyed by `serverId:playlistId`. */
   songIdsByCacheKey: Record<string, readonly string[]>;
-  getPlaylistSongIds: (playlistId: string) => readonly string[] | undefined;
-  setPlaylistSongIds: (playlistId: string, songIds: readonly string[]) => void;
-  appendPlaylistSongIds: (playlistId: string, songIds: readonly string[]) => void;
-  replacePlaylistSongIds: (playlistId: string, songIds: readonly string[]) => void;
-  removePlaylistSongIdsAtIndices: (playlistId: string, indices: readonly number[]) => void;
-  invalidatePlaylistSongIds: (playlistId: string) => void;
+  revision: number;
+  getPlaylistSongIds: (playlistId: string, serverId?: string) => readonly string[] | undefined;
+  setPlaylistSongIds: (playlistId: string, songIds: readonly string[], serverId?: string) => void;
+  appendPlaylistSongIds: (playlistId: string, songIds: readonly string[], serverId?: string) => void;
+  replacePlaylistSongIds: (playlistId: string, songIds: readonly string[], serverId?: string) => void;
+  removePlaylistSongIdsAtIndices: (playlistId: string, indices: readonly number[], serverId?: string) => void;
+  invalidatePlaylistSongIds: (playlistId: string, serverId?: string) => void;
   clearAllPlaylistSongIds: () => void;
 }
 
-/** Scope membership to the active server — playlist ids are not globally unique. */
-function cacheKey(playlistId: string): string {
-  const serverId = useAuthStore.getState().activeServerId ?? '';
-  return `${serverId}:${playlistId}`;
+function cacheKey(playlistId: string, serverId?: string): string | undefined {
+  return serverId ? `${serverId}:${playlistId}` : undefined;
 }
 
 export const usePlaylistMembershipStore = create<PlaylistMembershipStore>()((set, get) => ({
   songIdsByCacheKey: {},
-  getPlaylistSongIds: (playlistId) => get().songIdsByCacheKey[cacheKey(playlistId)],
-  setPlaylistSongIds: (playlistId, songIds) =>
+  revision: 0,
+  getPlaylistSongIds: (playlistId, serverId) => {
+    const key = cacheKey(playlistId, serverId);
+    return key ? get().songIdsByCacheKey[key] : undefined;
+  },
+  setPlaylistSongIds: (playlistId, songIds, serverId) => {
+    const key = cacheKey(playlistId, serverId);
+    if (!key) return;
     set((s) => ({
-      songIdsByCacheKey: { ...s.songIdsByCacheKey, [cacheKey(playlistId)]: [...songIds] },
-    })),
-  appendPlaylistSongIds: (playlistId, songIds) => {
+      songIdsByCacheKey: { ...s.songIdsByCacheKey, [key]: [...songIds] },
+      revision: (s.revision ?? 0) + 1,
+    }));
+  },
+  appendPlaylistSongIds: (playlistId, songIds, serverId) => {
     if (songIds.length === 0) return;
     set((s) => {
-      const key = cacheKey(playlistId);
+      const key = cacheKey(playlistId, serverId);
+      if (!key) return s;
       const prev = s.songIdsByCacheKey[key] ?? [];
-      return { songIdsByCacheKey: { ...s.songIdsByCacheKey, [key]: [...prev, ...songIds] } };
+      return {
+        songIdsByCacheKey: { ...s.songIdsByCacheKey, [key]: [...prev, ...songIds] },
+        revision: (s.revision ?? 0) + 1,
+      };
     });
   },
-  replacePlaylistSongIds: (playlistId, songIds) => get().setPlaylistSongIds(playlistId, songIds),
-  removePlaylistSongIdsAtIndices: (playlistId, indices) => {
+  replacePlaylistSongIds: (playlistId, songIds, serverId) => get().setPlaylistSongIds(playlistId, songIds, serverId),
+  removePlaylistSongIdsAtIndices: (playlistId, indices, serverId) => {
     if (indices.length === 0) return;
     set((s) => {
-      const key = cacheKey(playlistId);
+      const key = cacheKey(playlistId, serverId);
+      if (!key) return s;
       const prev = s.songIdsByCacheKey[key];
       if (!prev) return s;
       const remove = new Set(indices);
       return {
         songIdsByCacheKey: { ...s.songIdsByCacheKey, [key]: prev.filter((_, i) => !remove.has(i)) },
+        revision: (s.revision ?? 0) + 1,
       };
     });
   },
-  invalidatePlaylistSongIds: (playlistId) =>
+  invalidatePlaylistSongIds: (playlistId, serverId) =>
     set((s) => {
-      const key = cacheKey(playlistId);
-      if (!(key in s.songIdsByCacheKey)) return s;
+      const key = cacheKey(playlistId, serverId);
+      if (!key) return s;
+      if (!(key in s.songIdsByCacheKey)) {
+        return { revision: (s.revision ?? 0) + 1 };
+      }
       const { [key]: _removed, ...rest } = s.songIdsByCacheKey;
-      return { songIdsByCacheKey: rest };
+      return { songIdsByCacheKey: rest, revision: (s.revision ?? 0) + 1 };
     }),
-  clearAllPlaylistSongIds: () => set({ songIdsByCacheKey: {} }),
+  clearAllPlaylistSongIds: () => set(s => ({
+    songIdsByCacheKey: {},
+    revision: (s.revision ?? 0) + 1,
+  })),
 }));

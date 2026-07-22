@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Check, ChevronDown, RefreshCw } from 'lucide-react';
 import type { ConnectionStatus } from '@/lib/hooks/useConnectionStatus';
@@ -11,6 +11,12 @@ import { useAuthStore } from '@/store/authStore';
 import { switchActiveServer } from '@/utils/server/switchActiveServer';
 import { showToast } from '@/lib/dom/toast';
 import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
+import { ReorderGripHandle } from '@/features/settings/components/ReorderGripHandle';
+import { useListReorderDnd } from '@/lib/hooks/useListReorderDnd';
+import { applyListReorderById } from '@/lib/util/listReorder';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
+import { ServerChoiceWarning } from '@/ui/ServerChoiceList';
 
 interface Props {
   status: ConnectionStatus;
@@ -23,6 +29,11 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
   const navigate = useNavigate();
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
+  const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const setLibraryBrowseServerExclusive = useAuthStore(s => s.setLibraryBrowseServerExclusive);
+  const setLibraryBrowseServerSelected = useAuthStore(s => s.setLibraryBrowseServerSelected);
+  const setServers = useAuthStore(s => s.setServers);
+  const unavailableServerIds = useUnavailableServerIds();
   const {
     ledVariant,
     localQueueSyncPaused,
@@ -36,8 +47,28 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
   const [menuFixed, setMenuFixed] = useState({ top: 0, right: 0 });
   const hostRef = useRef<HTMLDivElement>(null);
   const menuPanelRef = useRef<HTMLDivElement>(null);
+  const serversRef = useRef(servers);
+  // React Compiler refs rule: event handlers need the latest persisted order.
+  // eslint-disable-next-line react-hooks/refs
+  serversRef.current = servers;
 
   const multi = servers.length > 1;
+  const multiLibraryScope = libraryBrowseServerIds.length > 1;
+  const effectiveLibraryServerIds = deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId,
+    libraryBrowseServerIds,
+  }, unavailableServerIds);
+  const unavailableSelection = multiLibraryScope
+    && effectiveLibraryServerIds.length < libraryBrowseServerIds.length;
+  const applyServerReorder = useCallback((draggedId: string, target: { id: string; before: boolean }) => {
+    const next = applyListReorderById(serversRef.current, draggedId, target);
+    if (next) setServers(next);
+  }, [setServers]);
+  const { isDragging, setContainer, onMouseMove, dropEdge } = useListReorderDnd({
+    type: 'server_reorder',
+    apply: applyServerReorder,
+  });
 
   const updateMenuPosition = useCallback(() => {
     const el = hostRef.current;
@@ -98,6 +129,7 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
 
   const onPickServer = async (srv: ServerProfile) => {
     if (srv.id === activeServerId) {
+      setLibraryBrowseServerExclusive(srv.id);
       setMenuOpen(false);
       return;
     }
@@ -109,10 +141,25 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
       showToast(t('connection.switchFailed'), 5000, 'error');
       return;
     }
+    setLibraryBrowseServerExclusive(srv.id);
     navigate('/');
   };
 
-  const label = isLan ? 'LAN' : t('connection.extern');
+  const label = multiLibraryScope ? t('connection.multiServer') : (isLan ? 'LAN' : t('connection.extern'));
+  const displayedServerName = multiLibraryScope ? (
+    unavailableSelection ? (
+      <Trans
+        i18nKey="sidebar.serverAvailabilityCount"
+        values={{
+          total: libraryBrowseServerIds.length,
+          available: effectiveLibraryServerIds.length,
+        }}
+        components={{
+          unavailable: <del className="connection-server-count--unavailable" />,
+        }}
+      />
+    ) : t('sidebar.serverSelectionCount', { count: libraryBrowseServerIds.length })
+  ) : serverName;
   const tooltip = pullInFlight
     ? t('connection.queuePulling')
     : ledVariant === 'queue-handoff'
@@ -155,7 +202,7 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
         >
           <span className="connection-type">{label}</span>
           <span className="connection-server" style={{ display: 'flex', alignItems: 'center', gap: 4, maxWidth: 120 }}>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serverName}</span>
+            <span className="connection-server-count">{displayedServerName}</span>
             {multi && (
               <ChevronDown size={12} className={menuOpen ? 'connection-indicator-chevron--open' : undefined} style={{ flexShrink: 0, opacity: 0.85 }} aria-hidden />
             )}
@@ -167,9 +214,13 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            ref={menuPanelRef}
+            ref={element => {
+              menuPanelRef.current = element;
+              setContainer(element);
+            }}
             className="nav-library-dropdown-panel connection-indicator-dropdown-panel"
             role="menu"
+            onMouseMove={onMouseMove}
             aria-label={t('connection.switchServerTitle')}
             style={{
               position: 'fixed',
@@ -193,27 +244,53 @@ export default function ConnectionIndicator({ status, isLan, serverName }: Props
               {t('connection.switchServerTitle')}
             </div>
             {servers.map(srv => {
-              const active = srv.id === activeServerId;
+              const included = libraryBrowseServerIds.includes(srv.id);
+              const finalIncluded = included && libraryBrowseServerIds.length === 1;
               const busy = switchingId === srv.id;
               const labelText = serverListDisplayLabel(srv, servers);
+              const warning = unavailableServerIds.has(srv.id)
+                ? t('connection.offlineSubtitle', { server: labelText })
+                : undefined;
+              const edge = isDragging ? dropEdge(srv.id) : null;
               return (
-                <button
+                <div
                   key={srv.id}
-                  type="button"
-                  role="menuitem"
-                  className={`nav-library-dropdown-item${active ? ' nav-library-dropdown-item--selected' : ''}`}
-                  disabled={busy}
-                  onClick={() => onPickServer(srv)}
+                  data-reorder-id={srv.id}
+                  className={`nav-library-dropdown-item connection-indicator-server-row${included ? ' nav-library-dropdown-item--selected' : ''}${edge ? ` connection-indicator-server-row--drop-${edge}` : ''}`}
                 >
-                  <span className="nav-library-dropdown-item-label">{labelText}</span>
-                  {switchingId === srv.id ? (
-                    <div className="spinner" style={{ width: 14, height: 14, flexShrink: 0 }} aria-hidden />
-                  ) : active ? (
-                    <Check size={16} className="nav-library-dropdown-check" aria-hidden />
-                  ) : (
-                    <span className="nav-library-dropdown-check-spacer" aria-hidden />
-                  )}
-                </button>
+                  <ReorderGripHandle id={srv.id} type="server_reorder" label={labelText} />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="connection-indicator-server-main"
+                    aria-label={warning ? `${labelText}. ${warning}` : undefined}
+                    disabled={busy}
+                    onClick={() => onPickServer(srv)}
+                  >
+                    <span className="connection-indicator-server-label">
+                      <span className="nav-library-dropdown-item-label">{labelText}</span>
+                      <ServerChoiceWarning warning={warning} />
+                    </span>
+                    {switchingId === srv.id ? (
+                      <div className="spinner" style={{ width: 14, height: 14, flexShrink: 0 }} aria-hidden />
+                    ) : (
+                      <span className="nav-library-dropdown-check-spacer" aria-hidden />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={`nav-library-dropdown-item-toggle ${included ? 'nav-library-dropdown-item-toggle--on' : ''}`}
+                    aria-label={`${included ? t('sidebar.libraryDeselect', { name: labelText }) : t('sidebar.librarySelect', { name: labelText })} · ${t('sidebar.libraryScope')}`}
+                    aria-pressed={included}
+                    disabled={finalIncluded}
+                    onClick={event => {
+                      event.stopPropagation();
+                      setLibraryBrowseServerSelected(srv.id, !included);
+                    }}
+                  >
+                    {included ? <Check size={16} strokeWidth={2.5} /> : <span className="nav-library-dropdown-item-toggle-box" aria-hidden />}
+                  </button>
+                </div>
               );
             })}
             <div

@@ -2,6 +2,7 @@ import {
   persistQueueVisibility,
 } from '@/features/playback/store/queueVisibilityStorage';
 import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 import {
   ensurePlaybackServerActive,
   playbackServerDiffersFromActive,
@@ -39,14 +40,16 @@ export function createUiStateActions(set: SetState): Pick<
         else nextOverrides[id] = rating;
         // Thin-state: the queue's copy lives in the resolver cache; the override
         // map (merged on read via applyQueueOverrides) drives the queue-row UI.
-        return {
-          userRatingOverrides: nextOverrides,
-          currentTrack:
-            s.currentTrack?.id === id ? { ...s.currentTrack, userRating: rating } : s.currentTrack,
-        };
+          return {
+            userRatingOverrides: nextOverrides,
+            currentTrack:
+              s.currentTrack && (s.currentTrack.id === id || ownedEntityKey(s.currentTrack) === id)
+                ? { ...s.currentTrack, userRating: rating }
+                : s.currentTrack,
+          };
       }),
 
-    openContextMenu: (x, y, item, type, queueIndex, playlistId, playlistSongIndex, shareKindOverride, pinToPlaybackServer) => {
+    openContextMenu: (x, y, item, type, queueIndex, playlistId, playlistSongIndex, shareKindOverride, pinToPlaybackServer, playlistSongRemove) => {
       const pin = pinToPlaybackServer ?? type === 'queue-item';
       const open = () =>
         set({
@@ -59,6 +62,7 @@ export function createUiStateActions(set: SetState): Pick<
             queueIndex,
             playlistId,
             playlistSongIndex,
+            playlistSongRemove,
             shareKindOverride,
             pinToPlaybackServer: pin,
           },
@@ -77,7 +81,7 @@ export function createUiStateActions(set: SetState): Pick<
         contextMenu: { ...state.contextMenu, isOpen: false },
       })),
 
-    openSongInfo: (songId) => set({ songInfoModal: { isOpen: true, songId } }),
+    openSongInfo: (songId, serverId) => set({ songInfoModal: { isOpen: true, songId, serverId } }),
     closeSongInfo: () => set({ songInfoModal: { isOpen: false, songId: null } }),
 
     toggleQueue: () =>

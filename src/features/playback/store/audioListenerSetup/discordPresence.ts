@@ -6,6 +6,7 @@ import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackP
 import { resolveServerCoverForDiscord } from '@/cover/integrations/discord';
 import { serverShareBaseUrl } from '@/lib/server/serverEndpoint';
 import { playbackServerDiffersFromActive } from '@/features/playback/utils/playback/playbackServer';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 /**
  * Discord Rich Presence sync. Updates on track change or play/pause toggle —
@@ -13,7 +14,7 @@ import { playbackServerDiffersFromActive } from '@/features/playback/utils/playb
  * start_timestamp we set. Returns a cleanup function.
  */
 export function setupDiscordPresence(): () => void {
-  let discordPrevTrackId: string | null = null;
+  let discordPrevTrackKey: string | null = null;
   let discordPrevIsPlaying: boolean | null = null;
   let discordPrevTemplateDetails: string | null = null;
   let discordPrevTemplateState: string | null = null;
@@ -37,8 +38,8 @@ export function setupDiscordPresence(): () => void {
     } = useAuthStore.getState();
 
     if (!discordRichPresence || !currentTrack) {
-      if (discordPrevTrackId !== null) {
-        discordPrevTrackId = null;
+      if (discordPrevTrackKey !== null) {
+        discordPrevTrackKey = null;
         discordPrevIsPlaying = null;
         discordPrevCoverSource = null;
         discordPrevShareBase = null;
@@ -59,7 +60,8 @@ export function setupDiscordPresence(): () => void {
     const profile = servers.find(s => s.id === activeServerId);
     const shareBase = profile ? serverShareBaseUrl(profile) : null;
 
-    const trackChanged = currentTrack.id !== discordPrevTrackId;
+    const currentTrackKey = ownedEntityKey(currentTrack);
+    const trackChanged = currentTrackKey !== discordPrevTrackKey;
     const playingChanged = isPlaying !== discordPrevIsPlaying;
     const coverSourceChanged = discordCoverSource !== discordPrevCoverSource;
     const shareBaseChanged = discordCoverSource === 'server' && shareBase !== discordPrevShareBase;
@@ -69,7 +71,7 @@ export function setupDiscordPresence(): () => void {
     const nameTemplateChanged = discordTemplateName !== discordPrevTemplateName;
     if (!trackChanged && !playingChanged && !coverSourceChanged && !shareBaseChanged && !detailsTemplateChanged && !stateTemplateChanged && !largeTextTemplateChanged && !nameTemplateChanged) return;
 
-    discordPrevTrackId = currentTrack.id;
+    discordPrevTrackKey = currentTrackKey;
     discordPrevIsPlaying = isPlaying;
     discordPrevCoverSource = discordCoverSource;
     discordPrevShareBase = shareBase;
@@ -108,13 +110,14 @@ export function setupDiscordPresence(): () => void {
     // for that album id. Skip the server lookup — and fall back to the app
     // icon — for that case rather than risk a wrong or 404ing cover.
     if (discordCoverSource === 'server' && currentTrack.albumId && !playbackServerDiffersFromActive()) {
-      const trackId = currentTrack.id;
+      const trackKey = currentTrackKey;
       void resolveServerCoverForDiscord(currentTrack.albumId, shareBase).then(url => {
         // Staleness guard: the resolve is async — drop it if playback moved on,
         // Rich Presence got disabled, or the cover source changed away from
         // 'server' while the request was in flight.
         const latest = useAuthStore.getState();
-        if (usePlayerStore.getState().currentTrack?.id !== trackId) return;
+        const liveTrack = usePlayerStore.getState().currentTrack;
+        if (!liveTrack || ownedEntityKey(liveTrack) !== trackKey) return;
         if (!latest.discordRichPresence || latest.discordCoverSource !== 'server') return;
         sendPresence(url);
       });

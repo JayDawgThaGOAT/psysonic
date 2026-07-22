@@ -11,6 +11,7 @@ import {
   _resetGaplessChainPrepareInflightForTest,
   requestGaplessChainPreload,
 } from '@/features/playback/store/gaplessChainPreload';
+import { queueItemIdentityKey } from '@/features/playback/utils/playback/queueIdentity';
 
 const prepareMock = vi.hoisted(() =>
   vi.fn(async (track: Track) => ({
@@ -83,7 +84,7 @@ describe('requestGaplessChainPreload', () => {
     });
 
     await vi.waitFor(() => {
-      expect(getGaplessPreloadingId()).toBe('t2');
+      expect(getGaplessPreloadingId()).toBe(queueItemIdentityKey(ref('t2')));
     });
 
     expect(prepareMock).toHaveBeenCalledWith(

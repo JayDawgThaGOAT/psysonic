@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
-import { getRandomSongs } from '@/lib/api/subsonicLibrary';
+import { getRandomSongs, getRandomSongsForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 
 export interface PlaylistSuggestionsResult {
@@ -10,12 +10,18 @@ export interface PlaylistSuggestionsResult {
   loadSuggestions: (currentSongs: SubsonicSong[]) => Promise<void>;
 }
 
-export function usePlaylistSuggestions(songs: SubsonicSong[], playlistId: string | undefined): PlaylistSuggestionsResult {
+export function usePlaylistSuggestions(
+  songs: SubsonicSong[],
+  playlistId: string | undefined,
+  serverId?: string,
+): PlaylistSuggestionsResult {
   const [suggestions, setSuggestions] = useState<SubsonicSong[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const requestGeneration = useRef(0);
 
   const loadSuggestions = useCallback(async (currentSongs: SubsonicSong[]) => {
     if (!currentSongs.length) return;
+    const generation = ++requestGeneration.current;
     // Count genres across playlist songs, pick the most common one
     const genreCounts: Record<string, number> = {};
     for (const s of currentSongs) {
@@ -28,18 +34,34 @@ export function usePlaylistSuggestions(songs: SubsonicSong[], playlistId: string
     setLoadingSuggestions(true);
     setSuggestions([]);
     try {
-      const random = await getRandomSongs(25, genre);
-      setSuggestions(random.filter(s => !existingIds.has(s.id)).slice(0, 10));
+      const random = serverId
+        ? await getRandomSongsForServer(serverId, 25, genre)
+        : await getRandomSongs(25, genre);
+      if (requestGeneration.current === generation) {
+        setSuggestions(random
+          .filter(s => !existingIds.has(s.id))
+          .slice(0, 10)
+          .map(song => serverId ? { ...song, serverId } : song));
+      }
     } catch { /* ignore: best-effort */ }
-    setLoadingSuggestions(false);
-  }, []);
+    if (requestGeneration.current === generation) setLoadingSuggestions(false);
+  }, [serverId]);
 
   useEffect(() => {
-    // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (songs.length > 0) loadSuggestions(songs);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playlistId]);
+    const timer = window.setTimeout(() => {
+      if (songs.length > 0) {
+        void loadSuggestions(songs);
+      } else {
+        requestGeneration.current += 1;
+        setSuggestions([]);
+        setLoadingSuggestions(false);
+      }
+    }, 0);
+    return () => {
+      requestGeneration.current += 1;
+      window.clearTimeout(timer);
+    };
+  }, [playlistId, serverId, songs, loadSuggestions]);
 
   return { suggestions, setSuggestions, loadingSuggestions, loadSuggestions };
 }

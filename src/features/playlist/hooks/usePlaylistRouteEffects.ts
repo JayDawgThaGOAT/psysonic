@@ -21,7 +21,7 @@ export function usePlaylistRouteEffects(deps: PlaylistRouteEffectsDeps): void {
     const state = (location.state as { openEditMeta?: boolean } | null) ?? null;
     if (state?.openEditMeta) {
       setEditingMeta(true);
-      navigate(location.pathname, { replace: true, state: null });
+      navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
     }
-  }, [location.state, location.pathname, navigate, setEditingMeta]);
+  }, [location.state, location.pathname, location.search, navigate, setEditingMeta]);
 }

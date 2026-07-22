@@ -7,7 +7,7 @@ import {
 import type {
   SubsonicAlbum, SubsonicArtist, SubsonicPlaylist,
 } from '@/lib/api/subsonicTypes';
-import type { DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
+import { deviceSyncSourceKey, type DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
 import type { SourceTab } from '@/features/deviceSync/utils/deviceSyncHelpers';
 import BrowserRow from '@/features/deviceSync/components/BrowserRow';
 
@@ -26,6 +26,7 @@ interface Props {
   artistAlbumsMap: Map<string, SubsonicAlbum[]>;
   loadingArtistIds: Set<string>;
   toggleArtistExpand: (artistId: string) => Promise<void>;
+  serverIndexKey: string | null;
   sources: DeviceSyncSource[];
   pendingDeletion: string[];
   handleToggleSource: (source: DeviceSyncSource) => void;
@@ -36,6 +37,7 @@ export default function DeviceSyncBrowserPanel({
   playlists, randomAlbums, albumSearchResults, albumSearchLoading,
   artists, loadingBrowser,
   expandedArtistIds, artistAlbumsMap, loadingArtistIds, toggleArtistExpand,
+  serverIndexKey,
   sources, pendingDeletion, handleToggleSource,
 }: Props) {
   const { t } = useTranslation();
@@ -87,13 +89,21 @@ export default function DeviceSyncBrowserPanel({
         )}
         {activeTab === 'playlists' && filteredPlaylists.map(pl => (
           <BrowserRow key={pl.id} name={pl.name} meta={`${pl.songCount} tracks`}
-            selected={sources.some(s => s.id === pl.id) && !pendingDeletion.includes(pl.id)}
-            onToggle={() => handleToggleSource({ type: 'playlist', id: pl.id, name: pl.name })} />
+            selected={serverIndexKey != null && sources.some(s =>
+              deviceSyncSourceKey(s) === deviceSyncSourceKey({ serverIndexKey, type: 'playlist', id: pl.id }) &&
+              !pendingDeletion.includes(deviceSyncSourceKey(s)))}
+            onToggle={() => serverIndexKey && handleToggleSource({
+              type: 'playlist', id: pl.id, name: pl.name, serverIndexKey,
+            })} />
         ))}
         {activeTab === 'albums' && (search.trim() ? albumSearchResults : randomAlbums).map(al => (
           <BrowserRow key={al.id} name={al.name} meta={al.artist}
-            selected={sources.some(s => s.id === al.id) && !pendingDeletion.includes(al.id)}
-            onToggle={() => handleToggleSource({ type: 'album', id: al.id, name: al.name, artist: al.artist })} />
+            selected={serverIndexKey != null && sources.some(s =>
+              deviceSyncSourceKey(s) === deviceSyncSourceKey({ serverIndexKey, type: 'album', id: al.id }) &&
+              !pendingDeletion.includes(deviceSyncSourceKey(s)))}
+            onToggle={() => serverIndexKey && handleToggleSource({
+              type: 'album', id: al.id, name: al.name, artist: al.artist, serverIndexKey,
+            })} />
         ))}
         {activeTab === 'artists' && filteredArtists.map(ar => (
           <React.Fragment key={ar.id}>
@@ -115,9 +125,13 @@ export default function DeviceSyncBrowserPanel({
             {expandedArtistIds.has(ar.id) && artistAlbumsMap.has(ar.id) &&
               artistAlbumsMap.get(ar.id)!.map(al => (
                 <BrowserRow key={al.id} name={al.name} meta={al.year?.toString()}
-                  selected={sources.some(s => s.id === al.id) && !pendingDeletion.includes(al.id)}
+                  selected={serverIndexKey != null && sources.some(s =>
+                    deviceSyncSourceKey(s) === deviceSyncSourceKey({ serverIndexKey, type: 'album', id: al.id }) &&
+                    !pendingDeletion.includes(deviceSyncSourceKey(s)))}
                   indent
-                  onToggle={() => handleToggleSource({ type: 'album', id: al.id, name: al.name, artist: al.artist || ar.name })} />
+                  onToggle={() => serverIndexKey && handleToggleSource({
+                    type: 'album', id: al.id, name: al.name, artist: al.artist || ar.name, serverIndexKey,
+                  })} />
               ))
             }
           </React.Fragment>

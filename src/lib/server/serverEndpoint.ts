@@ -1,6 +1,7 @@
 import { pingWithCredentialsForProfile } from '@/lib/api/subsonic';
 import type { PingWithCredentialsResult } from '@/lib/api/subsonicTypes';
 import type { ServerProfile } from '@/store/authStoreTypes';
+import { setServerReachability } from '@/lib/network/serverReachability';
 import { serverProfileBaseUrl } from '@/lib/server/serverBaseUrl';
 
 export type ServerEndpointKind = 'local' | 'public';
@@ -163,7 +164,41 @@ export function serverShareBaseUrl(
 // event / manual retry via `invalidateReachableEndpointCache`.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const connectCache = new Map<string, string>();
+interface ProbeToken {
+  fingerprint: string;
+}
+
+interface ConnectCacheEntry {
+  url: string;
+  token: ProbeToken;
+}
+
+const connectCache = new Map<string, ConnectCacheEntry>();
+const currentProbeTokenByProfile = new Map<string, ProbeToken>();
+
+export function profileProbeFingerprint(profile: ServerProfile): string {
+  return JSON.stringify([
+    ...allNormalizedAddresses(profile),
+    profile.username,
+    profile.password,
+    profile.customHeaders ?? [],
+    profile.customHeadersApplyTo ?? '',
+  ]);
+}
+
+function currentProbeToken(profile: ServerProfile): ProbeToken {
+  const fingerprint = profileProbeFingerprint(profile);
+  const current = currentProbeTokenByProfile.get(profile.id);
+  if (current?.fingerprint === fingerprint) return current;
+  const token = { fingerprint };
+  currentProbeTokenByProfile.set(profile.id, token);
+  if (connectCache.delete(profile.id)) notifyConnectCacheChanged();
+  return token;
+}
+
+function probeIsCurrent(profileId: string, token: ProbeToken): boolean {
+  return currentProbeTokenByProfile.get(profileId) === token;
+}
 
 // ── Connect-cache change notifications ───────────────────────────────────────
 // The sticky connect URL flips silently (120-s probe tick / online event /
@@ -201,7 +236,10 @@ export function getConnectCacheVersion(): number {
  * Returning the existing promise dedupes them so every caller gets the
  * same result.
  */
-const inFlightProbes = new Map<string, Promise<PickReachableResult>>();
+const inFlightProbes = new Map<string, {
+  token: ProbeToken;
+  promise: Promise<PickReachableResult>;
+}>();
 
 /**
  * Last resolved connect URL for the profile, if a probe has succeeded in this
@@ -209,7 +247,7 @@ const inFlightProbes = new Map<string, Promise<PickReachableResult>>();
  * fall back to the normalized primary `url`.
  */
 export function getCachedConnectBaseUrl(profileId: string): string | null {
-  return connectCache.get(profileId) ?? null;
+  return connectCache.get(profileId)?.url ?? null;
 }
 
 /**
@@ -223,7 +261,7 @@ export function connectBaseUrlForServer(
   server: Pick<ServerProfile, 'id' | 'url'>,
 ): string {
   const cached = connectCache.get(server.id);
-  if (cached) return cached;
+  if (cached) return cached.url;
   return serverProfileBaseUrl({ url: server.url });
 }
 
@@ -235,16 +273,17 @@ export function connectBaseUrlForServer(
  */
 export function invalidateReachableEndpointCache(profileId?: string): void {
   if (profileId === undefined) {
-    // Don't clear in-flight slots — they're already racing against the
-    // network, letting their own `finally` clean up keeps the dedup
-    // invariant. Their results will still write to the (now empty) cache,
-    // which is the right behaviour: the freshest probe wins.
+    // Dropping the current tokens makes every existing probe stale. They may
+    // still settle for their original callers, but cannot write cache or
+    // reachability state and cannot be joined by a later profile generation.
+    currentProbeTokenByProfile.clear();
     if (connectCache.size > 0) {
       connectCache.clear();
       notifyConnectCacheChanged();
     }
     return;
   }
+  currentProbeTokenByProfile.delete(profileId);
   if (connectCache.delete(profileId)) notifyConnectCacheChanged();
 }
 
@@ -297,15 +336,22 @@ async function pingWithConnectRetries(
 export async function pickReachableBaseUrl(
   profile: ServerProfile,
 ): Promise<PickReachableResult> {
+  const token = currentProbeToken(profile);
   // Dedupe concurrent calls for the same profile — see `inFlightProbes`.
   const existing = inFlightProbes.get(profile.id);
-  if (existing) return existing;
+  if (existing?.token === token) return existing.promise;
 
   const promise = (async (): Promise<PickReachableResult> => {
     const ordered = serverAddressEndpoints(profile);
-    if (ordered.length === 0) return { ok: false, reason: 'unreachable' };
+    if (ordered.length === 0) {
+      if (probeIsCurrent(profile.id, token)) {
+        setServerReachability(profile.id, 'unavailable');
+      }
+      return { ok: false, reason: 'unreachable' };
+    }
 
-    const cached = connectCache.get(profile.id);
+    const cachedEntry = connectCache.get(profile.id);
+    const cached = cachedEntry?.token === token ? cachedEntry.url : undefined;
 
     // LAN reclaim (see doc): when stuck on a *public* sticky endpoint but a
     // higher-priority LAN endpoint is configured, try to reclaim LAN first with
@@ -320,8 +366,11 @@ export async function pickReachableBaseUrl(
     ) {
       const ping = await pingWithCredentialsForProfile(profile, preferred.url);
       if (ping.ok) {
-        connectCache.set(profile.id, preferred.url);
-        notifyConnectCacheChanged();
+        if (probeIsCurrent(profile.id, token)) {
+          connectCache.set(profile.id, { url: preferred.url, token });
+          notifyConnectCacheChanged();
+          setServerReachability(profile.id, 'available');
+        }
         return { ok: true, baseUrl: preferred.url, endpoint: preferred, ping };
       }
     }
@@ -338,26 +387,33 @@ export async function pickReachableBaseUrl(
     for (const endpoint of endpoints) {
       const ping = await pingWithConnectRetries(profile, endpoint.url);
       if (ping.ok) {
-        const prev = connectCache.get(profile.id);
-        connectCache.set(profile.id, endpoint.url);
-        if (prev !== endpoint.url) notifyConnectCacheChanged();
+        if (probeIsCurrent(profile.id, token)) {
+          const prev = connectCache.get(profile.id)?.url;
+          connectCache.set(profile.id, { url: endpoint.url, token });
+          if (prev !== endpoint.url) notifyConnectCacheChanged();
+          setServerReachability(profile.id, 'available');
+        }
         return { ok: true, baseUrl: endpoint.url, endpoint, ping };
       }
     }
 
     // Every endpoint failed — drop any stale cache entry so the next probe
     // starts from the natural LAN-first order.
-    if (connectCache.delete(profile.id)) notifyConnectCacheChanged();
+    if (probeIsCurrent(profile.id, token)) {
+      if (connectCache.delete(profile.id)) notifyConnectCacheChanged();
+      setServerReachability(profile.id, 'unavailable');
+    }
     return { ok: false, reason: 'unreachable' };
   })();
 
-  inFlightProbes.set(profile.id, promise);
+  const flight = { token, promise };
+  inFlightProbes.set(profile.id, flight);
   try {
     return await promise;
   } finally {
     // Always clear the in-flight slot when this promise settles — the next
     // call (after a real boundary in time) starts a fresh probe.
-    inFlightProbes.delete(profile.id);
+    if (inFlightProbes.get(profile.id) === flight) inFlightProbes.delete(profile.id);
   }
 }
 

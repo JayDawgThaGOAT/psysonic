@@ -11,6 +11,7 @@ import { showToast } from '@/lib/dom/toast';
 
 export interface RunPlaylistsSaveSmartDeps {
   isNavidromeServer: boolean;
+  serverId: string;
   smartFilters: SmartFilters;
   allGenres: string[];
   editingSmartId: string | null;
@@ -23,13 +24,15 @@ export interface RunPlaylistsSaveSmartDeps {
   setSmartFilters: React.Dispatch<React.SetStateAction<SmartFilters>>;
   setGenreQuery: React.Dispatch<React.SetStateAction<string>>;
   setCreatingSmartBusy: React.Dispatch<React.SetStateAction<boolean>>;
+  setEditingSmartServerId: React.Dispatch<React.SetStateAction<string | null>>;
+  isCurrent?: () => boolean;
 }
 
 export async function runPlaylistsSaveSmart(deps: RunPlaylistsSaveSmartDeps): Promise<void> {
   const {
-    isNavidromeServer, smartFilters, allGenres, editingSmartId, playlists, fetchPlaylists, t,
+    isNavidromeServer, serverId, smartFilters, allGenres, editingSmartId, playlists, fetchPlaylists, t,
     setPendingSmart, setCreatingSmart, setEditingSmartId, setSmartFilters,
-    setGenreQuery, setCreatingSmartBusy,
+    setGenreQuery, setCreatingSmartBusy, setEditingSmartServerId,
   } = deps;
 
   if (!isNavidromeServer) {
@@ -40,7 +43,11 @@ export async function runPlaylistsSaveSmart(deps: RunPlaylistsSaveSmartDeps): Pr
   try {
     let baseName = smartFilters.name.trim() || `mix-${new Date().toISOString().slice(0, 10)}`;
     if (!editingSmartId) {
-      const existingNames = new Set(playlists.map((p) => (p.name ?? '').toLowerCase()));
+      const existingNames = new Set(
+        playlists
+          .filter(p => p.serverId === serverId)
+          .map((p) => (p.name ?? '').toLowerCase()),
+      );
       const requestedBaseName = baseName;
       let ordinal = 2;
       while (existingNames.has(`${SMART_PREFIX}${baseName}`.toLowerCase())) {
@@ -51,21 +58,26 @@ export async function runPlaylistsSaveSmart(deps: RunPlaylistsSaveSmartDeps): Pr
     const rules = buildSmartRulesPayload(smartFilters, { allGenres });
     const fullName = `${SMART_PREFIX}${baseName}`;
     if (editingSmartId) {
-      await ndUpdateSmartPlaylist(editingSmartId, fullName, rules, true);
+      await ndUpdateSmartPlaylist(editingSmartId, fullName, rules, true, serverId);
     } else {
-      await ndCreateSmartPlaylist(fullName, rules, true);
+      await ndCreateSmartPlaylist(fullName, rules, true, serverId);
     }
+    if (deps.isCurrent && !deps.isCurrent()) return;
     await fetchPlaylists();
+    if (deps.isCurrent && !deps.isCurrent()) return;
     const createdName = fullName;
     const updatedId = editingSmartId;
     setPendingSmart(prev => {
-      const existing = prev.find(p => p.id === updatedId || p.name === createdName);
+      const existing = prev.find(p => p.serverId === serverId && (p.id === updatedId || p.name === createdName));
       if (existing) return prev;
-      const created = usePlaylistStore.getState().playlists.find((p) => p.id === updatedId || p.name === createdName);
+      const created = usePlaylistStore.getState().playlists.find(
+        p => p.serverId === serverId && (p.id === updatedId || p.name === createdName),
+      );
       return [
         ...prev,
         {
           name: createdName,
+          serverId,
           id: updatedId ?? created?.id,
           firstSeenCoverArt: created?.coverArt,
           attempts: 0,
@@ -74,13 +86,16 @@ export async function runPlaylistsSaveSmart(deps: RunPlaylistsSaveSmartDeps): Pr
     });
     setCreatingSmart(false);
     setEditingSmartId(null);
+    setEditingSmartServerId(null);
     setSmartFilters(defaultSmartFilters);
     setGenreQuery('');
     if (updatedId) showToast(t('smartPlaylists.updated', { name: createdName }), 3500, 'success');
     else showToast(t('smartPlaylists.created', { name: createdName }), 3500, 'success');
   } catch {
-    showToast(editingSmartId ? t('smartPlaylists.updateFailed') : t('smartPlaylists.createFailed'), 3500, 'error');
+    if (!deps.isCurrent || deps.isCurrent()) {
+      showToast(editingSmartId ? t('smartPlaylists.updateFailed') : t('smartPlaylists.createFailed'), 3500, 'error');
+    }
   } finally {
-    setCreatingSmartBusy(false);
+    if (!deps.isCurrent || deps.isCurrent()) setCreatingSmartBusy(false);
   }
 }

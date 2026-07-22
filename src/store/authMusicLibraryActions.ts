@@ -1,9 +1,10 @@
-import type { AuthState } from './authStoreTypes';
+import type { AuthState, MusicFolder } from './authStoreTypes';
 import { useLibraryIndexStore } from './libraryIndexStore';
 import {
   runMusicLibraryCatalogReloadHandler,
   scheduleMusicLibraryFilterVersionBump,
 } from './musicLibraryFilterNotify';
+import { deriveLibraryBrowseServerIdsWithFallback } from '@/lib/library/libraryBrowseScope';
 
 type SetState = (
   partial: Partial<AuthState> | ((state: AuthState) => Partial<AuthState>),
@@ -25,6 +26,14 @@ function collapseFullSelection(state: AuthState, libraryIds: string[]): string[]
   if (libraryIds.length === 0) return libraryIds;
   const folders = state.musicFolders;
   if (folders.length === 0 || libraryIds.length < folders.length) return libraryIds;
+  const selected = new Set(libraryIds);
+  return folders.every(folder => selected.has(folder.id)) ? [] : libraryIds;
+}
+
+function collapseServerSelection(folders: MusicFolder[], libraryIds: string[]): string[] {
+  if (libraryIds.length === 0 || folders.length === 0 || libraryIds.length < folders.length) {
+    return libraryIds;
+  }
   const selected = new Set(libraryIds);
   return folders.every(folder => selected.has(folder.id)) ? [] : libraryIds;
 }
@@ -56,7 +65,13 @@ function deferMusicLibraryCatalogReload(get: GetState, set: SetState, serverId: 
  */
 export function createMusicLibraryActions(set: SetState, get: GetState): Pick<
   AuthState,
-  'setMusicFolders' | 'setMusicLibraryFilter' | 'setMusicLibrarySelection'
+  | 'setMusicFolders'
+  | 'setMusicFoldersForServer'
+  | 'setLibraryBrowseServerExclusive'
+  | 'setLibraryBrowseServerSelected'
+  | 'setLibraryBrowseSelectionForServer'
+  | 'setMusicLibraryFilter'
+  | 'setMusicLibrarySelection'
 > {
   return {
     setMusicFolders: (folders) => {
@@ -68,7 +83,10 @@ export function createMusicLibraryActions(set: SetState, get: GetState): Pick<
       }
 
       const s = get();
-      const updates: Partial<AuthState> = { musicFolders: folders };
+      const updates: Partial<AuthState> = {
+        musicFolders: folders,
+        musicFoldersByServer: { ...s.musicFoldersByServer, [sid]: folders },
+      };
       let scopeChanged = false;
 
       const f = s.musicLibraryFilterByServer[sid];
@@ -101,6 +119,88 @@ export function createMusicLibraryActions(set: SetState, get: GetState): Pick<
       if (scopeChanged) {
         deferMusicLibraryCatalogReload(get, set, sid);
       }
+    },
+
+    setMusicFoldersForServer: (serverId, folders) => {
+      const s = get();
+      if (!s.servers.some(server => server.id === serverId)) return;
+      const previousFolders = s.musicFoldersByServer[serverId] ?? [];
+      const foldersChanged = folders.length !== previousFolders.length
+        || folders.some((folder, index) => {
+          const previous = previousFolders[index];
+          return previous?.id !== folder.id || previous.name !== folder.name;
+        });
+      const folderIds = new Set(folders.map(folder => folder.id));
+      const previousBrowseSelection = s.libraryBrowseSelectionByServer[serverId];
+      const prunedBrowseSelection = previousBrowseSelection?.filter(id => folderIds.has(id));
+      const browseScopeChanged = previousBrowseSelection !== undefined
+        && prunedBrowseSelection?.length !== previousBrowseSelection.length;
+
+      set(state => ({
+        musicFoldersByServer: {
+          ...state.musicFoldersByServer,
+          [serverId]: folders,
+        },
+        ...(state.activeServerId === serverId ? { musicFolders: folders } : {}),
+        ...(browseScopeChanged ? {
+          libraryBrowseSelectionByServer: {
+            ...state.libraryBrowseSelectionByServer,
+            [serverId]: prunedBrowseSelection ?? [],
+          },
+        } : {}),
+        ...(browseScopeChanged || (foldersChanged && state.libraryBrowseServerIds.includes(serverId))
+          ? { libraryBrowseScopeVersion: state.libraryBrowseScopeVersion + 1 }
+          : {}),
+      }));
+    },
+
+    setLibraryBrowseServerExclusive: (serverId) => {
+      const s = get();
+      if (!s.servers.some(server => server.id === serverId)) return;
+      if (s.libraryBrowseServerIds.length === 1 && s.libraryBrowseServerIds[0] === serverId) return;
+      set(state => ({
+        libraryBrowseServerIds: [serverId],
+        libraryBrowseScopeVersion: state.libraryBrowseScopeVersion + 1,
+      }));
+    },
+
+    setLibraryBrowseServerSelected: (serverId, selected) => {
+      const s = get();
+      if (!s.servers.some(server => server.id === serverId)) return;
+      const current = new Set(s.libraryBrowseServerIds);
+      if (selected) current.add(serverId);
+      else current.delete(serverId);
+      if (current.size === 0 && s.servers.length > 0) return;
+      const next = deriveLibraryBrowseServerIdsWithFallback({
+        servers: s.servers,
+        activeServerId: s.activeServerId,
+        libraryBrowseServerIds: [...current],
+      });
+      if (next.length === s.libraryBrowseServerIds.length
+        && next.every((id, index) => id === s.libraryBrowseServerIds[index])) return;
+      set(state => ({
+        libraryBrowseServerIds: next,
+        libraryBrowseScopeVersion: state.libraryBrowseScopeVersion + 1,
+      }));
+    },
+
+    setLibraryBrowseSelectionForServer: (serverId, libraryIds) => {
+      const s = get();
+      if (!s.libraryBrowseServerIds.includes(serverId)) return;
+      const folders = s.musicFoldersByServer[serverId] ?? [];
+      const knownFolderIds = new Set(folders.map(folder => folder.id));
+      const unique = [...new Set(libraryIds)].filter(id => folders.length === 0 || knownFolderIds.has(id));
+      const selection = collapseServerSelection(folders, unique);
+      const previous = s.libraryBrowseSelectionByServer[serverId] ?? [];
+      if (selection.length === previous.length
+        && selection.every((id, index) => id === previous[index])) return;
+      set(state => ({
+        libraryBrowseSelectionByServer: {
+          ...state.libraryBrowseSelectionByServer,
+          [serverId]: selection,
+        },
+        libraryBrowseScopeVersion: state.libraryBrowseScopeVersion + 1,
+      }));
     },
 
     setMusicLibraryFilter: (folderId) => {

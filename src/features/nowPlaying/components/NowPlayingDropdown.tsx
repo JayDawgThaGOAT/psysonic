@@ -1,14 +1,20 @@
 import { TrackCoverArtImage } from '@/cover/TrackCoverArtImage';
-import { getNowPlaying } from '@/lib/api/subsonicScrobble';
+import { coverServerScopeForServerId } from '@/cover/serverScope';
+import { getNowPlayingForServers } from '@/lib/api/subsonicScrobble';
 import type { SubsonicNowPlaying } from '@/lib/api/subsonicTypes';
-import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { PlayCircle, Pause, User, Radio, RefreshCw } from 'lucide-react';
 import { nowPlayingPresence } from '@/features/nowPlaying/api/nowPlayingPresence';
 import { useAuthStore } from '@/store/authStore';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
+import { findServerByIdOrIndexKey } from '@/lib/server/serverLookup';
 
 export default function NowPlayingDropdown() {
   const { t } = useTranslation();
@@ -16,7 +22,16 @@ export default function NowPlayingDropdown() {
   const [isOpen, setIsOpen] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<SubsonicNowPlaying[]>([]);
   const isPlaying = usePlayerStore(s => s.isPlaying);
-  const ownUsername = useAuthStore(s => s.getActiveServer()?.username ?? '');
+  const playbackServerKey = usePlayerStore(s => s.queueItems[s.queueIndex]?.serverId ?? s.queueServerId ?? '');
+  const servers = useAuthStore(s => s.servers);
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const unavailableServerIds = useUnavailableServerIds();
+  const effectiveLibraryServerIds = useMemo(() => deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId,
+    libraryBrowseServerIds,
+  }, unavailableServerIds), [activeServerId, libraryBrowseServerIds, servers, unavailableServerIds]);
   const [loading, setLoading] = useState(false);
   const [spinning, setSpinning] = useState(false);
   const triggerWrapRef = useRef<HTMLDivElement>(null);
@@ -26,6 +41,7 @@ export default function NowPlayingDropdown() {
   // position of `playing` entries locally so the progress bar glides instead
   // of snapping. The server already extrapolates positionMs at fetch time.
   const fetchedAtRef = useRef(0);
+  const requestSeqRef = useRef(0);
   const [, forceTick] = useState(0);
   const PANEL_WIDTH = 340;
   const LIVE_POLL_OPEN_MS = 10_000;
@@ -64,17 +80,19 @@ export default function NowPlayingDropdown() {
   }, []);
 
   const fetchNowPlaying = useCallback(async (opts?: { silent?: boolean }) => {
+    const requestSeq = ++requestSeqRef.current;
     if (!opts?.silent) setLoading(true);
     try {
-      const data = await getNowPlaying();
+      const data = await getNowPlayingForServers(effectiveLibraryServerIds);
+      if (requestSeq !== requestSeqRef.current) return;
       fetchedAtRef.current = Date.now();
       setNowPlaying(data);
     } catch (e) {
       console.error('Failed to load Now Playing', e);
     } finally {
-      if (!opts?.silent) setLoading(false);
+      if (!opts?.silent && requestSeq === requestSeqRef.current) setLoading(false);
     }
-  }, []);
+  }, [effectiveLibraryServerIds]);
 
   const handleRefresh = () => {
     setSpinning(true);
@@ -142,9 +160,31 @@ export default function NowPlayingDropdown() {
 
   // For the current user, trust the local player state — the server keeps stale
   // "now playing" entries for minutes after playback stops.
-  const visible = nowPlaying.filter(entry =>
-    entry.username === ownUsername ? isPlaying : true
-  );
+  const playbackServerId = findServerByIdOrIndexKey(playbackServerKey)?.id ?? playbackServerKey;
+  const ownUsernameByServer = new Map(servers.map(server => [server.id, server.username]));
+  const serverLabelById = new Map(servers.map(server => [server.id, serverListDisplayLabel(server, servers)]));
+  const multiServerScope = effectiveLibraryServerIds.length > 1;
+  const visible = nowPlaying.filter(entry => {
+    if (entry.state === 'stopped') return false;
+    const entryServerId = entry.serverId ?? '';
+    const ownUsername = ownUsernameByServer.get(entryServerId);
+    if (!ownUsername || entry.username !== ownUsername) return true;
+    return entryServerId === playbackServerId && isPlaying;
+  });
+  const visibleByServer = new Map<string, SubsonicNowPlaying[]>();
+  for (const entry of visible) {
+    const serverId = entry.serverId ?? '';
+    const rows = visibleByServer.get(serverId);
+    if (rows) rows.push(entry);
+    else visibleByServer.set(serverId, [entry]);
+  }
+  const visibleGroups = effectiveLibraryServerIds
+    .map(serverId => ({
+      serverId,
+      serverLabel: serverLabelById.get(serverId) ?? serverId,
+      rows: visibleByServer.get(serverId) ?? [],
+    }))
+    .filter(group => group.rows.length > 0);
 
   return (
     <div className="now-playing-dropdown" ref={triggerWrapRef} style={{ position: 'relative' }}>
@@ -155,7 +195,11 @@ export default function NowPlayingDropdown() {
         data-tooltip-pos="bottom"
         style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem' }}
       >
-        <Radio size={18} className={visible.length > 0 ? 'animate-pulse' : ''} style={{ color: visible.length > 0 ? 'var(--accent)' : 'inherit' }} />
+        <span
+          className={`now-playing-dropdown__live-icon${visible.length > 0 ? ' now-playing-dropdown__live-icon--active' : ''}`}
+        >
+          <Radio size={18} />
+        </span>
         <span className="now-playing-dropdown__label">Live</span>
         {visible.length > 0 && (
           <span style={{
@@ -206,16 +250,27 @@ export default function NowPlayingDropdown() {
               {t('nowPlaying.nobody')}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {/* React Compiler refs rule: the row renderer reads a ref for latest presence state; intentional, not reactive render data. */}
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {/* React Compiler refs rule: nested row rendering reads fetchedAtRef for live position extrapolation. */}
               {/* eslint-disable-next-line react-hooks/refs */}
-              {visible.map((stream, idx) => {
+              {visibleGroups.map(group => (
+                <section key={group.serverId} className="nav-library-server-group" aria-label={group.serverLabel}>
+                  {multiServerScope ? (
+                    <div className="nav-library-server-group-heading">{group.serverLabel}</div>
+                  ) : null}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {group.rows.map((stream, idx) => {
                 const presence = nowPlayingPresence(stream);
                 const presenceLabel = t(`nowPlaying.presence.${presence}`);
                 return (
                 <div
-                  key={`${stream.id}-${idx}`}
-                  onClick={() => { if (stream.albumId) { setIsOpen(false); navigate(`/album/${stream.albumId}`); } }}
+                   key={`${stream.serverId ?? 'unknown'}:${stream.username}:${stream.playerId}:${stream.id}:${idx}`}
+                   onClick={() => {
+                     if (!stream.albumId) return;
+                     setIsOpen(false);
+                     const search = appendServerQuery(undefined, stream.serverId);
+                     navigate(`/album/${stream.albumId}${search ? `?${search}` : ''}`);
+                   }}
                   style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', background: 'var(--bg-hover)', padding: '0.5rem', borderRadius: '8px', cursor: stream.albumId ? 'pointer' : 'default' }}
                 >
                   <div style={{ width: '48px', height: '48px', flexShrink: 0, borderRadius: '6px', overflow: 'hidden', background: 'var(--card-placeholder-bg)' }}>
@@ -229,6 +284,7 @@ export default function NowPlayingDropdown() {
                         }}
                         displayCssPx={50}
                         surface="sparse"
+                        serverScope={coverServerScopeForServerId(stream.serverId)}
                         alt="Cover"
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       />
@@ -286,6 +342,9 @@ export default function NowPlayingDropdown() {
                 </div>
                 );
               })}
+                  </div>
+                </section>
+              ))}
             </div>
           )}
         </div>,

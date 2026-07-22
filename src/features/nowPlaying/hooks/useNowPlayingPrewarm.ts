@@ -1,12 +1,10 @@
 import { useEffect } from 'react';
 import { coverCacheEnsure, coverCachePeekBatch } from '@/lib/api/coverCache';
-import { albumCoverRef } from '@/cover/ref';
-import { resolvePlaybackCoverScope } from '@/cover/ref';
+import { radioCoverRef, resolvePlaybackCoverScope } from '@/cover/ref';
 import { resolveTrackCoverRefFromLibrary } from '@/cover/resolveEntryLibrary';
 import { getDiskSrc, rememberDiskSrc } from '@/cover/diskSrcCache';
 import { coverStorageKeyFromRef } from '@/cover/storageKeys';
 import { resolveCoverDisplayTier } from '@/cover/tiers';
-import { coverArtIdFromRadio } from '@/cover/ids';
 import type { CoverArtRef } from '@/cover/types';
 import { prewarmNowPlayingFetchers } from '@/features/nowPlaying/hooks/useNowPlayingFetchers';
 import { useAuthStore } from '@/store/authStore';
@@ -99,8 +97,7 @@ export function useNowPlayingPrewarm(): void {
   ]);
 
   useEffect(() => {
-    if (!currentRadio?.coverArt || !activeServerId) return;
-    const radioCoverArtId = coverArtIdFromRadio(currentRadio.id);
-    void prewarmCoverRef(albumCoverRef(radioCoverArtId, radioCoverArtId, { kind: 'active' }));
-  }, [currentRadio?.id, currentRadio?.coverArt, activeServerId]);
+    if (!currentRadio?.coverArt || (!currentRadio.serverId && !activeServerId)) return;
+    void prewarmCoverRef(radioCoverRef(currentRadio));
+  }, [currentRadio, activeServerId]);
 }

@@ -16,7 +16,9 @@ import {
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useCachedUrl } from '@/ui/CachedImage';
 import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 import { formatTrackTime } from '@/lib/format/formatDuration';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
 import {
   getQueueResolverVersion,
@@ -252,7 +254,7 @@ export default function MobilePlayerView() {
 
   // Star / favorite
   const isStarred = currentTrack
-    ? (currentTrack.id in starredOverrides ? starredOverrides[currentTrack.id] : !!currentTrack.starred)
+    ? (ownedOverrideValue(starredOverrides, currentTrack) ?? !!currentTrack.starred)
     : false;
 
   const toggleStar = useCallback(() => {
@@ -381,7 +383,9 @@ export default function MobilePlayerView() {
               <OpenArtistRefInline
                 refs={currentTrack.artists}
                 fallbackName={currentTrack.artist}
-                onGoArtist={id => { void navigatePlaybackLibrary(`/artist/${id}`); }}
+                onGoArtist={id => { void navigatePlaybackLibrary(buildArtistDetailPath(id, {
+                  serverId: currentTrack.serverId,
+                })); }}
                 as="none"
                 linkTag="span"
                 linkClassName="mp-artist-link"
@@ -390,12 +394,16 @@ export default function MobilePlayerView() {
               <span
                 role={currentTrack.artistId ? 'link' : undefined}
                 tabIndex={currentTrack.artistId ? 0 : undefined}
-                onClick={() => currentTrack.artistId && void navigatePlaybackLibrary(`/artist/${currentTrack.artistId}`)}
+                onClick={() => currentTrack.artistId && void navigatePlaybackLibrary(
+                  buildArtistDetailPath(currentTrack.artistId, { serverId: currentTrack.serverId }),
+                )}
                 onKeyDown={e => {
                   if (!currentTrack.artistId) return;
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    void navigatePlaybackLibrary(`/artist/${currentTrack.artistId}`);
+                    void navigatePlaybackLibrary(buildArtistDetailPath(currentTrack.artistId, {
+                      serverId: currentTrack.serverId,
+                    }));
                   }
                 }}
                 style={{ cursor: currentTrack.artistId ? 'pointer' : 'default' }}

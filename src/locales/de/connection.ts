@@ -31,6 +31,7 @@ export const connection = {
   retry: 'Erneut versuchen',
   serverSettings: 'Server-Einstellungen',
   switchServerTitle: 'Server wechseln',
+  multiServer: 'Mehrere Server',
   switchServerHint: 'Klicken, um einen anderen gespeicherten Server zu wählen.',
   manageServers: 'Server verwalten…',
   switchFailed: 'Wechsel fehlgeschlagen — Server nicht erreichbar.',

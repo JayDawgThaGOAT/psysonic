@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ndLogin } from '@/lib/api/navidromeAdmin';
 import { useAuthStore } from '@/store/authStore';
 import { isNavidromeServer } from '@/lib/server/subsonicServerIdentity';
+import type { SubsonicServerIdentity } from '@/lib/server/subsonicServerIdentity';
 
 export type NavidromeAdminRole = 'idle' | 'checking' | 'admin' | 'user' | 'na' | 'error';
 
@@ -21,64 +22,86 @@ function normalizeServerUrl(url: string): string {
   return withScheme.replace(/\/$/, '');
 }
 
+function roleBeforeProbe(
+  isLoggedIn: boolean,
+  server: { url: string } | undefined,
+  identity: SubsonicServerIdentity | undefined,
+): NavidromeAdminRole {
+  if (!isLoggedIn || !server) return 'na';
+  if (!identity) return 'checking';
+  return isNavidromeServer(identity) ? 'checking' : 'na';
+}
+
+export function useNavidromeAdminRoles(serverIds: readonly string[]): Record<string, NavidromeAdminRole> {
+  const isLoggedIn = useAuthStore(s => s.isLoggedIn);
+  const servers = useAuthStore(s => s.servers);
+  const identities = useAuthStore(s => s.subsonicServerIdentityByServer);
+  const serverIdsKey = [...new Set(serverIds.filter(Boolean))].join('\0');
+  const requestedServerIds = useMemo(
+    () => serverIdsKey ? serverIdsKey.split('\0') : [],
+    [serverIdsKey],
+  );
+  const probeKey = JSON.stringify(requestedServerIds.map(serverId => {
+    const server = servers.find(candidate => candidate.id === serverId);
+    const identity = identities[serverId];
+    return [
+      serverId,
+      isLoggedIn,
+      server?.url,
+      server?.username,
+      server?.password,
+      identity?.type,
+      identity?.serverVersion,
+    ];
+  }));
+  const initialRoles = useMemo(() => Object.fromEntries(requestedServerIds.map(serverId => [
+    serverId,
+    roleBeforeProbe(
+      isLoggedIn,
+      servers.find(server => server.id === serverId),
+      identities[serverId],
+    ),
+  ])), [requestedServerIds, isLoggedIn, servers, identities]);
+  const [resolved, setResolved] = useState<{
+    key: string;
+    roles: Record<string, NavidromeAdminRole>;
+  }>({ key: '', roles: {} });
+
+  useEffect(() => {
+    let cancelled = false;
+    // React Compiler set-state-in-effect rule: reset role snapshots when the requested owners change.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setResolved({ key: probeKey, roles: initialRoles });
+    for (const serverId of requestedServerIds) {
+      const server = servers.find(candidate => candidate.id === serverId);
+      const identity = identities[serverId];
+      if (!isLoggedIn || !server || !identity || !isNavidromeServer(identity)) continue;
+      void ndLogin(normalizeServerUrl(server.url), server.username, server.password)
+        .then(result => result.isAdmin ? 'admin' as const : 'user' as const)
+        .catch(() => 'error' as const)
+        .then(role => {
+          if (cancelled) return;
+          setResolved(previous => previous.key === probeKey
+            ? { key: probeKey, roles: { ...previous.roles, [serverId]: role } }
+            : { key: probeKey, roles: { ...initialRoles, [serverId]: role } });
+        });
+    }
+    return () => { cancelled = true; };
+  }, [probeKey, initialRoles, requestedServerIds, servers, identities, isLoggedIn]);
+
+  return resolved.key === probeKey ? resolved.roles : initialRoles;
+}
+
 /**
  * Probes Navidrome native login for the active server to learn whether the
  * current Subsonic credentials belong to an admin account.
  */
 export function useNavidromeAdminRole(): NavidromeAdminRole {
-  const isLoggedIn = useAuthStore(s => s.isLoggedIn);
   const activeServerId = useAuthStore(s => s.activeServerId);
-  const server = useAuthStore(s => s.servers.find(srv => srv.id === s.activeServerId));
-  const identity = useAuthStore(s =>
-    activeServerId ? s.subsonicServerIdentityByServer[activeServerId] : undefined,
+  const requestedServerIds = useMemo(
+    () => activeServerId ? [activeServerId] : [],
+    [activeServerId],
   );
-  const [role, setRole] = useState<NavidromeAdminRole>('idle');
-
-  useEffect(() => {
-    if (!isLoggedIn || !server) {
-      // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setRole('na');
-      return;
-    }
-    if (!identity) {
-      setRole('checking');
-      return;
-    }
-    if (!isNavidromeServer(identity)) {
-      setRole('na');
-      return;
-    }
-
-    let cancelled = false;
-    setRole('checking');
-    const serverUrl = normalizeServerUrl(server.url);
-    ndLogin(serverUrl, server.username, server.password)
-      .then(res => {
-        if (cancelled) return;
-        setRole(res.isAdmin ? 'admin' : 'user');
-      })
-      .catch(() => {
-        if (!cancelled) setRole('error');
-      });
-
-    return () => {
-      cancelled = true;
-    };
-    // Keyed on the server's and identity's primitive fields; depending on the
-    // `server` / `identity` objects would re-probe the admin role on every render
-    // when their identities change but their fields do not.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    isLoggedIn,
-    activeServerId,
-    server?.id,
-    server?.url,
-    server?.username,
-    server?.password,
-    identity?.type,
-    identity?.serverVersion,
-  ]);
-
-  return role;
+  const roles = useNavidromeAdminRoles(requestedServerIds);
+  return activeServerId ? roles[activeServerId] ?? 'checking' : 'na';
 }

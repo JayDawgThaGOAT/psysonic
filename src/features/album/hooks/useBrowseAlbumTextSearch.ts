@@ -10,6 +10,8 @@ import {
 } from '@/lib/library/browseTextSearch';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineLocalBrowseEnabled, searchOfflineLocalAlbums } from '@/features/offline';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { useAuthStore } from '@/store/authStore';
 
 /**
  * Debounced album title search with local-vs-network race when the
@@ -22,6 +24,7 @@ export function useBrowseAlbumTextSearch(
   losslessOnly = false,
 ) {
   const offlineBrowseActive = useOfflineBrowseContext().active;
+  const libraryBrowseScopeVersion = useAuthStore(state => state.libraryBrowseScopeVersion);
   const [debouncedFilter, setDebouncedFilter] = useState('');
   const [textSearchAlbums, setTextSearchAlbums] = useState<SubsonicAlbum[] | null>(null);
   const [textSearchLoading, setTextSearchLoading] = useState(false);
@@ -65,6 +68,14 @@ export function useBrowseAlbumTextSearch(
         return;
       }
 
+      if (getLibraryBrowseScope().multiServer) {
+        const albums = await runLocalBrowseAlbums(serverId, q, undefined, losslessOnly);
+        if (isStale()) return;
+        setTextSearchAlbums(albums ?? []);
+        setTextSearchLoading(false);
+        return;
+      }
+
       const outcome = await raceBrowseWithLocalFallback(
         isStale,
         () => runLocalBrowseAlbums(serverId, q, undefined, losslessOnly),
@@ -80,7 +91,7 @@ export function useBrowseAlbumTextSearch(
       setTextSearchAlbums(outcome?.result ?? null);
       setTextSearchLoading(false);
     })();
-  }, [debouncedFilter, indexEnabled, offlineBrowseActive, serverId, losslessOnly]);
+  }, [debouncedFilter, indexEnabled, offlineBrowseActive, serverId, losslessOnly, libraryBrowseScopeVersion]);
 
   const effectiveFilter = textSearchAlbums != null ? '' : filter;
   return { textSearchAlbums, textSearchLoading, effectiveFilter };

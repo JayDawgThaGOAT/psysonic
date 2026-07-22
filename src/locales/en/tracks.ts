@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'Find a track by title, artist or album…',
   count_one: '{{count}} track',
   count_other: '{{count}} tracks',
+  copyDiagnostics: 'Copy timing report',
 };

@@ -8,6 +8,7 @@ import { canonicalQueueServerKey } from '@/lib/server/serverIndexKey';
 import { trackToSong } from '@/lib/library/advancedSearchLocal';
 import { libraryIsReady } from '@/lib/library/libraryReady';
 import { NAVIDROME_PUBLIC_SHARE_SERVER_ID } from '@/lib/share/navidromePublicSharePlayback';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 /**
  * Queue track resolver (thin-state phase 2). Resolves `QueueItemRef`s to full
@@ -129,14 +130,14 @@ export function mergeDirectShareUrls(track: Track, ref: QueueItemRef): Track {
 /** Merge session star/rating overrides (F4) onto a resolved track. */
 export function applyQueueOverrides(track: Track): Track {
   const s = usePlayerStore.getState();
-  const hasStar = track.id in s.starredOverrides;
-  const hasRating = track.id in s.userRatingOverrides;
-  if (!hasStar && !hasRating) return track;
+  const starred = ownedOverrideValue(s.starredOverrides, track);
+  const rating = ownedOverrideValue(s.userRatingOverrides, track);
+  if (starred === undefined && rating === undefined) return track;
   const next = { ...track };
-  if (hasStar) {
-    next.starred = s.starredOverrides[track.id] ? (track.starred ?? new Date().toISOString()) : undefined;
+  if (starred !== undefined) {
+    next.starred = starred ? (track.starred ?? new Date().toISOString()) : undefined;
   }
-  if (hasRating) next.userRating = s.userRatingOverrides[track.id];
+  if (rating !== undefined) next.userRating = rating;
   return next;
 }
 
@@ -274,31 +275,26 @@ export function resolveVisibleRange(refs: QueueItemRef[], fromIdx: number, toIdx
   if (end > start) void resolveBatch(refs.slice(start, end));
 }
 
-/** Drop cached entries for a track id, forcing the next resolve to re-fetch. */
-export function invalidateQueueResolver(trackId: string): void {
-  let changed = false;
-  for (const key of [...cache.keys()]) {
-    if (key.endsWith(`:${trackId}`)) {
-      cache.delete(key);
-      changed = true;
-    }
-  }
-  if (changed) notify();
+/** Drop one owner-qualified cached entry, forcing the next resolve to re-fetch. */
+export function invalidateQueueResolver(trackId: string, serverId: string): void {
+  const key = refKey({ serverId: canonicalQueueServerKey(serverId), trackId });
+  if (cache.delete(key)) notify();
 }
 
 /** Patch cached entries for a track id in place (e.g. after a star/rating sync
  *  succeeds). Unlike {@link invalidateQueueResolver}, this keeps the entry so a
  *  visible queue row never blanks to a placeholder — the row stays resolved and
  *  just reflects the synced value. No-op for refs not currently cached. */
-export function patchCachedTrack(trackId: string, patch: Partial<Track>): void {
-  let changed = false;
-  for (const [key, track] of cache) {
-    if (key.endsWith(`:${trackId}`)) {
-      cache.set(key, { ...track, ...patch });
-      changed = true;
-    }
-  }
-  if (changed) notify();
+export function patchCachedTrack(
+  trackId: string,
+  patch: Partial<Track>,
+  serverId: string,
+): void {
+  const key = refKey({ serverId: canonicalQueueServerKey(serverId), trackId });
+  const track = cache.get(key);
+  if (!track) return;
+  cache.set(key, { ...track, ...patch });
+  notify();
 }
 
 /** Test-only: clear cache + in-flight set. */

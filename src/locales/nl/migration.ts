@@ -12,4 +12,7 @@ export const migration = {
   genreTagsTitle: 'Genre-index bijwerken…',
   genreTagsBody: 'Genres indexeren voor bladeren en filters. Eenmalig na de update.',
   genreTagsFailed: 'Genre-index bijwerken mislukt',
+  scopeBrowseProjectionTitle: 'Browse-index van bibliotheek bijwerken…',
+  scopeBrowseProjectionBody: 'Je albumcatalogus wordt voorbereid voor sneller bladeren. Dit gebeurt één keer na de update.',
+  scopeBrowseProjectionFailed: 'Bijwerken van browse-index van bibliotheek mislukt',
 };

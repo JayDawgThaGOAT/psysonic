@@ -4,7 +4,7 @@ import { ChevronRight, Folder, FolderOpen, Music } from 'lucide-react';
 import type { SubsonicDirectoryEntry } from '@/lib/api/subsonicTypes';
 import type { Track } from '@/lib/media/trackTypes';
 import {
-  folderBrowserHasKeyModifiers, isFolderBrowserArrowKey,
+  folderBrowserEntryKey, folderBrowserHasKeyModifiers, isFolderBrowserArrowKey,
   type Column,
 } from '@/features/folderBrowser/utils/folderBrowserHelpers';
 
@@ -89,19 +89,22 @@ export default function FolderBrowserColumn({
         <div className="folder-col-status">{t('folderBrowser.empty')}</div>
       ) : (
         filteredItems.map((item, rowIndex) => {
-          const isSelected = col.selectedId === item.id;
+          const itemKey = folderBrowserEntryKey(item);
+          const isSelected = col.selectedKey === itemKey;
           const isContextRow = contextRowIndex === rowIndex;
           const isKeyboardRow = keyboardRowIndex === rowIndex;
-          const isNowPlayingTrack = !item.isDir && currentTrack?.id === item.id;
-          const isPathPlayingIcon = !!(isSelectedPathForCurrentTrack && playingPathIds.includes(item.id));
+          const isNowPlayingTrack = !item.isDir && currentTrack?.id === item.id && (
+            !currentTrack.serverId || !item.serverId || currentTrack.serverId === item.serverId
+          );
+          const isPathPlayingIcon = !!(isSelectedPathForCurrentTrack && playingPathIds.includes(itemKey));
           return (
             <button
-              key={item.id}
+              key={itemKey}
               type="button"
               title={item.title}
               data-col-index={colIndex}
               data-row-index={rowIndex}
-              data-item-id={item.id}
+              data-item-key={itemKey}
               className={`folder-col-row${isSelected ? ' selected' : ''}${isContextRow ? ' context-active' : ''}${isKeyboardRow ? ' keyboard-active' : ''}${isNowPlayingTrack ? ' now-playing' : ''}`}
               onClick={() => onRowClick(item, rowIndex)}
               onKeyDown={e => {

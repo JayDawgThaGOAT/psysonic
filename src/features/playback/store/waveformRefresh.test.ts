@@ -14,7 +14,9 @@ const hoisted = vi.hoisted(() => ({
     return bins as number[];
   }),
   playerSnapshot: {
-    currentTrack: null as { id: string } | null,
+    currentTrack: null as { id: string; serverId?: string } | null,
+    queueItems: [] as Array<{ trackId: string; serverId: string }>,
+    queueIndex: 0,
   },
   playerSetStateMock: vi.fn(),
   gen: 0,
@@ -34,6 +36,15 @@ vi.mock('@/features/playback/store/waveformRefreshGen', () => ({
 }));
 
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
+
+const ref = (trackId: string, serverId = 'server-a') => analysisTrackRef(trackId, serverId);
+
+function setCurrent(trackId: string, serverId = 'server-a'): void {
+  hoisted.playerSnapshot.currentTrack = { id: trackId, serverId };
+  hoisted.playerSnapshot.queueItems = [{ trackId, serverId }];
+  hoisted.playerSnapshot.queueIndex = 0;
+}
 
 beforeEach(() => {
   hoisted.invokeMock.mockReset();
@@ -41,59 +52,77 @@ beforeEach(() => {
   hoisted.coerceWaveformBinsMock.mockClear();
   hoisted.playerSetStateMock.mockClear();
   hoisted.playerSnapshot.currentTrack = null;
+  hoisted.playerSnapshot.queueItems = [];
+  hoisted.playerSnapshot.queueIndex = 0;
   hoisted.gen = 0;
 });
 
 describe('refreshWaveformForTrack', () => {
   it('is a no-op for empty trackId', async () => {
-    await refreshWaveformForTrack('');
+    await refreshWaveformForTrack(ref(''));
+    expect(hoisted.invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not query waveform storage for an unknown profile UUID', async () => {
+    await refreshWaveformForTrack(ref('t1', '9ee02895-4d12-4faa-9a9f-3fae22b64d18'));
     expect(hoisted.invokeMock).not.toHaveBeenCalled();
   });
 
   it('discards results when the gen has been bumped since the call started', async () => {
-    hoisted.playerSnapshot.currentTrack = { id: 't1' };
+    setCurrent('t1');
     hoisted.invokeMock.mockImplementationOnce(async () => {
       hoisted.gen = 99; // simulate concurrent bump
       return { bins: [1, 2, 3] };
     });
-    await refreshWaveformForTrack('t1');
+    await refreshWaveformForTrack(ref('t1'));
     expect(hoisted.playerSetStateMock).not.toHaveBeenCalled();
   });
 
   it('skips when the track is no longer current after the fetch', async () => {
-    hoisted.playerSnapshot.currentTrack = { id: 'other' };
+    setCurrent('other');
     hoisted.invokeMock.mockResolvedValueOnce({ bins: [1, 2, 3] });
-    await refreshWaveformForTrack('t1');
+    await refreshWaveformForTrack(ref('t1'));
+    expect(hoisted.playerSetStateMock).not.toHaveBeenCalled();
+  });
+
+  it('skips the same raw id when the current track belongs to another server', async () => {
+    setCurrent('same', 'server-b');
+    hoisted.invokeMock.mockResolvedValueOnce({ bins: [1, 2, 3] });
+    await refreshWaveformForTrack(ref('same', 'server-a'));
     expect(hoisted.playerSetStateMock).not.toHaveBeenCalled();
   });
 
   it('blanks bins when the row is null', async () => {
-    hoisted.playerSnapshot.currentTrack = { id: 't1' };
+    setCurrent('t1');
     hoisted.invokeMock.mockResolvedValueOnce(null);
-    await refreshWaveformForTrack('t1');
+    await refreshWaveformForTrack(ref('t1'));
     expect(hoisted.playerSetStateMock).toHaveBeenCalledWith({ waveformBins: null });
   });
 
   it('blanks bins when coerceWaveformBins returns null (invalid shape)', async () => {
-    hoisted.playerSnapshot.currentTrack = { id: 't1' };
+    setCurrent('t1');
     hoisted.invokeMock.mockResolvedValueOnce({ bins: 'garbage' });
     hoisted.coerceWaveformBinsMock.mockReturnValueOnce(null);
-    await refreshWaveformForTrack('t1');
+    await refreshWaveformForTrack(ref('t1'));
     expect(hoisted.playerSetStateMock).toHaveBeenCalledWith({ waveformBins: null });
   });
 
   it('applies the coerced bins on a clean fetch', async () => {
-    hoisted.playerSnapshot.currentTrack = { id: 't1' };
+    setCurrent('t1');
     hoisted.invokeMock.mockResolvedValueOnce({ bins: [10, 20, 30] });
     hoisted.coerceWaveformBinsMock.mockReturnValueOnce([10, 20, 30]);
-    await refreshWaveformForTrack('t1');
+    await refreshWaveformForTrack(ref('t1'));
     expect(hoisted.playerSetStateMock).toHaveBeenCalledWith({ waveformBins: [10, 20, 30] });
+    expect(hoisted.invokeMock).toHaveBeenCalledWith('analysis_get_waveform_for_track', {
+      trackId: 't1',
+      serverId: 'server-a',
+    });
   });
 
   it('swallows fetch errors silently (placeholder waveform stays)', async () => {
-    hoisted.playerSnapshot.currentTrack = { id: 't1' };
+    setCurrent('t1');
     hoisted.invokeMock.mockRejectedValueOnce(new Error('boom'));
-    await expect(refreshWaveformForTrack('t1')).resolves.toBeUndefined();
+    await expect(refreshWaveformForTrack(ref('t1'))).resolves.toBeUndefined();
     expect(hoisted.playerSetStateMock).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,7 @@ import { usePlaybackScheduleRemaining } from '@/features/playback/utils/playback
 import { usePreviewStore } from '@/features/playback/store/previewStore';
 import { usePerfProbeFlags } from '@/lib/perf/perfFlags';
 import { coerceOpenArtistRefs } from '@/lib/api/openArtistRefs';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
 import { PlayerTrackInfo } from '@/features/playback/components/playerBar/PlayerTrackInfo';
 import { PlayerTransportControls } from '@/features/playback/components/playerBar/PlayerTransportControls';
@@ -124,7 +125,7 @@ export default function PlayerBar() {
 
 
   const isStarred = currentTrack
-    ? (currentTrack.id in starredOverrides ? starredOverrides[currentTrack.id] : !!currentTrack.starred)
+    ? (ownedOverrideValue(starredOverrides, currentTrack) ?? !!currentTrack.starred)
     : false;
 
   const toggleStar = useCallback(() => {

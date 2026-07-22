@@ -18,6 +18,7 @@ export interface ContextMenuItemsProps {
   queueIndex?: number;
   playlistId?: string;
   playlistSongIndex?: number;
+  playlistSongRemove?: () => void | Promise<void>;
   shareKindOverride?: EntityShareKind;
   playTrack: (track: Track, queue?: Track[], manual?: boolean, orbitConfirmed?: boolean, targetQueueIndex?: number) => void;
   playNext: (tracks: Track[]) => void;
@@ -32,7 +33,7 @@ export interface ContextMenuItemsProps {
   setStarredOverride: (id: string, starred: boolean) => void;
   networkLovedCache: Record<string, boolean>;
   setNetworkLovedForSong: (title: string, artist: string, loved: boolean) => void;
-  openSongInfo: (id: string) => void;
+  openSongInfo: (id: string, serverId?: string) => void;
   userRatingOverrides: Record<string, number>;
   setKeyboardRating: React.Dispatch<React.SetStateAction<KeyboardRating | null>>;
   keyboardRating: KeyboardRating | null;
@@ -45,15 +46,15 @@ export interface ContextMenuItemsProps {
   orbitRole: 'host' | 'guest' | null;
   entityRatingSupport: 'full' | 'track_only' | 'unknown';
   audiomuseNavidromeEnabled: boolean;
-  applySongRating: (id: string, rating: number) => void;
+  applySongRating: (song: Pick<Track, 'id' | 'serverId'>, rating: number) => void;
   applyAlbumRating: (album: SubsonicAlbum, rating: number) => void;
   applyArtistRating: (artist: SubsonicArtist, rating: number) => void;
   handleAction: (action: () => void | Promise<void>) => Promise<void>;
-  startRadio: (artistId: string, artistName: string, seedTrack?: Track) => void;
+  startRadio: (artistId: string, artistName: string, seedTrack?: Track, serverId?: string) => void;
   startInstantMix: (song: Track) => void;
-  downloadAlbum: (albumName: string, albumId: string) => Promise<void>;
-  copyShareLink: (kind: EntityShareKind, id: string) => void;
-  isStarred: (id: string, itemStarred?: string) => boolean;
+  downloadAlbum: (albumName: string, albumId: string, serverId?: string) => Promise<void>;
+  copyShareLink: (kind: EntityShareKind, id: string, serverId?: string) => void;
+  isStarred: (id: string, itemStarred?: string, serverId?: string) => boolean;
   /** When true, album/artist links switch to the queue server before routing. */
   pinToPlaybackServer: boolean;
   navigateLibrary: (path: string) => void | Promise<void>;

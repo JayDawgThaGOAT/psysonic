@@ -36,10 +36,10 @@ export function createSkipStarActions(set: SetState, get: GetState): Pick<
     setSkipStarManualSkipThreshold: (v) =>
       set({ skipStarManualSkipThreshold: clampSkipStarThreshold(v) }),
 
-    recordSkipStarManualAdvance: (trackId: string) => {
+    recordSkipStarManualAdvance: (trackId: string, serverId?: string) => {
       const s = get();
       if (!s.skipStarOnManualSkipsEnabled || s.skipStarManualSkipThreshold < 1) return null;
-      const key = skipStarCountStorageKey(s.activeServerId, trackId);
+      const key = skipStarCountStorageKey(serverId ?? s.activeServerId, trackId);
       const prev = s.skipStarManualSkipCountsByKey[key] ?? 0;
       const threshold = s.skipStarManualSkipThreshold;
       const next = prev + 1;
@@ -54,9 +54,9 @@ export function createSkipStarActions(set: SetState, get: GetState): Pick<
       return { crossedThreshold: false };
     },
 
-    clearSkipStarManualCountForTrack: (trackId: string) => {
+    clearSkipStarManualCountForTrack: (trackId: string, serverId?: string) => {
       const s = get();
-      const key = skipStarCountStorageKey(s.activeServerId, trackId);
+      const key = skipStarCountStorageKey(serverId ?? s.activeServerId, trackId);
       if (s.skipStarManualSkipCountsByKey[key] === undefined) return;
       const { [key]: _removed, ...rest } = s.skipStarManualSkipCountsByKey;
       set({ skipStarManualSkipCountsByKey: rest });

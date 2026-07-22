@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/trackArtistRefs';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 /**
  * Multi-artist credit for playlist track rows (main list + suggestions).
@@ -21,7 +22,11 @@ export function PlaylistArtistCell({ song }: { song: SubsonicSong }) {
           <span
             className={`track-artist${a.id ? ' track-artist-link' : ''}`}
             style={{ cursor: a.id ? 'pointer' : 'default' }}
-            onClick={e => { if (a.id) { e.stopPropagation(); navigate(`/artist/${a.id}`); } }}
+            onClick={e => {
+              if (!a.id) return;
+              e.stopPropagation();
+              navigate(buildArtistDetailPath(a.id, { serverId: song.serverId }));
+            }}
           >
             {a.name ?? song.artist}
           </span>

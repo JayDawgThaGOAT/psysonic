@@ -26,6 +26,7 @@ import { getCachedConnectBaseUrl } from '@/lib/server/serverEndpoint';
 import { serverProfileBaseUrl } from '@/lib/server/serverBaseUrl';
 import { setDebugLoggingModeSource } from '@/lib/perf/debugLoggingMode';
 import { createDiscordBannerActions } from './authDiscordBannerActions';
+import { setLibraryBrowseScopeSource } from '@/lib/library/libraryBrowseScope';
 
 export const useAuthStore = create<AuthState>()(
   persist(
@@ -34,6 +35,7 @@ export const useAuthStore = create<AuthState>()(
       discordBannerAccumulatedUsageMs: 0,
       servers: [],
       activeServerId: null,
+      libraryBrowseServerIds: [],
       musicNetworkAccounts: [],
       enrichmentPrimaryId: null,
       scrobblingMasterEnabled: true,
@@ -131,6 +133,9 @@ export const useAuthStore = create<AuthState>()(
       randomNavMode: 'hub',
       nowPlayingAtTop: false,
       musicFolders: [],
+      musicFoldersByServer: {},
+      libraryBrowseSelectionByServer: {},
+      libraryBrowseScopeVersion: 0,
       musicLibraryFilterByServer: {},
       musicLibrarySelectionByServer: {},
       musicLibraryFilterVersion: 0,
@@ -182,7 +187,12 @@ export const useAuthStore = create<AuthState>()(
       name: 'psysonic-auth',
       storage: createJSONStorage(() => localStorage),
       partialize: state => {
-        const { musicFolders: _mf, musicLibraryFilterVersion: _fv, ...rest } = state;
+        const {
+          musicFolders: _mf,
+          musicLibraryFilterVersion: _fv,
+          libraryBrowseScopeVersion: _bsv,
+          ...rest
+        } = state;
         return rest;
       },
       onRehydrateStorage: () => (state, error) => {
@@ -197,3 +207,4 @@ export const useAuthStore = create<AuthState>()(
 // Wire the lib-safe debug-logging gate to the auth store's `loggingMode`
 // (store → lib injection; keeps `src/lib` instrumentation free of store imports).
 setDebugLoggingModeSource(() => useAuthStore.getState().loggingMode === 'debug');
+setLibraryBrowseScopeSource(() => useAuthStore.getState());

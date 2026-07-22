@@ -16,6 +16,7 @@ use crate::ipc::{
 pub(crate) fn emit_partial_loudness_from_bytes(
     app: &AppHandle,
     url: &str,
+    server_id: Option<&str>,
     bytes: &[u8],
     target_lufs: f32,
     pre_analysis_attenuation_db: f32,
@@ -63,6 +64,10 @@ pub(crate) fn emit_partial_loudness_from_bytes(
         "analysis:loudness-partial",
         PartialLoudnessPayload {
             track_id: playback_identity(url),
+            server_index_key: {
+                let sid = crate::analysis_dispatch::resolve_server_id_for_app(app, server_id);
+                (!sid.is_empty()).then_some(sid)
+            },
             gain_db,
             target_lufs,
             is_partial: true,

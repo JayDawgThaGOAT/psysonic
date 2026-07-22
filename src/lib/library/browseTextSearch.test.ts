@@ -1,11 +1,76 @@
-import { describe, expect, it } from 'vitest';
-import { browseRaceCountsArtists, filterBrowseArtistsByNameQuery, raceBrowseWithLocalFallback } from './browseTextSearch';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const libraryListRandomArtists = vi.fn();
+const libraryAdvancedSearch = vi.fn();
+const librarySelectionForServer = vi.fn();
+const libraryIsReady = vi.fn();
+const waitForLibraryBrowseReady = vi.fn();
+
+vi.mock('@/lib/api/library', () => ({
+  libraryListRandomArtists: (...args: unknown[]) => libraryListRandomArtists(...args),
+  libraryAdvancedSearch: (...args: unknown[]) => libraryAdvancedSearch(...args),
+}));
+vi.mock('@/lib/api/subsonicClient', () => ({
+  libraryScopeForServer: vi.fn(),
+  libraryScopePairsForServer: vi.fn(),
+  librarySelectionForServer: (...args: unknown[]) => librarySelectionForServer(...args),
+}));
+vi.mock('./libraryReady', () => ({
+  libraryIsReady: (...args: unknown[]) => libraryIsReady(...args),
+  waitForLibraryBrowseReady: (...args: unknown[]) => waitForLibraryBrowseReady(...args),
+}));
+
+import {
+  browseRaceCountsArtists,
+  fetchLocalArtistCatalogChunk,
+  filterBrowseArtistsByNameQuery,
+  raceBrowseWithLocalFallback,
+  runLocalRandomArtists,
+} from './browseTextSearch';
 
 describe('filterBrowseArtistsByNameQuery', () => {
   it('matches Cyrillic names regardless of query case', () => {
     const artists = [{ id: '1', name: 'Кино' }];
     expect(filterBrowseArtistsByNameQuery(artists, 'кин')).toHaveLength(1);
     expect(filterBrowseArtistsByNameQuery(artists, 'КИН')).toHaveLength(1);
+  });
+});
+
+describe('fetchLocalArtistCatalogChunk', () => {
+  beforeEach(() => {
+    libraryAdvancedSearch.mockReset();
+    waitForLibraryBrowseReady.mockReset();
+  });
+
+  it('forwards authoritative cross-server scopes without a legacy single-server scope', async () => {
+    waitForLibraryBrowseReady.mockResolvedValue({ ready: true, waitedMs: 0 });
+    libraryAdvancedSearch.mockResolvedValue({
+      source: 'local',
+      artists: [{ serverId: 'server-b', id: 'artist-b', name: 'Only on B', rawJson: {} }],
+    });
+    const scopes = [
+      { serverId: 'server-a', libraryId: 'library-a' },
+      { serverId: 'server-b', libraryId: 'library-b' },
+    ];
+
+    await expect(fetchLocalArtistCatalogChunk(
+      'server-a',
+      0,
+      200,
+      'album',
+      undefined,
+      { libraryScopes: scopes },
+    )).resolves.toEqual({
+      artists: [expect.objectContaining({ serverId: 'server-b', id: 'artist-b' })],
+      hasMore: false,
+    });
+
+    expect(libraryAdvancedSearch).toHaveBeenCalledWith(expect.objectContaining({
+      serverId: 'server-a',
+      libraryScope: undefined,
+      libraryScopes: scopes,
+      entityTypes: ['artist'],
+    }));
   });
 });
 
@@ -49,5 +114,34 @@ describe('raceBrowseWithLocalFallback', () => {
     );
     expect(outcome?.source).toBe('network');
     expect(outcome?.result).toEqual(['network']);
+  });
+});
+
+describe('runLocalRandomArtists', () => {
+  beforeEach(() => {
+    libraryListRandomArtists.mockReset();
+    librarySelectionForServer.mockReset();
+    libraryIsReady.mockReset();
+  });
+
+  it('uses the local command for a ready whole-library server', async () => {
+    librarySelectionForServer.mockReturnValue([]);
+    libraryIsReady.mockResolvedValue(true);
+    libraryListRandomArtists.mockResolvedValue([
+      { serverId: 'server-a', id: 'artist-a', name: 'Artist A', syncedAt: 1, rawJson: {} },
+    ]);
+
+    await expect(runLocalRandomArtists('server-a', 16)).resolves.toEqual([
+      expect.objectContaining({ serverId: 'server-a', id: 'artist-a', name: 'Artist A' }),
+    ]);
+    expect(libraryListRandomArtists).toHaveBeenCalledWith('server-a', 16);
+  });
+
+  it('keeps scoped selections on the network path', async () => {
+    librarySelectionForServer.mockReturnValue(['library-a']);
+
+    await expect(runLocalRandomArtists('server-a', 16)).resolves.toBeNull();
+    expect(libraryIsReady).not.toHaveBeenCalled();
+    expect(libraryListRandomArtists).not.toHaveBeenCalled();
   });
 });

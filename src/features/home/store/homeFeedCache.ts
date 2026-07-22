@@ -2,9 +2,10 @@ import type { SubsonicAlbum, SubsonicArtist, SubsonicSong } from '@/lib/api/subs
 
 /** Session cache so leaving Mainstage and returning does not refetch + reshuffle everything. */
 export type HomeFeedSnapshot = {
-  serverId: string;
-  filterVersion: number;
+  scopeKey: string;
+  scopeVersion: number;
   savedAt: number;
+  offsets: HomeFeedOffsets;
   starred: SubsonicAlbum[];
   recent: SubsonicAlbum[];
   random: SubsonicAlbum[];
@@ -15,27 +16,56 @@ export type HomeFeedSnapshot = {
   discoverSongs: SubsonicSong[];
 };
 
+export type HomeFeedOffsets = {
+  starred: Record<string, number>;
+  recent: HomeFeedGlobalOffset;
+  random: Record<string, number>;
+  mostPlayed: Record<string, number>;
+  recentlyPlayed: HomeFeedGlobalOffset;
+};
+
+export type HomeFeedGlobalOffset = {
+  offset: number;
+  hasMore: boolean;
+};
+
 const TTL_MS = 15 * 60 * 1000;
-let snapshot: HomeFeedSnapshot | null = null;
+const MAX_SNAPSHOTS = 4;
+const snapshots = new Map<string, HomeFeedSnapshot>();
+
+function cacheKey(scopeKey: string, scopeVersion: number): string {
+  return JSON.stringify([scopeKey, scopeVersion]);
+}
 
 export function readHomeFeedCache(
-  serverId: string | null | undefined,
-  filterVersion: number,
+  scopeKey: string | null | undefined,
+  scopeVersion: number,
 ): HomeFeedSnapshot | null {
-  if (!serverId || !snapshot) return null;
-  if (snapshot.serverId !== serverId || snapshot.filterVersion !== filterVersion) return null;
+  if (!scopeKey) return null;
+  const key = cacheKey(scopeKey, scopeVersion);
+  const snapshot = snapshots.get(key);
+  if (!snapshot) return null;
   if (Date.now() - snapshot.savedAt > TTL_MS) return null;
+  snapshots.delete(key);
+  snapshots.set(key, snapshot);
   return snapshot;
 }
 
-/** Last good snapshot for this server when filter version changed (e.g. offline filter suspend). */
+/** Last good snapshot for this complete scope when its version changed while offline. */
 export function readHomeFeedCacheStale(
-  serverId: string | null | undefined,
+  scopeKey: string | null | undefined,
 ): HomeFeedSnapshot | null {
-  if (!serverId || !snapshot) return null;
-  if (snapshot.serverId !== serverId) return null;
-  if (Date.now() - snapshot.savedAt > TTL_MS) return null;
-  return snapshot;
+  if (!scopeKey) return null;
+  let newest: HomeFeedSnapshot | null = null;
+  for (const snapshot of snapshots.values()) {
+    if (snapshot.scopeKey !== scopeKey || Date.now() - snapshot.savedAt > TTL_MS) continue;
+    if (!newest
+      || snapshot.savedAt > newest.savedAt
+      || (snapshot.savedAt === newest.savedAt && snapshot.scopeVersion > newest.scopeVersion)) {
+      newest = snapshot;
+    }
+  }
+  return newest;
 }
 
 export function isHomeFeedSnapshotEmpty(snap: HomeFeedSnapshot): boolean {
@@ -49,10 +79,41 @@ export function isHomeFeedSnapshotEmpty(snap: HomeFeedSnapshot): boolean {
     && snap.randomArtists.length === 0;
 }
 
+export function shouldCacheColdHomeFeed(
+  snap: HomeFeedSnapshot,
+  emptySnapshotReliable: boolean,
+  offlineBrowseActive: boolean,
+): boolean {
+  if (!isHomeFeedSnapshotEmpty(snap)) return true;
+  return !offlineBrowseActive && emptySnapshotReliable;
+}
+
 export function writeHomeFeedCache(data: Omit<HomeFeedSnapshot, 'savedAt'>): void {
-  snapshot = { ...data, savedAt: Date.now() };
+  const snapshot = { ...data, savedAt: Date.now() };
+  const key = cacheKey(snapshot.scopeKey, snapshot.scopeVersion);
+  snapshots.delete(key);
+  snapshots.set(key, snapshot);
+  while (snapshots.size > MAX_SNAPSHOTS) {
+    const oldestKey = snapshots.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    snapshots.delete(oldestKey);
+  }
+}
+
+export function patchHomeFeedCache(
+  scopeKey: string,
+  scopeVersion: number,
+  patch: (snapshot: HomeFeedSnapshot) => HomeFeedSnapshot,
+): HomeFeedSnapshot | null {
+  const key = cacheKey(scopeKey, scopeVersion);
+  const current = snapshots.get(key);
+  if (!current || Date.now() - current.savedAt > TTL_MS) return null;
+  const next = { ...patch(current), savedAt: Date.now() };
+  snapshots.delete(key);
+  snapshots.set(key, next);
+  return next;
 }
 
 export function clearHomeFeedCache(): void {
-  snapshot = null;
+  snapshots.clear();
 }

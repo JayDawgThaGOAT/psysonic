@@ -41,6 +41,34 @@ describe('computeAuthStoreRehydration — queueDurationDisplayMode', () => {
   );
 });
 
+describe('computeAuthStoreRehydration — Library browse scope', () => {
+  beforeEach(() => {
+    resetAuthStore();
+    localStorage.clear();
+  });
+
+  it('migrates legacy state to the active server and sanitizes folder maps', () => {
+    const base = useAuthStore.getState();
+    const servers = [
+      { id: 'a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+      { id: 'b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+    ];
+    const patch = computeAuthStoreRehydration({
+      ...base,
+      servers,
+      activeServerId: 'b',
+      libraryBrowseServerIds: ['missing'] as never,
+      musicFoldersByServer: {
+        a: [{ id: 'a1', name: 'A1' }],
+        missing: [{ id: 'x', name: 'X' }],
+      },
+    });
+
+    expect(patch.libraryBrowseServerIds).toEqual(['b']);
+    expect(patch.musicFoldersByServer).toEqual({ a: [{ id: 'a1', name: 'A1' }] });
+  });
+});
+
 describe('computeAuthStoreRehydration — lyrics', () => {
   beforeEach(() => {
     resetAuthStore();

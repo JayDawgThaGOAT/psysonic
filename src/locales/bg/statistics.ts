@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: 'Общо време на слушане',
   genreInsights: 'Прозрения за жанрове',
   formatDistribution: 'Разпределение по формат',
-  formatSample: 'Извадка от {{n}} песни',
+  formatSample: 'Общо {{n}} песни',
   computing: 'Изчисляване…',
   genreSongs: '{{count}} песни',
   genreAlbums: '{{count}} албуми',

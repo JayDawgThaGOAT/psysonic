@@ -7,7 +7,7 @@ import type { PlayerState } from '@/features/playback/store/playerStoreTypes';
 import type { RadioMetadata } from '@/features/radio';
 import type { PreviewingTrack } from '@/features/playback/store/previewStore';
 import { CoverArtImage } from '@/cover/CoverArtImage';
-import { albumCoverRef } from '@/cover/ref';
+import { radioCoverRef } from '@/cover/ref';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
 import { usePlaybackTrackCoverRef } from '@/cover/useLibraryCoverRef';
 import MarqueeText from '@/ui/MarqueeText';
@@ -20,8 +20,10 @@ import {
   usePlayerBarLayoutStore,
   type PlayerBarLayoutItemId,
 } from '@/features/playback/store/playerBarLayoutStore';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineActionPolicy } from '@/features/offline';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   currentTrack: Track | null;
@@ -92,7 +94,7 @@ export function PlayerTrackInfo({
           radioCoverArtId && currentRadio ? (
             <CoverArtImage
               className="player-album-art"
-              coverRef={albumCoverRef(radioCoverArtId, radioCoverArtId)}
+              coverRef={radioCoverRef(currentRadio)}
               displayCssPx={128}
               surface="sparse"
               alt={currentRadio?.name ?? ''}
@@ -147,7 +149,9 @@ export function PlayerTrackInfo({
             : displayTitle}
           className="player-track-name"
           style={{ cursor: !isRadio && !showPreviewMeta && currentTrack?.albumId ? 'pointer' : 'default' }}
-          onClick={() => !isRadio && !showPreviewMeta && currentTrack?.albumId && navigate(`/album/${currentTrack.albumId}`)}
+          onClick={() => !isRadio && !showPreviewMeta && currentTrack?.albumId && navigate(
+            buildAlbumDetailPath(currentTrack.albumId, { serverId: currentTrack.serverId }),
+          )}
           onContextMenu={!isRadio && !showPreviewMeta && currentTrack
             ? (e) => {
                 e.preventDefault();
@@ -164,7 +168,9 @@ export function PlayerTrackInfo({
             <OpenArtistRefInline
               refs={displayArtistRefs}
               fallbackName={displayArtist}
-              onGoArtist={id => navigate(`/artist/${id}`)}
+              onGoArtist={id => navigate(buildArtistDetailPath(id, {
+                serverId: currentTrack?.serverId,
+              }))}
               as="none"
               linkTag="span"
               linkClassName="player-artist-link"
@@ -179,7 +185,9 @@ export function PlayerTrackInfo({
               : displayArtist}
             className="player-track-artist"
             style={{ cursor: !isRadio && !showPreviewMeta && currentTrack?.artistId ? 'pointer' : 'default' }}
-            onClick={() => !isRadio && !showPreviewMeta && currentTrack?.artistId && navigate(`/artist/${currentTrack.artistId}`)}
+            onClick={() => !isRadio && !showPreviewMeta && currentTrack?.artistId && navigate(
+              buildArtistDetailPath(currentTrack.artistId, { serverId: currentTrack.serverId }),
+            )}
           />
         )}
         {albumLine && (
@@ -187,13 +195,15 @@ export function PlayerTrackInfo({
             text={albumLine}
             className="player-track-album"
             style={{ cursor: currentTrack?.albumId ? 'pointer' : 'default' }}
-            onClick={() => currentTrack?.albumId && navigate(`/album/${currentTrack.albumId}`)}
+            onClick={() => currentTrack?.albumId && navigate(
+              buildAlbumDetailPath(currentTrack.albumId, { serverId: currentTrack.serverId }),
+            )}
           />
         )}
         {currentTrack && !isRadio && !showPreviewMeta && isLayoutVisible('starRating') && playerPolicy.canRate && (
           <StarRating
-            value={userRatingOverrides[currentTrack.id] ?? currentTrack.userRating ?? 0}
-            onChange={r => queueSongRating(currentTrack.id, r)}
+            value={ownedOverrideValue(userRatingOverrides, currentTrack) ?? currentTrack.userRating ?? 0}
+            onChange={r => queueSongRating(currentTrack.id, r, currentTrack.serverId)}
             className="player-track-rating"
             ariaLabel={t('albumDetail.ratingLabel')}
           />

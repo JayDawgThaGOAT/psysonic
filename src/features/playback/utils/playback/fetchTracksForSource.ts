@@ -3,12 +3,12 @@ import type { DeviceSyncSource } from '@/features/deviceSync';
 import {
   resolveAlbum,
   resolveArtist,
-  resolveMediaServerId,
   resolvePlaylist,
 } from '@/store/mediaResolver';
+import { resolveServerIdForIndexKey } from '@/lib/server/serverLookup';
 
 export async function fetchTracksForSource(source: DeviceSyncSource): Promise<SubsonicSong[]> {
-  const serverId = resolveMediaServerId();
+  const serverId = resolveServerIdForIndexKey(source.serverIndexKey);
   if (!serverId) return [];
 
   if (source.type === 'playlist') {

@@ -82,7 +82,7 @@ export default function ServerLibraryIndexControls({
           type="button"
           className="btn btn-surface"
           style={{ fontSize: 12, padding: '4px 10px' }}
-          disabled={actionsDisabled || connection === 'offline'}
+          disabled={busy || actionsDisabled || connection === 'offline'}
           onClick={onFullSync}
         >
           <RefreshCw size={13} />
@@ -92,7 +92,7 @@ export default function ServerLibraryIndexControls({
           type="button"
           className="btn btn-surface"
           style={{ fontSize: 12, padding: '4px 10px' }}
-          disabled={actionsDisabled || connection === 'offline'}
+          disabled={busy || actionsDisabled || connection === 'offline'}
           onClick={onDeltaSync}
         >
           <Zap size={13} />
@@ -102,7 +102,7 @@ export default function ServerLibraryIndexControls({
           type="button"
           className="btn btn-surface"
           style={{ fontSize: 12, padding: '4px 10px' }}
-          disabled={actionsDisabled || connection === 'offline'}
+          disabled={busy || actionsDisabled || connection === 'offline'}
           onClick={onVerify}
         >
           <ShieldCheck size={13} />

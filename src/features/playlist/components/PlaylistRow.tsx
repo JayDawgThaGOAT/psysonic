@@ -13,7 +13,7 @@ import { OptionalBrowseTrackRowCoverThumb } from '@/cover/TrackRowCoverThumb';
 
 export interface PlaylistRowCallbacks {
   activate: (song: SubsonicSong, index: number, e: React.MouseEvent) => void;
-  dblOrbit: (songId: string, e: React.MouseEvent) => void;
+  dblOrbit: (song: SubsonicSong, e: React.MouseEvent) => void;
   context: (song: SubsonicSong, realIdx: number, e: React.MouseEvent) => void;
   mouseDownRow: (realIdx: number, e: React.MouseEvent) => void;
   mouseEnterRow: (index: number, e: React.MouseEvent) => void;
@@ -23,7 +23,6 @@ export interface PlaylistRowCallbacks {
   toggleStar: (song: SubsonicSong, e: React.MouseEvent) => void;
   rate: (songId: string, rating: number) => void;
   remove: (realIdx: number) => void;
-  navArtist: (artistId: string) => void;
   navAlbum: (albumId: string) => void;
 }
 
@@ -62,7 +61,7 @@ function PlaylistRow({
       onMouseEnter={e => cb.mouseEnterRow(i, e)}
       onMouseDown={e => cb.mouseDownRow(realIdx, e)}
       onClick={e => cb.activate(song, i, e)}
-      onDoubleClick={orbitActive ? e => cb.dblOrbit(song.id, e) : undefined}
+      onDoubleClick={orbitActive ? e => cb.dblOrbit(song, e) : undefined}
       onContextMenu={e => cb.context(song, realIdx, e)}
     >
       {visibleCols.map(colDef => {

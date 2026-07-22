@@ -13,13 +13,14 @@ import { useThemeStore } from '@/store/themeStore';
 import { useDragDrop } from '@/lib/dnd/DragDropContext';
 import { useOrbitSongRowBehavior } from '@/features/orbit';
 import { songToTrack } from '@/lib/media/songToTrack';
-import { appendServerQuery } from '@/lib/navigation/detailServerScope';
+import { appendServerQuery, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 import { APP_MAIN_SCROLL_VIEWPORT_ID } from '@/constants/appScroll';
 import { useElementClientHeightById } from '@/lib/hooks/useResizeClientHeight';
 import { SORTABLE_COLUMNS } from '@/features/favorites/hooks/useFavoritesSongFiltering';
 import { COVER_ARTIST_TOP_TRACK_CSS_PX } from '@/cover/layoutSizes';
 import { useWarmTrackListAlbumCovers } from '@/cover/useWarmTrackListAlbumCovers';
 import { useTrackListCoverArtEnabled } from '@/cover/useTrackListCoverArtSettings';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 interface Props {
   visibleSongs: SubsonicSong[];
@@ -42,8 +43,8 @@ interface Props {
   handleSortClick: (key: string) => void;
   getSortIndicator: (key: string) => React.ReactNode;
   ratings: Record<string, number>;
-  handleRate: (songId: string, rating: number) => void;
-  removeSong: (id: string) => void;
+  handleRate: (song: SubsonicSong, rating: number) => void;
+  removeSong: (song: SubsonicSong) => void;
   hasFilters: boolean;
 }
 
@@ -62,6 +63,7 @@ export default function FavoritesSongsTracklist({
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
   const userRatingOverrides = usePlayerStore(s => s.userRatingOverrides);
   const previewingId = usePreviewStore(s => s.previewingId);
+  const previewingTrack = usePreviewStore(s => s.previewingTrack);
   const previewAudioStarted = usePreviewStore(s => s.audioStarted);
   const showBitrate = useThemeStore(s => s.showBitrate);
   const trackListCoversOn = useTrackListCoverArtEnabled('pages');
@@ -82,16 +84,17 @@ export default function FavoritesSongsTracklist({
     activate: (song, index, e) => {
       if ((e.target as HTMLElement).closest('button, a, input')) return;
       const L = latest.current;
-      if (e.ctrlKey || e.metaKey) L.toggleSelect(song.id, index, false);
-      else if (L.inSelectMode) L.toggleSelect(song.id, index, e.shiftKey);
+       const key = ownedEntityKey(song);
+       if (e.ctrlKey || e.metaKey) L.toggleSelect(key, index, false);
+       else if (L.inSelectMode) L.toggleSelect(key, index, e.shiftKey);
       else if (L.orbitActive) L.queueHint();
-      else L.playTrack(L.visibleTracks[index], L.visibleTracks);
+       else L.playTrack(L.visibleTracks[index], L.visibleTracks, true, false, index);
     },
-    dblOrbit: (songId, e) => {
+    dblOrbit: (song, e) => {
       if ((e.target as HTMLElement).closest('button, a, input')) return;
       const L = latest.current;
       if (e.ctrlKey || e.metaKey || L.inSelectMode) return;
-      L.addTrackToOrbit(songId);
+      L.addTrackToOrbit(song.id, song.serverId);
     },
     context: (song, e) => {
       e.preventDefault();
@@ -109,8 +112,8 @@ export default function FavoritesSongsTracklist({
           document.removeEventListener('mouseup', onUp);
           const L = latest.current;
           const { selectedIds: selIds } = useSelectionStore.getState();
-          if (selIds.has(song.id) && selIds.size > 1) {
-            const bulkTracks = L.visibleSongs.filter(s => selIds.has(s.id)).map(songToTrack);
+           if (selIds.has(ownedEntityKey(song)) && selIds.size > 1) {
+             const bulkTracks = L.visibleSongs.filter(s => selIds.has(ownedEntityKey(s))).map(songToTrack);
             L.psyDrag.startDrag({ data: JSON.stringify({ type: 'songs', tracks: bulkTracks }), label: `${bulkTracks.length} Songs` }, me.clientX, me.clientY);
           } else {
             L.psyDrag.startDrag({ data: JSON.stringify({ type: 'song', track }), label: song.title }, me.clientX, me.clientY);
@@ -125,17 +128,16 @@ export default function FavoritesSongsTracklist({
     play: (index) => {
       const L = latest.current;
       if (L.orbitActive) { L.queueHint(); return; }
-      L.playTrack(L.visibleTracks[index], L.visibleTracks);
+       L.playTrack(L.visibleTracks[index], L.visibleTracks, true, false, index);
     },
     startPreview: (song) => usePreviewStore.getState().startPreview(
       previewInputFromSong(song),
       'favorites',
     ),
-    rate: (songId, r) => latest.current.handleRate(songId, r),
-    remove: (songId) => latest.current.removeSong(songId),
+    rate: (song, r) => latest.current.handleRate(song, r),
+    remove: (song) => latest.current.removeSong(song),
     navArtist: (artistId, serverId) => {
-      const query = appendServerQuery(undefined, serverId);
-      latest.current.navigate(query ? `/artist/${artistId}?${query}` : `/artist/${artistId}`);
+      latest.current.navigate(buildArtistDetailPath(artistId, { serverId }));
     },
     navAlbum: (albumId, serverId) => {
       const query = appendServerQuery(undefined, serverId);
@@ -177,7 +179,7 @@ export default function FavoritesSongsTracklist({
     estimateSize: () => 48,
     overscan: Math.max(8, Math.ceil(viewportH / 48)),
     scrollMargin,
-    getItemKey: i => `${visibleSongs[i].id}:${i}`,
+    getItemKey: i => ownedEntityKey(visibleSongs[i]),
   });
 
   const virtualItems = rowVirtualizer.getVirtualItems();
@@ -227,7 +229,7 @@ export default function FavoritesSongsTracklist({
                       if (allSelected) {
                         useSelectionStore.getState().clearAll();
                       } else {
-                        useSelectionStore.getState().setSelectedIds(() => new Set(visibleSongs.map(s => s.id)));
+                        useSelectionStore.getState().setSelectedIds(() => new Set(visibleSongs.map(ownedEntityKey)));
                       }
                     }}
                   />
@@ -318,13 +320,13 @@ export default function FavoritesSongsTracklist({
                 visibleCols={visibleCols}
                 gridStyle={gridStyle}
                 showBitrate={showBitrate}
-                isActive={currentTrack?.id === song.id}
-                showEq={currentTrack?.id === song.id && isPlaying}
-                isSelected={selectedIds.has(song.id)}
+                isActive={currentTrack ? ownedEntityKey(currentTrack) === ownedEntityKey(song) : false}
+                showEq={currentTrack ? ownedEntityKey(currentTrack) === ownedEntityKey(song) && isPlaying : false}
+                isSelected={selectedIds.has(ownedEntityKey(song))}
                 inSelectMode={inSelectMode}
-                ratingValue={ratings[song.id] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
-                isPreviewing={previewingId === song.id}
-                previewStarted={previewingId === song.id && previewAudioStarted}
+                ratingValue={ratings[ownedEntityKey(song)] ?? userRatingOverrides[ownedEntityKey(song)] ?? userRatingOverrides[song.id] ?? song.userRating ?? 0}
+                isPreviewing={previewingId === song.id && previewingTrack?.serverId === song.serverId}
+                previewStarted={previewingId === song.id && previewingTrack?.serverId === song.serverId && previewAudioStarted}
                 orbitActive={orbitActive}
                 cb={cb}
               />

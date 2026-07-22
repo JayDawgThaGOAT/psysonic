@@ -1,16 +1,21 @@
 import { useAuthStore } from '@/store/authStore';
-import { genreTagsFor } from '@/lib/library/genreTags';
-import { getArtists, getArtistsAcrossLibraries } from '@/lib/api/subsonicArtists';
-import { getAlbumList, getRandomSongs } from '@/lib/api/subsonicLibrary';
-import { libraryScopeCacheKeyForServer, librarySelectionForServer } from '@/lib/api/subsonicClient';
+import { getArtistsForServer } from '@/lib/api/subsonicArtists';
+import { getAlbumListForServer, getRandomSongsForServer } from '@/lib/api/subsonicLibrary';
+import { libraryScopeCacheKeyForServer } from '@/lib/api/subsonicClient';
+import {
+  libraryScopeStatistics,
+  libraryScopeMostPlayed,
+  type LibraryScopeMostPlayedResponse,
+  type LibraryStatisticsScope,
+} from '@/lib/api/library/scopeReads';
 import type {
-  StatisticsFormatSample,
   StatisticsLibraryAggregates,
   StatisticsOverviewData,
   SubsonicAlbum,
-  SubsonicGenre,
-  SubsonicSong,
 } from '@/lib/api/subsonicTypes';
+import { deriveLibraryBrowseIndexScopes } from '@/lib/library/libraryBrowseScope';
+import { genreTagsFor } from '@/lib/library/genreTags';
+import { readyLibraryServerKeys } from '@/lib/library/libraryReady';
 
 /** Cache TTL for statistics page aggregates — same 7-minute window as
  *  the rating prefetch cache in subsonicRatings.ts. */
@@ -23,139 +28,181 @@ export function statisticsPageCacheKey(prefix: string): string | null {
   return `${prefix}:${activeServerId}:${libraryScopeCacheKeyForServer(activeServerId)}`;
 }
 
+export function statisticsIndexScopes(): LibraryStatisticsScope[] {
+  const state = useAuthStore.getState();
+  return deriveLibraryBrowseIndexScopes(state);
+}
+
+/** Ranked local-index albums for the same selected server/folder scope as Statistics. */
+export function fetchMostPlayedAlbums(
+  limit: number,
+  offset: number,
+): Promise<LibraryScopeMostPlayedResponse> {
+  return libraryScopeMostPlayed({
+    scopes: statisticsIndexScopes(),
+    limit,
+    offset,
+  });
+}
+
+function statisticsAggregateCacheKey(scopes: LibraryStatisticsScope[]): string | null {
+  if (scopes.length === 0) return null;
+  return `statsAgg:${scopes.map(scope => `${scope.serverId}:${scope.libraryIds.join(',') || 'all'}`).join('|')}`;
+}
+
 const statisticsAggregatesCache = new Map<string, { value: StatisticsLibraryAggregates; expiresAt: number }>();
 
+async function fetchStatisticsAlbumsForScope(
+  scope: LibraryStatisticsScope,
+  pageSize: number,
+  limit: number,
+): Promise<{ albums: SubsonicAlbum[]; capped: boolean }> {
+  const albumsById = new Map<string, SubsonicAlbum>();
+  const libraryIds = scope.libraryIds.length > 1 ? scope.libraryIds : [null];
+  let capped = false;
+  for (const libraryId of libraryIds) {
+    let offset = 0;
+    while (albumsById.size < limit) {
+      const size = Math.min(pageSize, limit - albumsById.size);
+      const albums = await getAlbumListForServer(
+        scope.serverId,
+        'alphabeticalByName',
+        size,
+        offset,
+        libraryId ? { musicFolderId: libraryId } : {},
+      );
+      for (const album of albums) albumsById.set(album.id, album);
+      if (albums.length < size) break;
+      offset += size;
+    }
+    if (albumsById.size >= limit) {
+      capped = true;
+      break;
+    }
+  }
+  return { albums: [...albumsById.values()], capped };
+}
+
+async function fetchStatisticsNetworkAggregates(
+  scopes: LibraryStatisticsScope[],
+): Promise<StatisticsLibraryAggregates> {
+  const pageSize = 500;
+  const albumLimitPerServer = 5_000;
+  const byServer = await Promise.all(scopes.map(async scope => {
+    const [artists, formatSongs, albumResult] = await Promise.all([
+      getArtistsForServer(scope.serverId).catch(() => []),
+      getRandomSongsForServer(scope.serverId, 500).catch(() => []),
+      fetchStatisticsAlbumsForScope(scope, pageSize, albumLimitPerServer),
+    ]);
+    return { artists, formatSongs, ...albumResult };
+  }));
+
+  const genreAgg = new Map<string, { songCount: number; albumCount: number }>();
+  const formatCounts = new Map<string, number>();
+  let artistCount = 0;
+  let playtimeSec = 0;
+  let albumsCounted = 0;
+  let songsCounted = 0;
+  let formatTrackCount = 0;
+  let capped = false;
+  for (const server of byServer) {
+    artistCount += server.artists.length;
+    capped ||= server.capped;
+    for (const album of server.albums) {
+      playtimeSec += album.duration ?? 0;
+      albumsCounted += 1;
+      const songCount = album.songCount ?? 0;
+      songsCounted += songCount;
+      const labels = genreTagsFor(album);
+      for (const label of labels.length > 0 ? labels : ['']) {
+        const aggregate = genreAgg.get(label) ?? { songCount: 0, albumCount: 0 };
+        aggregate.songCount += songCount;
+        aggregate.albumCount += 1;
+        genreAgg.set(label, aggregate);
+      }
+    }
+    for (const song of server.formatSongs) {
+      const format = song.suffix?.toUpperCase() ?? 'Unknown';
+      formatCounts.set(format, (formatCounts.get(format) ?? 0) + 1);
+      formatTrackCount += 1;
+    }
+  }
+
+  return {
+    artistCount,
+    playtimeSec,
+    albumsCounted,
+    songsCounted,
+    capped,
+    genres: [...genreAgg.entries()]
+      .map(([value, counts]) => ({ value, ...counts }))
+      .sort((a, b) => b.songCount - a.songCount),
+    formats: [...formatCounts.entries()]
+      .map(([format, count]) => ({ format, count }))
+      .sort((a, b) => b.count - a.count),
+    formatTrackCount,
+  };
+}
+
 /**
- * Walks up to 5000 newest albums (scoped by library filter). Cached per server + music folder for
- * 7 minutes.
- * Unknown/missing album genre is stored as `value: ''`; UI should map to i18n.
+ * Reads aggregate counts from the local index. Cache keys include every selected
+ * server/folder, and intentionally preserve duplicate entities across scopes.
  */
 export async function fetchStatisticsLibraryAggregates(): Promise<StatisticsLibraryAggregates> {
-  const key = statisticsPageCacheKey('statsAgg');
+  const scopes = statisticsIndexScopes();
+  const key = statisticsAggregateCacheKey(scopes);
   if (key) {
     const hit = statisticsAggregatesCache.get(key);
     if (hit && Date.now() < hit.expiresAt) return hit.value;
   }
 
-  let playtimeSec = 0;
-  let albumsCounted = 0;
-  let songsCounted = 0;
-  const genreAgg = new Map<string, { songCount: number; albumCount: number }>();
-  const pageSize = 500;
-  const capped = false;
-  let offset = 0;
-  const activeServerId = useAuthStore.getState().activeServerId;
-  const dedupeAlbumIds =
-    activeServerId != null && librarySelectionForServer(activeServerId).length > 1;
-  const seenAlbumIds = dedupeAlbumIds ? new Set<string>() : null;
-  let nextPage = getAlbumList('alphabeticalByName', pageSize, 0);
-  for (;;) {
-    try {
-      const albums = await nextPage;
-      for (const a of albums) {
-        if (seenAlbumIds) {
-          if (seenAlbumIds.has(a.id)) continue;
-          seenAlbumIds.add(a.id);
-        }
-        playtimeSec += a.duration ?? 0;
-        albumsCounted += 1;
-        const sc = a.songCount ?? 0;
-        songsCounted += sc;
-        const tags = genreTagsFor(a);
-        const labels = tags.length > 0 ? tags : [''];
-        for (const label of labels) {
-          let g = genreAgg.get(label);
-          if (!g) {
-            g = { songCount: 0, albumCount: 0 };
-            genreAgg.set(label, g);
-          }
-          g.songCount += sc;
-          g.albumCount += 1;
-        }
-      }
-      if (albums.length < pageSize) break;
-      offset += pageSize;
-      nextPage = getAlbumList('alphabeticalByName', pageSize, offset);
-    } catch {
-      break;
-    }
-  }
-
-  const genres: SubsonicGenre[] = [...genreAgg.entries()]
-    .map(([value, c]) => ({ value, songCount: c.songCount, albumCount: c.albumCount }))
-    .sort((a, b) => b.songCount - a.songCount);
-
-  const result: StatisticsLibraryAggregates = {
-    playtimeSec,
-    albumsCounted,
-    songsCounted,
-    capped,
-    genres,
-  };
+  const indexReady = await readyLibraryServerKeys(scopes.map(scope => scope.serverId));
+  const result = indexReady
+    ? await libraryScopeStatistics(scopes).then<StatisticsLibraryAggregates>(aggregate => ({
+      artistCount: aggregate.artistCount,
+      playtimeSec: aggregate.playtimeSec,
+      albumsCounted: aggregate.albumCount,
+      songsCounted: aggregate.songCount,
+      capped: false,
+      genres: aggregate.genres,
+      formats: aggregate.formats.map(format => ({ format: format.value, count: format.songCount })),
+      formatTrackCount: aggregate.songCount,
+    })).catch(() => fetchStatisticsNetworkAggregates(scopes))
+    : await fetchStatisticsNetworkAggregates(scopes);
   if (key) {
     statisticsAggregatesCache.set(key, { value: result, expiresAt: Date.now() + STATS_CACHE_TTL });
   }
   return result;
 }
 
-/** Recent / frequent / highest album strips + artist count for Statistics. */
+/** Recent / frequent / highest album strips for Statistics. */
 const statisticsOverviewCache = new Map<string, { value: StatisticsOverviewData; expiresAt: number }>();
 
 export async function fetchStatisticsOverview(): Promise<StatisticsOverviewData> {
-  const key = statisticsPageCacheKey('statsOverview');
+  const scopes = statisticsIndexScopes();
+  const scopeKey = statisticsAggregateCacheKey(scopes);
+  const key = scopeKey ? `statsOverview:${scopeKey}` : null;
   if (key) {
     const hit = statisticsOverviewCache.get(key);
     if (hit && Date.now() < hit.expiresAt) return hit.value;
   }
-  const [recent, frequent, highest, artists] = await Promise.all([
-    getAlbumList('recent', 20).catch(() => [] as SubsonicAlbum[]),
-    getAlbumList('frequent', 12).catch(() => [] as SubsonicAlbum[]),
-    getAlbumList('highest', 12).catch(() => [] as SubsonicAlbum[]),
-    fetchStatisticsArtistCount().catch(() => 0),
+  const serverIds = scopes.map(scope => scope.serverId);
+  const fetchType = (type: 'recent' | 'frequent' | 'highest', size: number) =>
+    Promise.all(serverIds.map(serverId =>
+      getAlbumListForServer(serverId, type, size).catch(() => [] as SubsonicAlbum[]),
+    )).then(results => results.flat());
+  const [recent, frequent, highest] = await Promise.all([
+    fetchType('recent', 20),
+    fetchType('frequent', 12),
+    fetchType('highest', 12),
   ]);
   const result: StatisticsOverviewData = {
     recent,
     frequent,
     highest,
-    artistCount: artists,
   };
   if (key) {
     statisticsOverviewCache.set(key, { value: result, expiresAt: Date.now() + STATS_CACHE_TTL });
-  }
-  return result;
-}
-
-async function fetchStatisticsArtistCount(): Promise<number> {
-  const { activeServerId } = useAuthStore.getState();
-  if (!activeServerId) return 0;
-  const selection = librarySelectionForServer(activeServerId);
-  if (selection.length <= 1) {
-    return (await getArtists()).length;
-  }
-  return (await getArtistsAcrossLibraries(selection)).length;
-}
-
-/** Format (suffix) histogram from a random sample for Statistics. */
-const statisticsFormatCache = new Map<string, { value: StatisticsFormatSample; expiresAt: number }>();
-
-export async function fetchStatisticsFormatSample(): Promise<StatisticsFormatSample> {
-  const key = statisticsPageCacheKey('statsFormat');
-  if (key) {
-    const hit = statisticsFormatCache.get(key);
-    if (hit && Date.now() < hit.expiresAt) return hit.value;
-  }
-  const songs = await getRandomSongs(500).catch(() => [] as SubsonicSong[]);
-  const counts: Record<string, number> = {};
-  for (const song of songs) {
-    const fmt = song.suffix?.toUpperCase() ?? 'Unknown';
-    counts[fmt] = (counts[fmt] ?? 0) + 1;
-  }
-  const rows = Object.entries(counts)
-    .map(([format, count]) => ({ format, count }))
-    .sort((a, b) => b.count - a.count);
-  const result: StatisticsFormatSample = { rows, sampleSize: songs.length };
-  if (key) {
-    statisticsFormatCache.set(key, { value: result, expiresAt: Date.now() + STATS_CACHE_TTL });
   }
   return result;
 }

@@ -82,6 +82,7 @@ pub struct DeltaSyncRunner<'a> {
     /// DS-8 budget. `None` skips the tombstone chunk entirely; `Some(n)`
     /// drives `TombstoneReconciler::reconcile_chunk(n)` after DS-4.
     tombstone_budget: Option<u32>,
+    full_tombstone_pass: bool,
     progress: Arc<dyn Progress + Send + Sync>,
 }
 
@@ -105,6 +106,7 @@ impl<'a> DeltaSyncRunner<'a> {
             batch_size: DEFAULT_BATCH_SIZE,
             sleep_enabled: true,
             tombstone_budget: None,
+            full_tombstone_pass: false,
             progress: Arc::new(NoopProgress),
         }
     }
@@ -144,6 +146,13 @@ impl<'a> DeltaSyncRunner<'a> {
         self
     }
 
+    /// Manual Verify mode: bypass watermark/delta short-circuits and inspect
+    /// every live row in one stable, internally chunked pass.
+    pub fn with_full_tombstone_pass(mut self) -> Self {
+        self.full_tombstone_pass = true;
+        self
+    }
+
     pub fn with_progress(mut self, progress: Arc<dyn Progress + Send + Sync>) -> Self {
         self.progress = progress;
         self
@@ -159,6 +168,31 @@ impl<'a> DeltaSyncRunner<'a> {
             .map_err(SyncError::Storage)?;
 
         let mut report = DeltaSyncReport::default();
+
+        if self.full_tombstone_pass {
+            let mut reconciler =
+                TombstoneReconciler::new(self.store, self.subsonic, &self.server_id)
+                    .with_library_scope(&self.library_scope);
+            if !self.sleep_enabled {
+                reconciler = reconciler.with_sleep_disabled();
+            }
+            if let Some(flag) = &self.cancel {
+                reconciler = reconciler.with_cancellation(Arc::clone(flag));
+            }
+            let stats = reconciler
+                .reconcile_full_pass(super::budget::RequestBudget::VERIFY_CHUNK_SIZE)
+                .await?;
+            report.tombstones_checked = stats.checked;
+            report.tombstones_deleted = stats.deleted;
+            self.progress.emit(ProgressEvent::Tombstoned {
+                deleted_count: stats.deleted,
+                checked_count: stats.checked,
+            });
+            self.progress.emit(ProgressEvent::Completed {
+                kind: "verify_integrity".into(),
+            });
+            return Ok(report);
+        }
 
         // DS-0 / DS-1 / DS-2 / DS-3 — poll + watermark compare.
         let probe = self.poll_for_change(&sync_state).await?;
@@ -195,7 +229,8 @@ impl<'a> DeltaSyncRunner<'a> {
         if let Some(budget) = self.tombstone_budget {
             if budget > 0 {
                 let mut reconciler =
-                    TombstoneReconciler::new(self.store, self.subsonic, &self.server_id);
+                    TombstoneReconciler::new(self.store, self.subsonic, &self.server_id)
+                        .with_library_scope(&self.library_scope);
                 if !self.sleep_enabled {
                     reconciler = reconciler.with_sleep_disabled();
                 }
@@ -241,11 +276,7 @@ impl<'a> DeltaSyncRunner<'a> {
         }
         if let Some(iso) = probe.next_last_scan_iso.as_deref() {
             sync_state
-                .set_server_last_scan_iso(
-                    &self.server_id,
-                    &self.library_scope,
-                    Some(iso),
-                )
+                .set_server_last_scan_iso(&self.server_id, &self.library_scope, Some(iso))
                 .map_err(SyncError::Storage)?;
         }
         self.stamp_last_delta(&sync_state)?;
@@ -294,9 +325,10 @@ impl<'a> DeltaSyncRunner<'a> {
     }
 
     fn delta_strategy(&self) -> IngestStrategy {
-        if self
-            .capability_flags
-            .contains(CapabilityFlags::NAVIDROME_NATIVE_BULK)
+        if self.library_scope.is_empty()
+            && self
+                .capability_flags
+                .contains(CapabilityFlags::NAVIDROME_NATIVE_BULK)
         {
             IngestStrategy::N1
         } else {
@@ -314,29 +346,21 @@ impl<'a> DeltaSyncRunner<'a> {
     fn local_track_updated_watermark(&self) -> Result<Option<i64>, SyncError> {
         self.store
             .with_conn("delta.local_track_watermark", |c| {
-                c.query_row(
-                    "SELECT MAX(server_updated_at) FROM track \
-                     WHERE server_id = ?1 AND deleted = 0",
-                    rusqlite::params![self.server_id],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-            })
-            .map_err(SyncError::Storage)
-    }
-
-    fn local_album_ids(&self) -> Result<HashSet<String>, SyncError> {
-        self.store
-            .with_conn("delta.local_album_ids", |c| {
-                let mut stmt = c.prepare(
-                    "SELECT DISTINCT album_id FROM track \
-                     WHERE server_id = ?1 AND deleted = 0 AND album_id IS NOT NULL",
-                )?;
-                let rows: rusqlite::Result<HashSet<String>> = stmt
-                    .query_map(rusqlite::params![self.server_id], |r| {
-                        r.get::<_, String>(0)
-                    })?
-                    .collect();
-                rows
+                if self.library_scope.is_empty() {
+                    c.query_row(
+                        "SELECT MAX(server_updated_at) FROM track \
+                         WHERE server_id = ?1 AND deleted = 0",
+                        rusqlite::params![self.server_id],
+                        |row| row.get::<_, Option<i64>>(0),
+                    )
+                } else {
+                    c.query_row(
+                        "SELECT MAX(server_updated_at) FROM track \
+                         WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0",
+                        rusqlite::params![self.server_id, self.library_scope],
+                        |row| row.get::<_, Option<i64>>(0),
+                    )
+                }
             })
             .map_err(SyncError::Storage)
     }
@@ -472,7 +496,6 @@ impl<'a> DeltaSyncRunner<'a> {
 
     async fn run_s2_delta(&self, report: &mut DeltaSyncReport) -> Result<(), SyncError> {
         let scope = self.library_scope_opt();
-        let known_albums = self.local_album_ids()?;
         let mut seen_albums: HashSet<String> = HashSet::new();
 
         for list_type in ["newest", "recent"] {
@@ -495,14 +518,6 @@ impl<'a> DeltaSyncRunner<'a> {
 
                 for album_summary in page {
                     if !seen_albums.insert(album_summary.id.clone()) {
-                        continue;
-                    }
-                    // S2-delta only fetches album bodies the local
-                    // store doesn't already have. `recent` (`getAlbumList2
-                    // type=recent`) returns play-time order, so a
-                    // known album that just got played still skips
-                    // the song-list re-fetch.
-                    if known_albums.contains(&album_summary.id) {
                         continue;
                     }
                     self.check_cancellation()?;
@@ -544,8 +559,7 @@ impl<'a> DeltaSyncRunner<'a> {
                     if !rows.is_empty() {
                         let (changed, remapped) = self.write_batch(&rows)?;
                         report.changed_count = report.changed_count.saturating_add(changed);
-                        report.remapped_count =
-                            report.remapped_count.saturating_add(remapped);
+                        report.remapped_count = report.remapped_count.saturating_add(remapped);
                     }
                 }
 
@@ -816,10 +830,10 @@ mod tests {
         assert_eq!(report.strategy.as_deref(), Some("n1"));
     }
 
-    // ── DS-4 S2-delta only fetches unknown album ids ─────────────────
+    // ── DS-4 S2-delta rechecks returned known album ids ──────────────
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn s2_delta_skips_known_album_ids() {
+    async fn s2_delta_rechecks_known_album_ids_before_advancing_watermark() {
         let server = MockServer::start().await;
         // Watermark change: getArtists lastModified differs from stored
         // (null) → falls through to DS-4.
@@ -867,9 +881,23 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        // getAlbum body for the fresh id only. If "al_known" is
-        // accidentally fetched, the test mock returns 404 by default
-        // and the runner errors out — that's the assertion.
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/getAlbum.view"))
+            .and(query_param("id", "al_known"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": {
+                    "status": "ok",
+                    "album": {
+                        "id": "al_known",
+                        "name": "Known",
+                        "song": [
+                            { "id": "tr_existing", "title": "Known changed", "duration": 240 }
+                        ]
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
         Mock::given(wm_method("GET"))
             .and(wm_path("/rest/getAlbum.view"))
             .and(query_param("id", "al_fresh"))
@@ -906,12 +934,41 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.strategy.as_deref(), Some("s2"));
-        assert_eq!(report.changed_count, 1, "only the fresh album got upserted");
+        assert_eq!(
+            report.changed_count, 2,
+            "known and fresh albums are inspected"
+        );
         // The seed plus the new track land in the store.
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 2);
+        let title: String = store
+            .with_read_conn(|c| {
+                c.query_row(
+                    "SELECT title FROM track WHERE id = 'tr_existing'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(title, "Known changed");
+    }
+
+    #[test]
+    fn scoped_delta_never_selects_server_wide_n1() {
+        let store = LibraryStore::open_in_memory();
+        let subsonic = test_subsonic("http://127.0.0.1:1");
+        let runner = DeltaSyncRunner::new(
+            &store,
+            &subsonic,
+            "s1",
+            "lib-1",
+            flags(CapabilityFlags::NAVIDROME_NATIVE_BULK),
+        );
+        assert_eq!(runner.delta_strategy(), IngestStrategy::S2);
     }
 
     // ── DS-9 watermarks land + last_delta_sync_at stamped ────────────
@@ -960,9 +1017,7 @@ mod tests {
 
         let sync_state = SyncStateRepository::new(&store);
         assert_eq!(
-            sync_state
-                .get_artists_last_modified_ms("s1", "")
-                .unwrap(),
+            sync_state.get_artists_last_modified_ms("s1", "").unwrap(),
             Some(1_716_840_000_000)
         );
         let (last_delta,): (Option<i64>,) = store
@@ -1056,14 +1111,50 @@ mod tests {
         // tr_gone is now soft-deleted.
         let gone_deleted: i64 = store
             .with_conn("misc", |c| {
-                c.query_row(
-                    "SELECT deleted FROM track WHERE id='tr_gone'",
-                    [],
-                    |r| r.get(0),
-                )
+                c.query_row("SELECT deleted FROM track WHERE id='tr_gone'", [], |r| {
+                    r.get(0)
+                })
             })
             .unwrap();
         assert_eq!(gone_deleted, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_bypasses_watermark_and_checks_every_live_row() {
+        let server = MockServer::start().await;
+        // No getArtists mock is mounted: touching the delta watermark path
+        // would fail this test. Every getSong probe succeeds.
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/getSong.view"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "subsonic-response": {
+                    "status": "ok",
+                    "song": { "id": "present", "title": "Present" }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let store = LibraryStore::open_in_memory();
+        for i in 0..205 {
+            seed_track(&store, &format!("tr-{i:03}"), "album", 1_000);
+        }
+        let report = DeltaSyncRunner::new(
+            &store,
+            &test_subsonic(&server.uri()),
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_full_tombstone_pass()
+        .with_sleep_disabled()
+        .run()
+        .await
+        .unwrap();
+
+        assert_eq!(report.tombstones_checked, 205);
+        assert_eq!(report.tombstones_deleted, 0);
+        assert!(!report.up_to_date);
     }
 
     fn parse_test_iso(s: &str) -> i64 {

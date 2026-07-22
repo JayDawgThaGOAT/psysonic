@@ -38,4 +38,5 @@ export const albums = {
   noFavorites: 'Niciun album favorit nu corespunde filtrelor curente.',
   noCompilations: 'Nicio compilație nu corespunde filtrelor curente.',
   noMatchingFilters: 'Niciun album nu corespunde filtrelor curente.',
+  copyDiagnostics: 'Copiază raportul de timp',
 };

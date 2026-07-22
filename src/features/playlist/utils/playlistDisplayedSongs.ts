@@ -1,4 +1,5 @@
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 export type PlaylistSortKey = 'natural' | 'position' | 'title' | 'artist' | 'album' | 'favorite' | 'rating' | 'duration' | 'playCount' | 'lastPlayed' | 'bpm';
 export type PlaylistSortDir = 'asc' | 'desc';
@@ -29,8 +30,12 @@ export function getDisplayedSongs(songs: SubsonicSong[], opts: DisplayedSongsOpt
     result.sort((a, b) => {
       let av: string | number;
       let bv: string | number;
-      const effectiveRating = (s: SubsonicSong) => opts.ratings[s.id] ?? opts.userRatingOverrides[s.id] ?? s.userRating ?? 0;
-      const effectiveStarred = (s: SubsonicSong) => (s.id in opts.starredOverrides ? opts.starredOverrides[s.id] : opts.starredSongs.has(s.id)) ? 1 : 0;
+      const effectiveRating = (s: SubsonicSong) => (
+        opts.ratings[s.id] ?? ownedOverrideValue(opts.userRatingOverrides, s) ?? s.userRating ?? 0
+      );
+      const effectiveStarred = (s: SubsonicSong) => (
+        ownedOverrideValue(opts.starredOverrides, s) ?? opts.starredSongs.has(s.id)
+      ) ? 1 : 0;
       switch (opts.sortKey) {
         case 'title': av = a.title; bv = b.title; break;
         case 'artist': av = a.artist ?? ''; bv = b.artist ?? ''; break;

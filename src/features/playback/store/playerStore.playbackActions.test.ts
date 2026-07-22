@@ -13,6 +13,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const orbitMocks = vi.hoisted(() => ({
+  role: null as 'host' | null,
+  allowsTrackServer: vi.fn((_serverId?: string) => true),
+  showToast: vi.fn(),
+}));
+
 vi.mock('@/lib/api/subsonic', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/subsonic')>('@/lib/api/subsonic');
   return {
@@ -50,12 +56,22 @@ vi.mock('@/music-network', () => {
 vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/store/orbitRuntime')>()),
   orbitBulkGuard: vi.fn(async () => true),
+  orbitAllowsTrackServer: orbitMocks.allowsTrackServer,
+  orbitSnapshot: () => ({
+    role: orbitMocks.role,
+    phase: orbitMocks.role ? 'active' : 'idle',
+    state: null,
+    serverId: orbitMocks.role ? 'srv-a' : null,
+  }),
 }));
+vi.mock('@/lib/dom/toast', () => ({ showToast: orbitMocks.showToast }));
 
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { onInvoke, invokeMock } from '@/test/mocks/tauri';
 import { resetPlayerStore, resetAuthStore } from '@/test/helpers/storeReset';
-import { makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import { makeServer, makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import { useAuthStore } from '@/store/authStore';
+import { usePlaybackAlternativeStore } from '@/features/playback/store/playbackAlternativeStore';
 
 function stubPlaybackInvokes(): void {
   onInvoke('audio_play', () => undefined);
@@ -68,6 +84,7 @@ function stubPlaybackInvokes(): void {
   onInvoke('audio_set_normalization', () => undefined);
   onInvoke('discord_update_presence', () => undefined);
   onInvoke('frontend_debug_log', () => undefined);
+  onInvoke('library_resolve_entity_sources', () => []);
 }
 
 beforeEach(() => {
@@ -77,6 +94,10 @@ beforeEach(() => {
   vi.useFakeTimers();
   resetPlayerStore();
   resetAuthStore();
+  orbitMocks.role = null;
+  orbitMocks.allowsTrackServer.mockReset();
+  orbitMocks.allowsTrackServer.mockReturnValue(true);
+  orbitMocks.showToast.mockReset();
   stubPlaybackInvokes();
 });
 
@@ -234,6 +255,73 @@ describe('next', () => {
     expect(s.isPlaying).toBe(false);
     expect(s.currentTime).toBe(0);
     expect(s.progress).toBe(0);
+  });
+});
+
+describe('mixed-server play selection', () => {
+  it('jumps to the matching owner when raw track ids collide', async () => {
+    const serverA = makeServer({ id: 'srv-a', url: 'https://a.test' });
+    const serverB = makeServer({ id: 'srv-b', url: 'https://b.test' });
+    useAuthStore.setState({ servers: [serverA, serverB], activeServerId: serverA.id });
+    const a = makeTrack({ id: 'shared', serverId: serverA.id });
+    const b = makeTrack({ id: 'shared', serverId: serverB.id });
+    seedQueue([a, b], { index: 0, currentTrack: a });
+
+    usePlayerStore.getState().playTrack(b);
+    await vi.runAllTimersAsync();
+
+    const state = usePlayerStore.getState();
+    expect(state.queueIndex).toBe(1);
+    expect(state.currentTrack).toEqual(expect.objectContaining({
+      id: 'shared',
+      serverId: serverB.id,
+    }));
+  });
+});
+
+describe('audio_play failure', () => {
+  it('auto-skips only after alternative lookup finds no source', async () => {
+    const server = makeServer({ id: 'srv-a', url: 'https://a.test' });
+    useAuthStore.setState({
+      servers: [server],
+      activeServerId: server.id,
+      libraryBrowseServerIds: [server.id],
+    });
+    const queue = makeTracks(2, index => ({
+      id: `track-${index}`,
+      serverId: server.id,
+    }));
+    seedQueue(queue, { index: 0, currentTrack: queue[0], serverId: server.id });
+    const next = vi.fn();
+    usePlayerStore.setState({ next });
+    onInvoke('audio_play', () => { throw new Error('engine rejected source'); });
+
+    usePlayerStore.getState().playTrack(queue[0], undefined, true, false, 0);
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    const player = usePlayerStore.getState();
+    expect(next).toHaveBeenCalledWith(false);
+    expect(player.queueIndex).toBe(0);
+    expect(player.currentTrack?.id).toBe('track-0');
+    expect(usePlaybackAlternativeStore.getState().failure).toEqual(expect.objectContaining({
+      queueIndex: 0,
+      expectedRef: { serverId: 'a.test', trackId: 'track-0' },
+      detail: 'Error: engine rejected source',
+    }));
+  });
+});
+
+describe('Orbit host server ownership', () => {
+  it('reports a blocked cross-server play instead of failing silently', () => {
+    orbitMocks.role = 'host';
+    orbitMocks.allowsTrackServer.mockReturnValue(false);
+    const foreign = makeTrack({ id: 'foreign', serverId: 'srv-b' });
+
+    usePlayerStore.getState().playTrack(foreign, [foreign]);
+
+    expect(invokeMock).not.toHaveBeenCalledWith('audio_play', expect.anything());
+    expect(orbitMocks.showToast).toHaveBeenCalledWith(expect.any(String), 4000, 'error');
   });
 });
 

@@ -17,6 +17,7 @@ import AppRoutes from './AppRoutes';
 import FullscreenPlayer, { FullscreenPlayerImmersive, FullscreenPlayerPrism } from '@/features/fullscreenPlayer';
 import ContextMenu from '@/features/contextMenu/components/ContextMenu';
 import SongInfoModal from '@/features/playback/components/SongInfoModal';
+import PlaybackAlternativeModal from '@/features/playback/components/PlaybackAlternativeModal';
 import { DownloadFolderModal, OfflineBanner } from '@/features/offline/ui';
 import GlobalConfirmModal from '@/ui/GlobalConfirmModal';
 import ThemeMigrationNotice from '@/ui/ThemeMigrationNotice';
@@ -43,6 +44,8 @@ import { useNowPlayingTrayTitle } from '@/app/hooks/useNowPlayingTrayTitle';
 import { usePrefetchReleaseNotes } from '@/app/hooks/usePrefetchReleaseNotes';
 import { useTrayMenuI18n } from '@/app/hooks/useTrayMenuI18n';
 import { useServerCapabilitiesProbe } from '@/app/hooks/useServerCapabilitiesProbe';
+import { useLibraryServerReachability } from '@/app/hooks/useLibraryServerReachability';
+import { useMusicFoldersDiscovery } from '@/app/hooks/useMusicFoldersDiscovery';
 import { useQueueResizer } from '@/features/queue';
 import { useGlobalDndAndSelectionBlockers } from '@/lib/hooks/useGlobalDndAndSelectionBlockers';
 import { useAppActivityTracking } from '@/app/hooks/useAppActivityTracking';
@@ -95,13 +98,14 @@ export function AppShell() {
   usePlaybackRateOrbitSync();
   useTrayMenuI18n();
   useServerCapabilitiesProbe();
+  useLibraryServerReachability();
+  useMusicFoldersDiscovery();
   useAccumulatedUsage();
   const isFullscreenOpen = usePlayerStore(s => s.isFullscreenOpen);
   const toggleFullscreen = usePlayerStore(s => s.toggleFullscreen);
   const isQueueVisible = usePlayerStore(s => s.isQueueVisible);
   const toggleQueue = usePlayerStore(s => s.toggleQueue);
   const uiScale = useFontStore(s => s.uiScale);
-  const initializeFromServerQueue = usePlayerStore(s => s.initializeFromServerQueue);
   const currentTrack = usePlayerStore(s => s.currentTrack);
   const isPlaying = usePlayerStore(s => s.isPlaying);
   const { status: connStatus, isRetrying: connRetrying, retry: connRetry, isLan, serverName } = useConnectionStatus();
@@ -155,10 +159,6 @@ export function AppShell() {
 
   useOfflineAutoNav(connStatus, offlineNav, location, navigate);
   useOfflineLibraryFilterSuspend();
-
-  useEffect(() => {
-    initializeFromServerQueue();
-  }, [initializeFromServerQueue]);
 
   useEffect(() => {
     useEqStore.getState().syncToRust();
@@ -346,6 +346,7 @@ export function AppShell() {
       )}
       <ContextMenu />
       <SongInfoModal />
+      <PlaybackAlternativeModal />
       <DownloadFolderModal />
       <GlobalConfirmModal />
       <ThemeMigrationNotice />

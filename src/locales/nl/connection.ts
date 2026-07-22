@@ -31,6 +31,7 @@ export const connection = {
   retry: 'Opnieuw proberen',
   serverSettings: 'Serverinstellingen',
   switchServerTitle: 'Server wisselen',
+  multiServer: 'Meerdere servers',
   switchServerHint: 'Klik om een andere opgeslagen server te kiezen.',
   manageServers: 'Servers beheren…',
   switchFailed: 'Wisselen mislukt — server niet bereikbaar.',

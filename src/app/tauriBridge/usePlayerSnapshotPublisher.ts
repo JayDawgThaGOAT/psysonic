@@ -1,9 +1,11 @@
 import { useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackProgress';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 
 /** Half-width of the CLI snapshot queue window (thin-state — like the mini
  *  bridge, the full 50k queue must not serialize over IPC on every change). */
@@ -27,10 +29,10 @@ export function usePlayerSnapshotPublisher() {
       const selected = sid ? (auth.musicLibraryFilterByServer[sid] ?? 'all') : 'all';
       const ct = s.currentTrack;
       const currentTrackUserRating =
-        ct != null ? (s.userRatingOverrides[ct.id] ?? ct.userRating ?? null) : null;
+        ct != null ? (ownedOverrideValue(s.userRatingOverrides, ct) ?? ct.userRating ?? null) : null;
       const currentTrackStarred =
         ct != null
-          ? (ct.id in s.starredOverrides ? s.starredOverrides[ct.id] : Boolean(ct.starred))
+          ? (ownedOverrideValue(s.starredOverrides, ct) ?? Boolean(ct.starred))
           : null;
       // Thin-state: resolve only a window around the playing track (resolver
       // cache → placeholder) instead of the whole 50k queue. `queue_length`
@@ -60,7 +62,7 @@ export function usePlayerSnapshotPublisher() {
       };
       const stableKey = JSON.stringify({
         trackId: s.currentTrack?.id ?? null,
-        radioId: s.currentRadio?.id ?? null,
+        radioId: s.currentRadio ? ownedEntityKey(s.currentRadio) : null,
         queueIndex: s.queueIndex,
         queueLength: total,
         isPlaying: s.isPlaying,

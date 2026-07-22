@@ -7,7 +7,6 @@ import { useArtistCoverRef } from '@/cover/useLibraryCoverRef';
 import { COVER_DENSE_GRID_MIN_CELL_CSS_PX } from '@/cover/layoutSizes';
 import { useNavigateToArtist } from '@/features/artist/hooks/useNavigateToArtist';
 import { coverServerScopeForServerId } from '@/cover/serverScope';
-import { appendServerQuery } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   artist: SubsonicArtist;
@@ -25,12 +24,13 @@ export default function ArtistCardLocal({ artist, linkQuery, libraryResolve = fa
     [artist.serverId],
   );
   const coverRef = useArtistCoverRef(artist.id, artist.coverArt, coverServerScope, { libraryResolve });
-  const artistLinkQuery = appendServerQuery(linkQuery, artist.serverId);
-
   return (
     <div
       className="artist-card"
-      onClick={() => navigateToArtist(artist.id, artistLinkQuery ? { search: artistLinkQuery } : undefined)}
+      onClick={() => navigateToArtist(artist.id, {
+        serverId: artist.serverId,
+        search: linkQuery,
+      })}
     >
       <div className="artist-card-avatar">
         {coverRef ? (

@@ -17,6 +17,10 @@ fn album_identity_source<'a>(album_artist: Option<&'a str>, artist: Option<&'a s
         .or_else(|| artist.map(str::trim).filter(|s| !s.is_empty()))
 }
 
+pub(crate) fn build_album_key(artist: Option<&str>, album: &str) -> Option<String> {
+    join_norm_parts([norm_part(artist.unwrap_or("")), norm_part(album)])
+}
+
 pub fn build_track_cluster_keys(
     artist: Option<&str>,
     title: &str,
@@ -30,10 +34,7 @@ pub fn build_track_cluster_keys(
     let cluster_key = join_norm_parts([artist_norm.clone(), title_norm, album_norm.clone()]);
 
     let album_source = album_identity_source(album_artist, artist);
-    let album_key = join_norm_parts([
-        norm_part(album_source.unwrap_or("")),
-        album_norm,
-    ]);
+    let album_key = build_album_key(album_source, album);
 
     TrackClusterKeys {
         cluster_key,

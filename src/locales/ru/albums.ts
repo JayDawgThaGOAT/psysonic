@@ -42,4 +42,5 @@ export const albums = {
   noFavorites: 'Нет избранных альбомов с текущими фильтрами.',
   noCompilations: 'Нет сборников с текущими фильтрами.',
   noMatchingFilters: 'Нет альбомов с текущими фильтрами.',
+  copyDiagnostics: 'Копировать отчёт времени',
 };

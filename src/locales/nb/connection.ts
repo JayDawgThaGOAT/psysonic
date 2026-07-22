@@ -31,6 +31,7 @@ export const connection = {
   retry: 'Prøv igjen',
   serverSettings: 'Serverinnstillinger',
   switchServerTitle: 'Bytt server',
+  multiServer: 'Flere servere',
   switchServerHint: 'Klikk for å velge en annen lagret server.',
   manageServers: 'Administrer servere…',
   switchFailed: 'Klarte ikke å bytte — serveren er utilgjengelig.',

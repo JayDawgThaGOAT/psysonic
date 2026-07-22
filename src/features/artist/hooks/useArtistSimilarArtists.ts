@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getMusicNetworkRuntime } from '@/music-network';
-import { search } from '@/lib/api/subsonicSearch';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
 import type { SubsonicArtist, SubsonicArtistInfo } from '@/lib/api/subsonicTypes';
 import { useAuthStore } from '@/store/authStore';
 
@@ -19,9 +19,10 @@ export function useArtistSimilarArtists(
   artist: SubsonicArtist | null,
   info: SubsonicArtistInfo | null,
   artistInfoLoading: boolean,
+  detailServerId?: string,
 ): ArtistSimilarArtistsResult {
   const audiomuseNavidromeEnabled = useAuthStore(
-    s => !!(s.activeServerId && s.audiomuseNavidromeByServer[s.activeServerId]),
+    s => !!(detailServerId && s.audiomuseNavidromeByServer[detailServerId]),
   );
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
   const enrichmentConfigured = useAuthStore(s => s.enrichmentPrimaryId !== null);
@@ -39,7 +40,10 @@ export function useArtistSimilarArtists(
       if (names.length === 0) { setSimilarLoading(false); return; }
       const results = await Promise.all(
         names.slice(0, 30).map(name =>
-          search(name, { artistCount: 3, albumCount: 0, songCount: 0 }).catch(() => ({ artists: [], albums: [], songs: [] }))
+          (detailServerId
+            ? searchForServer(detailServerId, name, { artistCount: 3, albumCount: 0, songCount: 0 })
+            : search(name, { artistCount: 3, albumCount: 0, songCount: 0 }))
+            .catch(() => ({ artists: [], albums: [], songs: [] }))
         )
       );
       const seen = new Set<string>([artist.id]);
@@ -56,7 +60,7 @@ export function useArtistSimilarArtists(
       setSimilarLoading(false);
     }).catch(() => setSimilarLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artist?.id, musicLibraryFilterVersion, audiomuseNavidromeEnabled, enrichmentConfigured]);
+  }, [artist?.id, musicLibraryFilterVersion, audiomuseNavidromeEnabled, enrichmentConfigured, detailServerId]);
 
   /** When AudioMuse is on but the server returns no similar artists, fall back to Last.fm (if configured). */
   useEffect(() => {
@@ -72,7 +76,10 @@ export function useArtistSimilarArtists(
       if (names.length === 0) { setSimilarLoading(false); return; }
       const results = await Promise.all(
         names.slice(0, 30).map(name =>
-          search(name, { artistCount: 3, albumCount: 0, songCount: 0 }).catch(() => ({ artists: [], albums: [], songs: [] }))
+          (detailServerId
+            ? searchForServer(detailServerId, name, { artistCount: 3, albumCount: 0, songCount: 0 })
+            : search(name, { artistCount: 3, albumCount: 0, songCount: 0 }))
+            .catch(() => ({ artists: [], albums: [], songs: [] }))
         )
       );
       const seen = new Set<string>([artist.id]);
@@ -99,6 +106,7 @@ export function useArtistSimilarArtists(
     artistInfoLoading,
     info?.similarArtist?.length,
     enrichmentConfigured,
+    detailServerId,
   ]);
 
   useEffect(() => {

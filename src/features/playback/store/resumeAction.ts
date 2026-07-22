@@ -24,6 +24,7 @@ import {
   isReplayGainActive,
   loudnessGainDbForEngineBind,
 } from '@/features/playback/store/loudnessGainCache';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import {
   playbackSourceHintForResolvedUrl,
   recordEnginePlayUrl,
@@ -186,7 +187,7 @@ export function runResume(set: SetState, get: GetState): void {
         durationHint: trackToPlay.duration,
         replayGainDb: replayGainDbCold,
         replayGainPeak: replayGainPeakCold,
-        loudnessGainDb: loudnessGainDbForEngineBind(trackToPlay.id),
+        loudnessGainDb: loudnessGainDbForEngineBind(analysisTrackRef(trackToPlay.id, coldServerId)),
         preGainDb: authStateCold.replayGainPreGainDb,
         fallbackDb: authStateCold.replayGainFallbackDb,
         manual: false,

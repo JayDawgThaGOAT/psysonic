@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { getInternetRadioStations } from '@/lib/api/subsonicRadio';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { getInternetRadioStationsForServersSettled } from '@/lib/api/subsonicRadio';
 import { getStarred } from '@/lib/api/subsonicStarRating';
 import type {
   InternetRadioStation, SubsonicAlbum, SubsonicArtist, SubsonicSong,
@@ -15,6 +15,18 @@ import {
   loadStarredFromAllLibraryIndexes,
   loadStarredFromAllServersOnline,
 } from '@/features/offline';
+import {
+  beginFavoritesBrowseTrace,
+  emitFavoritesBrowseDebug,
+  favoritesBrowseTimed,
+} from '@/lib/library/favoritesBrowseDebug';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
+import {
+  migrateRadioStationKeys,
+  radioStationKey,
+} from '@/features/radio';
 
 export interface FavoritesDataResult {
   albums: SubsonicAlbum[];
@@ -25,7 +37,7 @@ export interface FavoritesDataResult {
   setRadioStations: React.Dispatch<React.SetStateAction<InternetRadioStation[]>>;
   loading: boolean;
   topFavoriteArtists: TopFavoriteArtist[];
-  unfavoriteStation: (id: string) => void;
+  unfavoriteStation: (station: InternetRadioStation) => void;
 }
 
 function topArtistKey(song: SubsonicSong): string {
@@ -40,13 +52,18 @@ export function useFavoritesData(): FavoritesDataResult {
   const [songs, setSongs] = useState<SubsonicSong[]>([]);
   const [radioStations, setRadioStations] = useState<InternetRadioStation[]>([]);
   const [loading, setLoading] = useState(true);
+  const radioMutationGenerationRef = useRef(0);
 
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
   const favoritesOfflineEnabled = useAuthStore(s => s.favoritesOfflineEnabled);
   const servers = useAuthStore(s => s.servers);
   const { status: connStatus } = useConnectionStatus();
   const offlineBrowseActive = useOfflineBrowseContext().active;
   const offlineBrowseReloadTs = useOfflineBrowseReloadToken();
+  const unavailableServerIds = useUnavailableServerIds();
   const starredOverrides = usePlayerStore(s => s.starredOverrides);
 
   useEffect(() => {
@@ -61,37 +78,83 @@ export function useFavoritesData(): FavoritesDataResult {
       setAlbums(starred.albums);
       setArtists(starred.artists);
       setSongs(starred.songs);
+      emitFavoritesBrowseDebug('starred_snapshot_applied', {
+        albumCount: starred.albums.length,
+        artistCount: starred.artists.length,
+        songCount: starred.songs.length,
+      });
     };
 
     const loadRadioFavorites = async () => {
-      if (!isActiveServerReachable()) return;
       try {
+        const mutationGeneration = radioMutationGenerationRef.current;
         const favIds = new Set<string>(JSON.parse(localStorage.getItem('psysonic_radio_favorites') ?? '[]'));
         if (favIds.size === 0) return;
-        const all = await getInternetRadioStations();
-        if (!cancelled) {
-          setRadioStations(all.filter(s => favIds.has(s.id)));
+        const serverIds = deriveEffectiveLibraryBrowseServerIds({
+          servers,
+          activeServerId,
+          libraryBrowseServerIds,
+        }, unavailableServerIds);
+        const result = await favoritesBrowseTimed('radio_stations', () => (
+          getInternetRadioStationsForServersSettled(serverIds)
+        ), {
+          favoriteStationCount: favIds.size,
+        });
+        if (!cancelled && mutationGeneration === radioMutationGenerationRef.current) {
+          const failed = new Set(result.failedServerIds);
+          setRadioStations(previous => {
+            const available = serverIds.flatMap(serverId => failed.has(serverId)
+              ? previous.filter(station => station.serverId === serverId)
+              : result.stations.filter(station => station.serverId === serverId));
+            const migrated = new Set(migrateRadioStationKeys(
+              [...favIds],
+              available,
+            ));
+            localStorage.setItem('psysonic_radio_favorites', JSON.stringify([...migrated]));
+            return available.filter(station => migrated.has(radioStationKey(station)));
+          });
+          emitFavoritesBrowseDebug('radio_favorites_applied', {
+            stationCount: result.stations.filter(station => (
+              favIds.has(radioStationKey(station)) || favIds.has(station.id)
+            )).length,
+          });
         }
       } catch { /* ignore */ }
     };
 
     const loadAll = async () => {
       setLoading(true);
+      beginFavoritesBrowseTrace({
+        favoritesOfflineEnabled,
+        offlineBrowseActive,
+        connectionStatus: connStatus,
+        activeServerReachable: isActiveServerReachable(),
+        serverCount: servers.length,
+      });
 
       if (favoritesOfflineEnabled) {
         try {
-          applyStarred(await loadStarredFromAllLibraryIndexes(offlineBrowseActive));
+          applyStarred(await favoritesBrowseTimed(
+            'library_index_snapshot',
+            () => loadStarredFromAllLibraryIndexes(offlineBrowseActive),
+          ));
         } catch { /* ignore */ }
+        if (cancelled) return;
         if (!cancelled) setLoading(false);
 
         if (connStatus === 'connected' && isActiveServerReachable()) {
           try {
-            applyStarred(await loadStarredFromAllServersOnline());
+            applyStarred(await favoritesBrowseTimed(
+              'server_starred_refresh',
+              () => loadStarredFromAllServersOnline(),
+            ));
           } catch { /* keep library snapshot */ }
         }
       } else {
         if (connStatus === 'connected' && isActiveServerReachable()) {
-          const [starredResult] = await Promise.allSettled([getStarred()]);
+          const [starredResult] = await Promise.allSettled([
+            favoritesBrowseTimed('server_starred', () => getStarred()),
+          ]);
           if (starredResult.status === 'fulfilled') {
             applyStarred(starredResult.value);
           }
@@ -100,16 +163,28 @@ export function useFavoritesData(): FavoritesDataResult {
       }
 
       void loadRadioFavorites();
+      emitFavoritesBrowseDebug('load_complete');
     };
 
     void loadAll();
     return () => { cancelled = true; };
-  }, [musicLibraryFilterVersion, connStatus, favoritesOfflineEnabled, offlineBrowseActive, offlineBrowseReloadTs, servers]);
+  }, [
+    musicLibraryFilterVersion,
+    libraryBrowseScopeVersion,
+    connStatus,
+    favoritesOfflineEnabled,
+    offlineBrowseActive,
+    offlineBrowseReloadTs,
+    activeServerId,
+    libraryBrowseServerIds,
+    servers,
+    unavailableServerIds,
+  ]);
 
   const topFavoriteArtists = useMemo<TopFavoriteArtist[]>(() => {
     const counts = new Map<string, TopFavoriteArtist>();
     for (const s of songs) {
-      if (starredOverrides[s.id] === false) continue;
+      if (ownedOverrideValue(starredOverrides, s) === false) continue;
       const key = topArtistKey(s);
       if (!key) continue;
       const existing = counts.get(key);
@@ -131,11 +206,14 @@ export function useFavoritesData(): FavoritesDataResult {
       .slice(0, 12);
   }, [songs, starredOverrides]);
 
-  function unfavoriteStation(id: string) {
-    setRadioStations(prev => prev.filter(s => s.id !== id));
+  function unfavoriteStation(station: InternetRadioStation) {
+    radioMutationGenerationRef.current += 1;
+    const key = radioStationKey(station);
+    setRadioStations(prev => prev.filter(candidate => radioStationKey(candidate) !== key));
     try {
       const next = new Set<string>(JSON.parse(localStorage.getItem('psysonic_radio_favorites') ?? '[]'));
-      next.delete(id);
+      next.delete(key);
+      next.delete(station.id);
       localStorage.setItem('psysonic_radio_favorites', JSON.stringify([...next]));
     } catch { /* ignore */ }
   }

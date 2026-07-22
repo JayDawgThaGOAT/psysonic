@@ -84,9 +84,10 @@ export function getInflightGenreCatalog(key: string): Promise<SubsonicGenre[]> |
 
 export function trackInflightGenreCatalog(key: string, promise: Promise<SubsonicGenre[]>): void {
   inflight.set(key, promise);
-  void promise.finally(() => {
+  const clear = () => {
     if (inflight.get(key) === promise) inflight.delete(key);
-  });
+  };
+  void promise.then(clear, clear);
 }
 
 /** Test-only reset. */

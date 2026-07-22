@@ -22,14 +22,20 @@ export async function getPlayQueue(): Promise<PlayQueueResult> {
 export async function getPlayQueueForServer(serverId: string): Promise<PlayQueueResult> {
   if (!serverId) return { songs: [] };
   try {
-    const data = await apiForServer<{ playQueue: { current?: string; position?: number; entry?: SubsonicSong[] } }>(
-      serverId,
-      'getPlayQueue.view',
-    );
-    return parsePlayQueueResponse(data);
+    return await fetchPlayQueueForServer(serverId);
   } catch {
     return { songs: [] };
   }
+}
+
+/** Error-preserving play-queue read for startup reconciliation. */
+export async function fetchPlayQueueForServer(serverId: string): Promise<PlayQueueResult> {
+  if (!serverId) throw new Error('Missing server id');
+  const data = await apiForServer<{ playQueue: { current?: string; position?: number; entry?: SubsonicSong[] } }>(
+    serverId,
+    'getPlayQueue.view',
+  );
+  return parsePlayQueueResponse(data);
 }
 
 /**

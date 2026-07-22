@@ -19,8 +19,16 @@ import {
   loudnessGainDbForEngineBind,
 } from '@/features/playback/store/loudnessGainCache';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
+import { analysisTrackRef } from '@/features/playback/store/analysisTrackRef';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
+import {
+  queueItemIdentityKey,
+  queueItemRefMatchesTrack,
+  queueTrackIdentityKey,
+  sameQueueItemRef,
+  sameQueueTrack,
+} from '@/features/playback/utils/playback/queueIdentity';
 
 export type GaplessChainPreloadContext = {
   currentTrack: Track;
@@ -62,13 +70,14 @@ function invokeGaplessChainPreload(
   const replayGainPeak = isReplayGainActive()
     ? (prepared.replayGainPeak ?? null)
     : null;
+  const analysisRef = analysisTrackRef(prepared.id, analysisServerId);
   invoke('audio_chain_preload', {
     url: nextUrl,
     volume: ctx.volume,
     durationHint: prepared.duration,
     replayGainDb,
     replayGainPeak,
-    loudnessGainDb: loudnessGainDbForEngineBind(prepared.id),
+    loudnessGainDb: loudnessGainDbForEngineBind(analysisRef),
     preGainDb: authState.replayGainPreGainDb,
     fallbackDb: authState.replayGainFallbackDb,
     ...audioPlayHiResBlendArgs(authState),
@@ -96,8 +105,11 @@ function liveNextRefForContext(
  */
 export function requestGaplessChainPreload(ctx: GaplessChainPreloadContext): void {
   const { nextTrack } = ctx;
-  if (getGaplessPreloadingId() === nextTrack.id) return;
-  if (gaplessChainPrepareInflight.has(nextTrack.id)) return;
+  const preloadIdentity = ctx.nextRef
+    ? queueItemIdentityKey(ctx.nextRef)
+    : queueTrackIdentityKey(nextTrack.id, nextTrack.serverId);
+  if (getGaplessPreloadingId() === preloadIdentity) return;
+  if (gaplessChainPrepareInflight.has(preloadIdentity)) return;
 
   const job = (async () => {
     try {
@@ -108,22 +120,28 @@ export function requestGaplessChainPreload(ctx: GaplessChainPreloadContext): voi
         ? await prepareTrackForEngineBind(nextTrack, serverId)
         : nextTrack;
       if (serverId) {
-        await refreshLoudnessForTrack(prepared.id, { syncPlayingEngine: false });
+        await refreshLoudnessForTrack(
+          analysisTrackRef(prepared.id, serverId),
+          { syncPlayingEngine: false },
+        );
       }
 
       const store = usePlayerStore.getState();
       if (!store.isPlaying || store.currentRadio) return;
-      if (store.currentTrack?.id !== ctx.currentTrack.id) return;
+      if (!sameQueueTrack(store.currentTrack, ctx.currentTrack)) return;
 
       const liveNextRef = liveNextRefForContext(
         store.queueItems,
         store.queueIndex,
         store.repeatMode,
       );
-      if (liveNextRef?.trackId !== prepared.id) return;
-      if (getGaplessPreloadingId() === prepared.id) return;
+      if (!liveNextRef) return;
+      if (ctx.nextRef
+        ? !sameQueueItemRef(liveNextRef, ctx.nextRef)
+        : !queueItemRefMatchesTrack(liveNextRef, prepared)) return;
+      if (getGaplessPreloadingId() === preloadIdentity) return;
 
-      setGaplessPreloadingId(prepared.id);
+      setGaplessPreloadingId(preloadIdentity);
       invokeGaplessChainPreload(prepared, {
         ...ctx,
         currentTrack: store.currentTrack ?? ctx.currentTrack,
@@ -131,10 +149,10 @@ export function requestGaplessChainPreload(ctx: GaplessChainPreloadContext): voi
         nextRef: liveNextRef,
       });
     } finally {
-      gaplessChainPrepareInflight.delete(nextTrack.id);
+      gaplessChainPrepareInflight.delete(preloadIdentity);
     }
   })().catch(() => {});
-  gaplessChainPrepareInflight.set(nextTrack.id, job);
+  gaplessChainPrepareInflight.set(preloadIdentity, job);
 }
 
 /** Test-only: drop pending gapless chain prepare promises. */

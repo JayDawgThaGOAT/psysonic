@@ -14,6 +14,7 @@ import { resolveTrackArtistRefs } from '@/features/playback/utils/playback/track
 import { tooltipAttrs } from '@/ui/tooltipAttrs';
 import { OptionalBrowseTrackRowCoverThumb } from '@/cover/TrackRowCoverThumb';
 import { useTrackListCoverArtEnabled } from '@/cover/useTrackListCoverArtSettings';
+import { resolveIndexKey } from '@/lib/server/serverIndexKey';
 
 interface Props {
   song: SubsonicSong;
@@ -26,7 +27,12 @@ function SongRow({ song, showBpm }: Props) {
   const { t } = useTranslation();
   const enqueue = usePlayerStore(s => s.enqueue);
   const openContextMenu = usePlayerStore(s => s.openContextMenu);
-  const isCurrent = usePlayerStore(s => s.currentTrack?.id === song.id);
+  const isCurrent = usePlayerStore(s => {
+    const current = s.currentTrack;
+    if (!current || current.id !== song.id) return false;
+    if (!current.serverId || !song.serverId) return true;
+    return resolveIndexKey(current.serverId) === resolveIndexKey(song.serverId);
+  });
   const psyDrag = useDragDrop();
   const { orbitActive, addTrackToOrbit } = useOrbitSongRowBehavior();
   const showCovers = useTrackListCoverArtEnabled('pages');
@@ -34,12 +40,12 @@ function SongRow({ song, showBpm }: Props) {
   // In an orbit session both buttons collapse into the orbit-suggest / host-enqueue
   // path so we don't ship a queue replacement to every guest.
   const handlePlay = () => {
-    if (orbitActive) { addTrackToOrbit(song.id); return; }
+    if (orbitActive) { addTrackToOrbit(song.id, song.serverId); return; }
     enqueueAndPlay(song);
   };
 
   const handleEnqueue = () => {
-    if (orbitActive) { addTrackToOrbit(song.id); return; }
+    if (orbitActive) { addTrackToOrbit(song.id, song.serverId); return; }
     enqueue([songToTrack(song)]);
   };
 
@@ -111,7 +117,11 @@ function SongRow({ song, showBpm }: Props) {
             <span
               className={a.id ? 'track-artist-link' : ''}
               style={{ cursor: a.id ? 'pointer' : 'default' }}
-              onClick={(e) => { if (a.id) { e.stopPropagation(); navigateToArtist(a.id!); } }}
+              onClick={(e) => {
+                if (!a.id) return;
+                e.stopPropagation();
+                navigateToArtist(a.id, { serverId: song.serverId });
+              }}
             >{a.name ?? song.artist}</span>
           </React.Fragment>
         ))}
@@ -121,7 +131,10 @@ function SongRow({ song, showBpm }: Props) {
           <span
             className="track-artist-link"
             style={{ cursor: 'pointer' }}
-            onClick={(e) => { e.stopPropagation(); navigateToAlbum(song.albumId!); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              navigateToAlbum(song.albumId!, { serverId: song.serverId });
+            }}
             title={song.album}
           >{song.album}</span>
         ) : <span title={song.album}>{song.album}</span>}

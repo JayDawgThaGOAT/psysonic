@@ -1,4 +1,3 @@
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -16,15 +15,12 @@ import {
 
 interface Props {
   open: boolean;
-  /** Pre-loaded albums (e.g. from the statistics page). The modal will fetch
-   *  more on open if this list is shorter than 25 (max grid 5×5). */
+  /** Pre-loaded albums from the active Statistics scope. */
   albums: SubsonicAlbum[];
   /** Footer-right meta string, e.g. "Most Played" or a date. */
   meta?: string;
   onClose: () => void;
 }
-
-const MAX_NEEDED = 25; // 5 × 5 grid
 
 const FORMATS: { key: ExportFormat; ratioBox: { w: number; h: number } }[] = [
   { key: 'story',   ratioBox: { w: 36, h: 64 } },
@@ -39,38 +35,12 @@ export default function StatsExportModal({ open, albums, meta, onClose }: Props)
   const [format, setFormat] = useState<ExportFormat>('square');
   const [gridSize, setGridSize] = useState<ExportGridSize>(3);
   const [saving, setSaving] = useState(false);
-  const [topUpAlbums, setTopUpAlbums] = useState<SubsonicAlbum[] | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewSeqRef = useRef(0);
 
-  const effectiveAlbums = topUpAlbums ?? albums;
+  const effectiveAlbums = albums;
   const required = gridSize * gridSize;
   const enoughAlbums = effectiveAlbums.length >= required;
-
-  // On open: if the caller-provided list is shorter than the largest grid,
-  // fetch up to 25 in the background so the user can pick 4×4 / 5×5 even
-  // when the entry surface only loaded a few albums.
-  useEffect(() => {
-    if (!open) return;
-    if (albums.length >= MAX_NEEDED) {
-      // React Compiler set-state-in-effect rule: local state synced with the already-available `albums` prop when the modal opens (the async top-up below is skipped).
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setTopUpAlbums(albums);
-      return;
-    }
-    setTopUpAlbums(null);
-    let cancelled = false;
-    (async () => {
-      try {
-        const more = await getAlbumList('frequent', MAX_NEEDED, 0);
-        if (cancelled) return;
-        setTopUpAlbums(more.length > albums.length ? more : albums);
-      } catch {
-        if (!cancelled) setTopUpAlbums(albums);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [open, albums]);
 
   const title = t('statistics.exportFooterLabel');
 

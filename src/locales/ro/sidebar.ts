@@ -35,6 +35,8 @@ export const sidebar = {
   librarySelect: 'Include {{name}}',
   libraryDeselect: 'Exclude {{name}}',
   librarySelectionCount: '{{count}} librării',
+  serverSelectionCount: '{{count}} servere',
+  serverAvailabilityCount: '<unavailable>{{total}}</unavailable>→{{available}} servere',
   expandPlaylists: 'Extinde playlisturi',
   collapsePlaylists: 'Restrânge playlisturi',
   more: 'Mai mult',

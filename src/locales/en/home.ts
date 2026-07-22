@@ -17,5 +17,24 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} tracks',
   mainstageEmptyTitle: 'Your Mainstage is empty',
   mainstageEmptyBody: 'Every section is turned off. Turn sections back on, or hide Mainstage from the sidebar.',
-  mainstageEmptyCta: 'Open Personalisation settings'
+  mainstageEmptyCta: 'Open Personalisation settings',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: 'Enable {{section}}',
+    generationInfo: 'Generation information',
+    duration: 'Duration',
+    itemCount: 'Items',
+    status: 'Status',
+    detail: 'Detail',
+    unavailable: 'N/A',
+    statuses: {
+      idle: 'Idle',
+      loading: 'Loading',
+      ready: 'Ready',
+      empty: 'Empty',
+      error: 'Error',
+      timeout: 'Timed out',
+      disabled: 'Disabled'
+    }
+  }
 };

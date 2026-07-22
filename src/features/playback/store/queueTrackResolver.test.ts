@@ -13,6 +13,7 @@ import {
   applyQueueOverrides,
   seedQueueResolver,
   invalidateQueueResolver,
+  patchCachedTrack,
   subscribeQueueResolver,
   _resetQueueResolverForTest,
 } from './queueTrackResolver';
@@ -144,12 +145,40 @@ describe('queueTrackResolver', () => {
       .toBe('https://music.example.com/share/s/token-100');
   });
 
+  it('invalidateQueueResolver drops only the owner-qualified cached entry', () => {
+    seedQueueResolver('s1', [
+      { id: 't1', title: 'Server 1', artist: '', album: 'A', albumId: 'A', duration: 1 },
+    ]);
+    seedQueueResolver('s2', [
+      { id: 't1', title: 'Server 2', artist: '', album: 'A', albumId: 'A', duration: 1 },
+    ]);
+
+    invalidateQueueResolver('t1', 's1');
+
+    expect(getCachedTrack(ref('t1'))).toBeUndefined();
+    expect(getCachedTrack(ref('t1', { serverId: 's2' }))?.title).toBe('Server 2');
+  });
+
+  it('patchCachedTrack updates only the owner-qualified cached entry', () => {
+    seedQueueResolver('s1', [
+      { id: 't1', title: 'Server 1', artist: '', album: 'A', albumId: 'A', duration: 1 },
+    ]);
+    seedQueueResolver('s2', [
+      { id: 't1', title: 'Server 2', artist: '', album: 'A', albumId: 'A', duration: 1 },
+    ]);
+
+    patchCachedTrack('t1', { starred: 'now' }, 's1');
+
+    expect(getCachedTrack(ref('t1'))?.starred).toBe('now');
+    expect(getCachedTrack(ref('t1', { serverId: 's2' }))?.starred).toBeUndefined();
+  });
+
   it('invalidateQueueResolver drops the cached entry', async () => {
     ready();
     echoBatch();
     await resolveBatch([ref('t1')]);
     expect(getCachedTrack(ref('t1'))).toBeDefined();
-    invalidateQueueResolver('t1');
+    invalidateQueueResolver('t1', 's1');
     expect(getCachedTrack(ref('t1'))).toBeUndefined();
   });
 

@@ -19,6 +19,10 @@ import {
   subscribeConnectCache,
 } from '@/lib/server/serverEndpoint';
 import type { ServerProfile } from '@/store/authStoreTypes';
+import {
+  getUnavailableServerIds,
+  resetServerReachabilitySnapshot,
+} from '@/lib/network/serverReachability';
 
 function makeProfile(overrides: Partial<ServerProfile> = {}): ServerProfile {
   return {
@@ -213,6 +217,7 @@ describe('serverAddressEndpoints', () => {
 describe('pickReachableBaseUrl', () => {
   beforeEach(() => {
     invalidateReachableEndpointCache();
+    resetServerReachabilitySnapshot();
     vi.mocked(pingWithCredentialsForProfile).mockReset();
   });
 
@@ -231,6 +236,7 @@ describe('pickReachableBaseUrl', () => {
       expect(result.ping.type).toBe('navidrome');
     }
     expect(getCachedConnectBaseUrl('profile-1')).toBe('https://music.example.com');
+    expect(getUnavailableServerIds().has('profile-1')).toBe(false);
     expect(pingWithCredentialsForProfile).toHaveBeenCalledTimes(1);
   });
 
@@ -294,12 +300,19 @@ describe('pickReachableBaseUrl', () => {
     const result = await unreachablePromise;
     expect(result).toEqual({ ok: false, reason: 'unreachable' });
     expect(getCachedConnectBaseUrl('profile-1')).toBeNull();
+    expect(getUnavailableServerIds().has('profile-1')).toBe(true);
     expect(pingWithCredentialsForProfile).toHaveBeenCalledTimes(CONNECT_PROBE_ATTEMPTS);
+
+    vi.mocked(pingWithCredentialsForProfile).mockReset();
+    vi.mocked(pingWithCredentialsForProfile).mockResolvedValue(pingOk());
+    await pickReachableBaseUrl(makeProfile({ url: 'https://music.example.com' }));
+    expect(getUnavailableServerIds().has('profile-1')).toBe(false);
   });
 
   it('returns unreachable when the profile has no usable url', async () => {
     const result = await pickReachableBaseUrl(makeProfile({ url: '' }));
     expect(result).toEqual({ ok: false, reason: 'unreachable' });
+    expect(getUnavailableServerIds().has('profile-1')).toBe(true);
     expect(pingWithCredentialsForProfile).not.toHaveBeenCalled();
   });
 
@@ -362,6 +375,37 @@ describe('pickReachableBaseUrl', () => {
     vi.mocked(pingWithCredentialsForProfile).mockResolvedValueOnce(pingOk());
     await pickReachableBaseUrl(makeProfile({ url: 'http://192.168.0.10' }));
     expect(pingWithCredentialsForProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not join or cache a stale pre-edit probe after profile invalidation', async () => {
+    let resolveOld!: (value: ReturnType<typeof pingOk>) => void;
+    let resolveEdited!: (value: ReturnType<typeof pingOk>) => void;
+    vi.mocked(pingWithCredentialsForProfile)
+      .mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveEdited = resolve; }));
+
+    const oldProfile = makeProfile({ url: 'https://old.example.com', password: 'old-password' });
+    const oldProbe = pickReachableBaseUrl(oldProfile);
+    expect(pingWithCredentialsForProfile).toHaveBeenCalledTimes(1);
+
+    invalidateReachableEndpointCache(oldProfile.id);
+    const editedProfile = makeProfile({ url: 'https://new.example.com', password: 'new-password' });
+    const editedProbe = pickReachableBaseUrl(editedProfile);
+    expect(pingWithCredentialsForProfile).toHaveBeenCalledTimes(2);
+
+    resolveEdited(pingOk());
+    await expect(editedProbe).resolves.toMatchObject({
+      ok: true,
+      baseUrl: 'https://new.example.com',
+    });
+    expect(getCachedConnectBaseUrl(oldProfile.id)).toBe('https://new.example.com');
+
+    resolveOld(pingOk());
+    await expect(oldProbe).resolves.toMatchObject({
+      ok: true,
+      baseUrl: 'https://old.example.com',
+    });
+    expect(getCachedConnectBaseUrl(oldProfile.id)).toBe('https://new.example.com');
   });
 
   it('falls back to the natural order if the cached endpoint stops answering', async () => {

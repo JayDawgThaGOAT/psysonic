@@ -1,10 +1,17 @@
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
+import {
+  analysisTrackRefForQueueItem,
+  analysisTrackRefForTrack,
+  analysisTrackRefKey,
+  type AnalysisTrackRef,
+} from '@/features/playback/store/analysisTrackRef';
+import { sameQueueTrack } from '@/features/playback/utils/playback/queueIdentity';
 /**
  * After a bulk enqueue (queue replace, append-many, lucky-mix) the runtime
  * warms the loudness cache for the current track + the next N entries so
  * the engine's `audio_chain_preload` sees a real cached gain instead of
  * the startup trim. These helpers compute that window — both as a
- * "does this id sit inside it?" predicate and as the explicit id list
+ * "does this track sit inside it?" predicate and as the owner-qualified list
  * the prefetch loop iterates over.
  *
  * Pure functions of the state slice — no store imports, no side effects.
@@ -14,20 +21,48 @@ import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 export const LOUDNESS_BACKFILL_WINDOW_AHEAD = 5;
 
 export function isTrackInsideLoudnessBackfillWindow(
-  trackId: string,
+  target: AnalysisTrackRef,
   queue: QueueItemRef[],
   queueIndex: number,
   currentTrack: Track | null,
 ): boolean {
-  if (!trackId) return false;
-  if (currentTrack?.id === trackId) return true;
+  if (!target.trackId || !target.serverIndexKey) return false;
+  const currentRef = queue[queueIndex];
+  if (currentTrack && sameQueueTrack(
+    { id: target.trackId, serverId: target.serverIndexKey ?? undefined },
+    { id: currentTrack.id, serverId: currentRef?.serverId ?? currentTrack.serverId },
+  )) return true;
   if (queue.length === 0) return false;
   const start = Math.max(0, queueIndex + 1);
   const end = Math.min(queue.length, start + LOUDNESS_BACKFILL_WINDOW_AHEAD);
   for (let i = start; i < end; i++) {
-    if (queue[i]?.trackId === trackId) return true;
+    const ref = queue[i];
+    if (ref && analysisTrackRefKey(analysisTrackRefForQueueItem(ref)) === analysisTrackRefKey(target)) {
+      return true;
+    }
   }
   return false;
+}
+
+export function collectLoudnessBackfillWindowTrackRefs(
+  queue: QueueItemRef[],
+  queueIndex: number,
+  currentTrack: Track | null,
+): AnalysisTrackRef[] {
+  const refs = new Map<string, AnalysisTrackRef>();
+  if (currentTrack?.id) {
+    const ref = analysisTrackRefForTrack(currentTrack, queue[queueIndex]);
+    if (ref.serverIndexKey) refs.set(analysisTrackRefKey(ref), ref);
+  }
+  const start = Math.max(0, queueIndex + 1);
+  const end = Math.min(queue.length, start + LOUDNESS_BACKFILL_WINDOW_AHEAD);
+  for (let i = start; i < end; i++) {
+    const queueRef = queue[i];
+    if (!queueRef?.trackId) continue;
+    const ref = analysisTrackRefForQueueItem(queueRef);
+    if (ref.serverIndexKey) refs.set(analysisTrackRefKey(ref), ref);
+  }
+  return [...refs.values()];
 }
 
 export function collectLoudnessBackfillWindowTrackIds(
@@ -63,16 +98,24 @@ export function collectPlaybackMiddlePriorityTrackIds(
 }
 
 export function loudnessBackfillPriorityForTrack(
-  trackId: string,
+  target: AnalysisTrackRef,
   queue: QueueItemRef[],
   queueIndex: number,
   currentTrack: Track | null,
 ): 'high' | 'middle' | 'low' {
-  if (currentTrack?.id === trackId) return 'high';
+  if (!target.trackId || !target.serverIndexKey) return 'low';
+  const currentRef = queue[queueIndex];
+  if (currentTrack && sameQueueTrack(
+    { id: target.trackId, serverId: target.serverIndexKey ?? undefined },
+    { id: currentTrack.id, serverId: currentRef?.serverId ?? currentTrack.serverId },
+  )) return 'high';
   const start = Math.max(0, queueIndex + 1);
   const end = Math.min(queue.length, start + LOUDNESS_BACKFILL_WINDOW_AHEAD);
   for (let i = start; i < end; i++) {
-    if (queue[i]?.trackId === trackId) return 'middle';
+    const ref = queue[i];
+    if (ref && analysisTrackRefKey(analysisTrackRefForQueueItem(ref)) === analysisTrackRefKey(target)) {
+      return 'middle';
+    }
   }
   return 'low';
 }

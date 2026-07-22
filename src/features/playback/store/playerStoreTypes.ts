@@ -18,7 +18,8 @@ export interface PlayerState {
   /** Latches the source used to start the currently playing track. */
   currentPlaybackSource: PlaybackSourceKind | null;
   /**
-   * Subsonic track id for which `audio_preload` finished into the engine RAM slot (see `audio:preload-ready`).
+   * Server-qualified queue identity for which `audio_preload` finished into the engine RAM slot.
+   * Legacy engine events may temporarily provide a raw Subsonic track id.
    * Cleared after a successful `audio_play` consumed that preload, or when starting another track.
    */
   enginePreloadedTrackId: string | null;
@@ -104,11 +105,14 @@ export interface PlayerState {
    *  pushes any earlier Play-Next items down (default). Falls back to
    *  `playTrack` when nothing is currently playing. */
   playNext: (tracks: Track[]) => void;
-  enqueueRadio: (tracks: Track[], artistId?: string) => void;
-  setRadioArtistId: (artistId: string) => void;
+  enqueueRadio: (tracks: Track[], artistId?: string, serverId?: string) => void;
+  setRadioArtistId: (artistId: string, serverId?: string) => void;
   /** For Lucky Mix: drop upcoming tail; keep the currently playing item only.
    * When `skipQueueUndo` is true, callers must push undo separately (macro rebuild). */
   pruneUpcomingToCurrent: (skipQueueUndo?: boolean) => void;
+  /** Keep only queue items owned by one server. Used when Orbit temporarily
+   * constrains a mixed-server session to its selected Navidrome host. */
+  retainQueueForServer: (serverId: string) => void;
   clearQueue: () => void;
 
   isQueueVisible: boolean;
@@ -130,6 +134,13 @@ export interface PlayerState {
 
   reorderQueue: (startIndex: number, endIndex: number) => void;
   removeTrack: (index: number) => void;
+  /** Replace one frozen queue slot only when its concrete owner/id still match. */
+  replaceQueueItemSource: (
+    index: number,
+    expected: QueueItemRef,
+    replacement: QueueItemRef,
+    userInitiated?: boolean,
+  ) => boolean;
   shuffleQueue: () => void;
   /** Shuffle only the tracks after the current one — leaves played history intact. */
   shuffleUpcomingQueue: () => void;
@@ -166,6 +177,7 @@ export interface PlayerState {
     queueIndex?: number;
     playlistId?: string;
     playlistSongIndex?: number;
+    playlistSongRemove?: () => void | Promise<void>;
     /** Overrides the EntityShareKind for the "Share" action — used by Composers
      *  list/grid to copy a `composer` link from the otherwise artist-typed
      *  context menu, so paste lands on /composer/:id instead of /artist/:id. */
@@ -183,10 +195,11 @@ export interface PlayerState {
     playlistSongIndex?: number,
     shareKindOverride?: 'track' | 'album' | 'artist' | 'composer',
     pinToPlaybackServer?: boolean,
+    playlistSongRemove?: () => void | Promise<void>,
   ) => void;
   closeContextMenu: () => void;
 
-  songInfoModal: { isOpen: boolean; songId: string | null };
-  openSongInfo: (songId: string) => void;
+  songInfoModal: { isOpen: boolean; songId: string | null; serverId?: string };
+  openSongInfo: (songId: string, serverId?: string) => void;
   closeSongInfo: () => void;
 }

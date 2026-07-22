@@ -10,6 +10,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 use psysonic_core::server_http::ServerHttpRegistry;
 use psysonic_integration::subsonic::SubsonicClient;
@@ -21,12 +22,14 @@ use super::delta::{DeltaSyncReport, DeltaSyncRunner};
 use super::error::SyncError;
 use super::poll_stats::{next_interval_ms, PollStats};
 use super::progress::{NoopProgress, Progress};
-use super::tombstone::should_auto_reconcile;
+use super::tombstone::should_auto_reconcile_scope;
 use crate::repos::SyncStateRepository;
 use crate::store::LibraryStore;
 
 /// Default Mode B threshold per §6.7 (5 % gap before auto reconcile).
 pub const DEFAULT_TOMBSTONE_THRESHOLD_PCT: u32 = 5;
+const ERROR_RETRY_INTERVAL_MS: i64 = 30_000;
+const MAX_PERSISTED_ERROR_CHARS: usize = 1_000;
 
 /// Outcome of one scheduler tick — what happened plus the resolved
 /// `next_poll_at` so the caller can re-schedule its timer.
@@ -40,6 +43,17 @@ pub struct SchedulerTickReport {
     pub skipped_sync_pass_active: bool,
     pub delta: Option<DeltaSyncReport>,
     pub next_poll_at_ms: i64,
+}
+
+impl SchedulerTickReport {
+    /// A delta completed far enough to validate the server watermark or apply
+    /// data. Deferred scans and all scheduler short-circuits are not success
+    /// signals for error clearing or frontend refresh events.
+    pub fn completed_delta(&self) -> bool {
+        self.delta
+            .as_ref()
+            .is_some_and(|delta| !delta.deferred_scanning)
+    }
 }
 
 pub struct BackgroundScheduler<'a> {
@@ -145,6 +159,28 @@ impl<'a> BackgroundScheduler<'a> {
     /// Run one tick — runs a delta sync if due and bulk isn't paused
     /// by the playback signal, then writes the new `next_poll_at`.
     pub async fn tick(&self, now_ms: i64) -> Result<SchedulerTickReport, SyncError> {
+        let result = self.tick_inner(now_ms).await;
+        self.finish_tick(now_ms, result)
+    }
+
+    /// Bound a complete server tick so one unresponsive endpoint cannot hold a
+    /// scheduler concurrency slot indefinitely.
+    pub async fn tick_with_timeout(
+        &self,
+        now_ms: i64,
+        timeout: Duration,
+    ) -> Result<SchedulerTickReport, SyncError> {
+        let result = match tokio::time::timeout(timeout, self.tick_inner(now_ms)).await {
+            Ok(result) => result,
+            Err(_) => Err(SyncError::Transport(format!(
+                "background scheduler timed out after {} ms",
+                timeout.as_millis()
+            ))),
+        };
+        self.finish_tick(now_ms, result)
+    }
+
+    async fn tick_inner(&self, now_ms: i64) -> Result<SchedulerTickReport, SyncError> {
         let sync_state = SyncStateRepository::new(self.store);
         sync_state
             .ensure(&self.server_id, &self.library_scope)
@@ -205,7 +241,12 @@ impl<'a> BackgroundScheduler<'a> {
                 .map_err(SyncError::Storage)?,
         ) {
             let (local_u, server_u) = (local.max(0) as u32, server.max(0) as u32);
-            if should_auto_reconcile(local_u, server_u, self.tombstone_threshold_pct) {
+            if should_auto_reconcile_scope(
+                &self.library_scope,
+                local_u,
+                server_u,
+                self.tombstone_threshold_pct,
+            ) {
                 tombstone_budget = RequestBudget::DELTA_MISMATCH_CAP;
             }
         }
@@ -296,6 +337,70 @@ impl<'a> BackgroundScheduler<'a> {
         Ok(report)
     }
 
+    fn finish_tick(
+        &self,
+        now_ms: i64,
+        result: Result<SchedulerTickReport, SyncError>,
+    ) -> Result<SchedulerTickReport, SyncError> {
+        match result {
+            Ok(report) => {
+                if report.completed_delta() {
+                    if let Err(storage_err) = self.clear_tick_error() {
+                        let err = SyncError::Storage(storage_err);
+                        self.record_tick_error(now_ms, &err);
+                        return Err(err);
+                    }
+                }
+                Ok(report)
+            }
+            Err(err) => {
+                self.record_tick_error(now_ms, &err);
+                Err(err)
+            }
+        }
+    }
+
+    fn clear_tick_error(&self) -> Result<(), String> {
+        self.store.with_conn("scheduler.clear_error", |conn| {
+            conn.execute(
+                "UPDATE sync_state SET last_error = NULL \
+                 WHERE server_id = ?1 AND library_scope = ?2",
+                rusqlite::params![self.server_id, self.library_scope],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn record_tick_error(&self, now_ms: i64, err: &SyncError) {
+        let rendered = err.to_string();
+        let persisted: String = rendered.chars().take(MAX_PERSISTED_ERROR_CHARS).collect();
+        crate::app_eprintln!(
+            "[library-sync] scheduler tick failed server_id={} scope={}: {}",
+            self.server_id,
+            self.library_scope,
+            rendered
+        );
+        let next_poll_at = now_ms.saturating_add(ERROR_RETRY_INTERVAL_MS);
+        if let Err(storage_err) = self.store.with_conn("scheduler.record_error", |conn| {
+            conn.execute(
+                "INSERT INTO sync_state (server_id, library_scope, last_error, next_poll_at) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(server_id, library_scope) DO UPDATE SET \
+                   last_error = excluded.last_error, \
+                   next_poll_at = excluded.next_poll_at",
+                rusqlite::params![self.server_id, self.library_scope, persisted, next_poll_at],
+            )?;
+            Ok(())
+        }) {
+            crate::app_eprintln!(
+                "[library-sync] scheduler error persistence failed server_id={} scope={}: {}",
+                self.server_id,
+                self.library_scope,
+                storage_err
+            );
+        }
+    }
+
     fn load_poll_stats(
         &self,
         sync_state: &SyncStateRepository<'_>,
@@ -329,14 +434,8 @@ impl<'a> BackgroundScheduler<'a> {
     }
 
     fn count_local_tracks(&self) -> Result<i64, SyncError> {
-        self.store
-            .with_conn("scheduler.count_local_tracks", |c| {
-                c.query_row(
-                    "SELECT COUNT(*) FROM track WHERE server_id = ?1 AND deleted = 0",
-                    rusqlite::params![self.server_id],
-                    |row| row.get(0),
-                )
-            })
+        crate::repos::TrackRepository::new(self.store)
+            .count_live_tracks_in_scope(&self.server_id, &self.library_scope)
             .map_err(SyncError::Storage)
     }
 }
@@ -433,9 +532,7 @@ mod tests {
         let store = LibraryStore::open_in_memory();
         let sync_state = SyncStateRepository::new(&store);
         sync_state.ensure("s1", "").unwrap();
-        sync_state
-            .set_sync_phase("s1", "", "initial_sync")
-            .unwrap();
+        sync_state.set_sync_phase("s1", "", "initial_sync").unwrap();
 
         let subsonic = test_subsonic(&server.uri());
         let report = BackgroundScheduler::new(
@@ -482,12 +579,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn tick_skips_while_global_bulk_ingest_is_active() {
+        let server = MockServer::start().await;
+        let store = LibraryStore::open_in_memory();
+        store.set_bulk_ingest_active(true);
+
+        let subsonic = test_subsonic(&server.uri());
+        let report = BackgroundScheduler::new(
+            &store,
+            &subsonic,
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_sleep_disabled()
+        .tick(0)
+        .await
+        .unwrap();
+
+        assert!(report.skipped_sync_pass_active);
+        assert!(report.delta.is_none());
+        assert_eq!(report.next_poll_at_ms, 30_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn tick_skips_when_not_due_and_reports_next_poll() {
         let server = MockServer::start().await;
         let store = LibraryStore::open_in_memory();
         let sync_state = SyncStateRepository::new(&store);
         sync_state.ensure("s1", "").unwrap();
-        sync_state.set_next_poll_at("s1", "", 1_000_000_000).unwrap();
+        sync_state
+            .set_next_poll_at("s1", "", 1_000_000_000)
+            .unwrap();
 
         let subsonic = test_subsonic(&server.uri());
         let report = BackgroundScheduler::new(
@@ -505,6 +628,47 @@ mod tests {
         assert!(report.skipped_not_due);
         assert!(report.delta.is_none());
         assert!(report.next_poll_at_ms > 500);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skipped_tick_preserves_previous_scheduler_error() {
+        let server = MockServer::start().await;
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn("test.seed_skipped_scheduler_error", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, last_error, next_poll_at) \
+                     VALUES ('s1', '', 'old failure', 1000000)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let subsonic = test_subsonic(&server.uri());
+        let report = BackgroundScheduler::new(
+            &store,
+            &subsonic,
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_sleep_disabled()
+        .tick(500)
+        .await
+        .unwrap();
+        assert!(report.skipped_not_due);
+
+        let last_error: Option<String> = store
+            .with_conn("test.skipped_scheduler_error", |conn| {
+                conn.query_row(
+                    "SELECT last_error FROM sync_state WHERE server_id = 's1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(last_error.as_deref(), Some("old failure"));
     }
 
     // ── tick pauses when PrefetchActive ──────────────────────────────
@@ -566,6 +730,121 @@ mod tests {
             .unwrap();
         assert_eq!(next, report.next_poll_at_ms);
         assert!(next > 1_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tick_failure_is_persisted_and_retried_soon() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/getArtists.view"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let store = LibraryStore::open_in_memory();
+        let subsonic = test_subsonic(&server.uri());
+        let err = BackgroundScheduler::new(
+            &store,
+            &subsonic,
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_sleep_disabled()
+        .tick(1_000)
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SyncError::Transport(_)));
+
+        let (last_error, next_poll_at): (Option<String>, Option<i64>) = store
+            .with_conn("test.scheduler_error", |conn| {
+                conn.query_row(
+                    "SELECT last_error, next_poll_at FROM sync_state \
+                     WHERE server_id = 's1' AND library_scope = ''",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
+            .unwrap();
+        assert!(last_error.is_some_and(|message| message.contains("503")));
+        assert_eq!(next_poll_at, Some(31_000));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tick_timeout_is_persisted_without_waiting_for_server() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/rest/getArtists.view"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+            .mount(&server)
+            .await;
+
+        let store = LibraryStore::open_in_memory();
+        let subsonic = test_subsonic(&server.uri());
+        let err = BackgroundScheduler::new(
+            &store,
+            &subsonic,
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_sleep_disabled()
+        .tick_with_timeout(2_000, Duration::from_millis(20))
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("timed out"));
+
+        let last_error: Option<String> = store
+            .with_conn("test.scheduler_timeout", |conn| {
+                conn.query_row(
+                    "SELECT last_error FROM sync_state WHERE server_id = 's1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert!(last_error.is_some_and(|message| message.contains("timed out")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn successful_tick_clears_previous_scheduler_error() {
+        let server = MockServer::start().await;
+        empty_probe_and_albumlist(&server, 1_716_840_000_000).await;
+
+        let store = LibraryStore::open_in_memory();
+        store
+            .with_conn("test.seed_scheduler_error", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, last_error) \
+                     VALUES ('s1', '', 'old failure')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let subsonic = test_subsonic(&server.uri());
+        BackgroundScheduler::new(
+            &store,
+            &subsonic,
+            "s1",
+            "",
+            flags(CapabilityFlags::SUBSONIC_SEARCH3_BULK),
+        )
+        .with_sleep_disabled()
+        .tick(0)
+        .await
+        .unwrap();
+
+        let last_error: Option<String> = store
+            .with_conn("test.scheduler_error_cleared", |conn| {
+                conn.query_row(
+                    "SELECT last_error FROM sync_state WHERE server_id = 's1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(last_error, None);
     }
 
     // ── auto-tombstone trigger ──────────────────────────────────────

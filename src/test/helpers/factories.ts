@@ -90,7 +90,16 @@ export function seedQueue(
   const index = opts.index ?? 0;
   const currentTrack =
     opts.currentTrack === undefined ? (tracks[index] ?? null) : opts.currentTrack;
-  seedQueueResolver(serverId, tracks);
+  const tracksByServer = new Map<string, Track[]>();
+  for (const track of tracks) {
+    const owner = track.serverId ?? serverId;
+    const bucket = tracksByServer.get(owner);
+    if (bucket) bucket.push(track);
+    else tracksByServer.set(owner, [track]);
+  }
+  for (const [owner, ownedTracks] of tracksByServer) {
+    seedQueueResolver(owner, ownedTracks);
+  }
   usePlayerStore.setState({
     queueItems: toQueueItemRefs(serverId, tracks),
     queueIndex: index,

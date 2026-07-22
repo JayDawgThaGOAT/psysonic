@@ -2,6 +2,7 @@ import { emit } from '@tauri-apps/api/event';
 import CachedImage from '@/ui/CachedImage';
 import { OpenArtistRefInline } from '@/ui/OpenArtistRefInline';
 import type { MiniTrackInfo } from '@/features/miniPlayer/utils/miniPlayerBridge';
+import { buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
 
 interface Props {
   track: MiniTrackInfo | null;
@@ -33,7 +34,9 @@ export function MiniMeta({ track, miniCoverSrc, miniCoverKey }: Props) {
             <OpenArtistRefInline
               refs={track.artists}
               fallbackName={track.artist}
-              onGoArtist={id => { void emit('mini:navigate', { to: `/artist/${id}` }); }}
+              onGoArtist={id => { void emit('mini:navigate', {
+                to: buildArtistDetailPath(id, { serverId: track.serverId }),
+              }); }}
               as="none"
               linkTag="span"
               linkClassName="mini-player__artist-link"

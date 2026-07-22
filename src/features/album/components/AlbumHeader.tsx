@@ -1,11 +1,11 @@
 import type { EntityRatingSupportLevel, SubsonicItemGenre, SubsonicOpenArtistRef, SubsonicSong } from '@/lib/api/subsonicTypes';
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Play, Heart, X, ChevronLeft, Download, ListPlus, HardDriveDownload, Share2, Highlighter, Loader2, Shuffle } from 'lucide-react';
 import { CoverArtImage } from '@/cover/CoverArtImage';
-import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
 import { useCoverLightboxSrc } from '@/cover/lightbox';
+import type { CoverArtRef } from '@/cover/types';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/lib/hooks/useIsMobile';
 import { useAlbumDetailBack } from '@/features/album/hooks/useAlbumDetailBack';
@@ -22,6 +22,10 @@ import { tooltipAttrs } from '@/ui/tooltipAttrs';
 import { offlineActionPolicy, type OfflineActionPolicy } from '@/features/offline';
 import { deriveAlbumGenreTags } from '@/lib/library/genreTags';
 import { genreColor } from '@/lib/library/genreColor';
+import { buildAlbumDetailPath, buildArtistDetailPath } from '@/lib/navigation/detailServerScope';
+import EntitySourcePicker from '@/ui/EntitySourcePicker';
+import type { LibraryScopePair } from '@/lib/api/library';
+import type { MusicFolder, ServerProfile } from '@/store/authStoreTypes';
 
 /** True when the album artist label means "no single artist" — `getArtistInfo`
  *  has nothing meaningful to return for these, so the Artist Bio entry is hidden.
@@ -149,10 +153,11 @@ interface AlbumInfo {
 
 interface AlbumHeaderProps {
   info: AlbumInfo;
+  serverId?: string;
   /** OpenSubsonic album credits (derived from album + songs). */
   headerArtistRefs: SubsonicOpenArtistRef[];
   songs: SubsonicSong[];
-  coverArtId?: string;
+  coverRef: CoverArtRef | null;
   resolvedCoverUrl: string | null;
   isStarred: boolean;
   downloadProgress: number | null;
@@ -175,13 +180,17 @@ interface AlbumHeaderProps {
   entityRatingSupport: EntityRatingSupportLevel | 'unknown';
   /** Offline browse action gates (favorites, download, cache, bio, ratings). */
   actionPolicy?: OfflineActionPolicy;
+  sourceScopes?: LibraryScopePair[];
+  sourceServers?: ServerProfile[];
+  sourceMusicFoldersByServer?: Record<string, MusicFolder[]>;
 }
 
 export default function AlbumHeader({
   info,
+  serverId,
   headerArtistRefs,
   songs,
-  coverArtId,
+  coverRef,
   resolvedCoverUrl,
   isStarred,
   downloadProgress,
@@ -202,15 +211,18 @@ export default function AlbumHeader({
   onEntityRatingChange,
   entityRatingSupport,
   actionPolicy,
+  sourceScopes = [],
+  sourceServers = [],
+  sourceMusicFoldersByServer = {},
 }: AlbumHeaderProps) {
   const policy = actionPolicy ?? offlineActionPolicy('albumDetail', false);
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const goBack = useAlbumDetailBack();
   const isMobile = useIsMobile();
   const enableCoverArtBackground = useThemeStore(s => s.enableCoverArtBackground);
 
-  const coverRef = useAlbumCoverRef(info.id, coverArtId, undefined, { libraryResolve: true });
   const { open: openLightbox, lightbox } = useCoverLightboxSrc(coverRef, {
     alt: `${info.name} Cover`,
   });
@@ -225,12 +237,14 @@ export default function AlbumHeader({
   const genreMoreRef = useRef<HTMLButtonElement>(null);
   const goToGenre = (genre: string) => {
     setGenreMenuPos(null);
-    navigate(`/genres/${encodeURIComponent(genre)}`, { state: { returnTo: `/album/${info.id}` } });
+    navigate(`/genres/${encodeURIComponent(genre)}`, {
+      state: { returnTo: buildAlbumDetailPath(info.id, { serverId }) },
+    });
   };
 
   const handleShareAlbum = async () => {
     try {
-      const ok = await copyEntityShareLink('album', info.id);
+      const ok = await copyEntityShareLink('album', info.id, { serverId });
       if (ok) showToast(t('contextMenu.shareCopied'));
       else showToast(t('contextMenu.shareCopyFailed'), 4000, 'error');
     } catch {
@@ -299,7 +313,7 @@ export default function AlbumHeader({
                 <OpenArtistRefInline
                   refs={headerArtistRefs}
                   fallbackName={info.artist}
-                  onGoArtist={id => navigate(`/artist/${id}`)}
+                  onGoArtist={id => navigate(buildArtistDetailPath(id, { serverId }))}
                   linkClassName="album-detail-artist-link"
                 />
               </p>
@@ -348,13 +362,29 @@ export default function AlbumHeader({
                     <button
                       className="album-detail-artist-link"
                       data-tooltip={t('albumDetail.moreLabelAlbums', { label: info.recordLabel })}
-                      onClick={() => navigate(`/label/${encodeURIComponent(info.recordLabel!)}`)}
+                      onClick={() => navigate(
+                        `/label/${encodeURIComponent(info.recordLabel!)}${serverId ? `?server=${encodeURIComponent(serverId)}` : ''}`,
+                      )}
                     >
                       {info.recordLabel}
                     </button>
                   </>
                 )}
               </div>
+              {serverId && (
+                <EntitySourcePicker
+                  entityType="album"
+                  anchorServerId={serverId}
+                  anchorId={info.id}
+                  scopes={sourceScopes}
+                  servers={sourceServers}
+                  musicFoldersByServer={sourceMusicFoldersByServer}
+                  onSelect={source => navigate(buildAlbumDetailPath(source.id, {
+                    serverId: source.serverId,
+                    search: location.search,
+                  }))}
+                />
+              )}
               <div className="album-detail-entity-rating">
                 <span className="album-detail-entity-rating-label">{t('entityRating.albumShort')}</span>
                 <StarRating

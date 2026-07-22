@@ -1,5 +1,5 @@
 import { resolvePlaylistTracks } from '@/features/playlist/utils/resolvePlaylistTracks';
-import { getGenres } from '@/lib/api/subsonicGenres';
+import { getGenresForServer } from '@/lib/api/subsonicGenres';
 import type { SubsonicPlaylist, SubsonicGenre } from '@/lib/api/subsonicTypes';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
@@ -32,6 +32,10 @@ import { offlineActionPolicy } from '@/features/offline';
 import { Info } from 'lucide-react';
 import PlaylistsFolderView from '@/features/playlist/components/PlaylistsFolderView';
 import { usePlaylistFolderStore } from '@/features/playlist/store/playlistFolderStore';
+import { deriveEffectiveLibraryBrowseServerIds } from '@/lib/library/libraryBrowseScope';
+import { useUnavailableServerIds } from '@/lib/network/serverReachability';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 
 export default function Playlists() {
   const { t } = useTranslation();
@@ -47,15 +51,37 @@ export default function Playlists() {
   );
   const textSearchActive = playlistsSearchQuery.trim().length > 0;
   const fetchPlaylists = usePlaylistStore((s) => s.fetchPlaylists);
-  const activeUsername = useAuthStore(s => s.getActiveServer()?.username ?? '');
+  const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
+  const subsonicIdentityByServer = useAuthStore(s => s.subsonicServerIdentityByServer);
+  const libraryBrowseServerIds = useAuthStore(s => s.libraryBrowseServerIds);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const unavailableServerIds = useUnavailableServerIds();
+  const effectiveServerIds = useMemo(() => deriveEffectiveLibraryBrowseServerIds({
+    servers,
+    activeServerId,
+    libraryBrowseServerIds,
+  }, unavailableServerIds), [activeServerId, libraryBrowseServerIds, servers, unavailableServerIds]);
+  const serverLabelById = useMemo(() => new Map(
+    servers.map(server => [server.id, serverListDisplayLabel(server, servers)]),
+  ), [servers]);
+  const createServerOptions = useMemo(() => effectiveServerIds.map(serverId => ({
+    id: serverId,
+    label: serverLabelById.get(serverId) ?? serverId,
+  })), [effectiveServerIds, serverLabelById]);
+  const smartCreateServerOptions = useMemo(() => createServerOptions.filter(server => (
+    (subsonicIdentityByServer[server.id]?.type ?? '').toLowerCase() === 'navidrome'
+  )), [createServerOptions, subsonicIdentityByServer]);
   const folderCount = usePlaylistFolderStore(
     s => (activeServerId ? s.byServer[activeServerId]?.folders.length ?? 0 : 0),
   );
   const folderGroupView = usePlaylistFolderStore(s => s.groupView);
-  const showFolderView = Boolean(activeServerId) && folderCount > 0 && folderGroupView;
-  const subsonicIdentityByServer = useAuthStore(s => s.subsonicServerIdentityByServer);
+  const showFolderView = effectiveServerIds.length === 1
+    && effectiveServerIds[0] === activeServerId
+    && folderCount > 0
+    && folderGroupView;
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const playlistScopeVersion = musicLibraryFilterVersion + libraryBrowseScopeVersion;
   const offlineCtx = useOfflineBrowseContext();
   const offlineBrowseActive = offlineCtx.active;
   const playlistsActionPolicy = offlineActionPolicy('playlistsHeader', offlineCtx.active);
@@ -66,16 +92,21 @@ export default function Playlists() {
   const [newName, setNewName] = useState('');
   const [smartFilters, setSmartFilters] = useState<SmartFilters>(defaultSmartFilters);
   const [genres, setGenres] = useState<SubsonicGenre[]>([]);
+  const [genresServerId, setGenresServerId] = useState<string | null>(null);
   const [genreQuery, setGenreQuery] = useState('');
   const [creatingSmartBusy, setCreatingSmartBusy] = useState(false);
   const [editingSmartId, setEditingSmartId] = useState<string | null>(null);
+  const [editingSmartServerId, setEditingSmartServerId] = useState<string | null>(null);
+  const [requestedCreateServerId, setRequestedCreateServerId] = useState<string | null>(null);
   const [pendingSmart, setPendingSmart] = useState<PendingSmartPlaylist[]>([]);
-  const smartCoverIdsByPlaylist = useSmartCoverCollage(playlists, musicLibraryFilterVersion);
+  const smartCoverIdsByPlaylist = useSmartCoverCollage(playlists, playlistScopeVersion);
   const { filteredSongCountByPlaylist, filteredDurationByPlaylist } =
-    usePlaylistsLibraryScopeCounts(playlists, musicLibraryFilterVersion);
+    usePlaylistsLibraryScopeCounts(playlists, playlistScopeVersion);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const smartEditorGenerationRef = useRef(0);
+  const smartOperationGenerationRef = useRef(0);
 
   // ── Multi-selection ──────────────────────────────────────────────────────
   const [selectionMode, setSelectionMode] = useState(false);
@@ -84,17 +115,22 @@ export default function Playlists() {
     setSelectedIds,
     toggleSelect,
     clearSelection: resetSelection,
-  } = useRangeSelection(visiblePlaylists);
+  } = useRangeSelection(visiblePlaylists, ownedEntityKey);
+  const createServerId = requestedCreateServerId && effectiveServerIds.includes(requestedCreateServerId)
+    ? requestedCreateServerId
+    : activeServerId && effectiveServerIds.includes(activeServerId)
+      ? activeServerId
+      : effectiveServerIds[0] ?? '';
   const isNavidromeServer = Boolean(
-    activeServerId &&
-    (subsonicIdentityByServer[activeServerId]?.type ?? '').toLowerCase() === 'navidrome',
+    createServerId &&
+    (subsonicIdentityByServer[createServerId]?.type ?? '').toLowerCase() === 'navidrome',
   );
 
   // Intersect with the visible list so header/bulk actions never count hidden ids
   // (even for the render before the prune effect below runs).
   const visibleSelectedIds = useMemo(() => {
     if (selectedIds.size === 0) return selectedIds;
-    const visibleIds = new Set(visiblePlaylists.map(p => p.id));
+    const visibleIds = new Set(visiblePlaylists.map(ownedEntityKey));
     let changed = false;
     const next = new Set<string>();
     for (const id of selectedIds) {
@@ -120,19 +156,34 @@ export default function Playlists() {
     resetSelection();
   };
 
-  const selectedPlaylists = visiblePlaylists.filter(p => visibleSelectedIds.has(p.id));
+  const selectedPlaylists = visiblePlaylists.filter(p => visibleSelectedIds.has(ownedEntityKey(p)));
   const isPlaylistDeletable = useCallback((pl: SubsonicPlaylist) => {
+    if (!pl.serverId) return false;
     if (!pl.owner) return true;
-    if (!activeUsername) return false;
-    return pl.owner === activeUsername;
-  }, [activeUsername]);
+    const username = servers.find(server => server.id === pl.serverId)?.username;
+    return Boolean(username) && pl.owner === username;
+  }, [servers]);
 
   useEffect(() => {
     fetchPlaylists().finally(() => setLoading(false));
-    if (!offlineBrowseActive) {
-      getGenres().then(setGenres).catch(() => {});
-    }
-  }, [fetchPlaylists, offlineBrowseActive]);
+  }, [fetchPlaylists, libraryBrowseScopeVersion, offlineBrowseActive]);
+
+  useEffect(() => {
+    if (offlineBrowseActive || !createServerId || editingSmartId) return;
+    let current = true;
+    void getGenresForServer(createServerId)
+      .then(nextGenres => {
+        if (!current) return;
+        setGenres(nextGenres);
+        setGenresServerId(createServerId);
+      })
+      .catch(() => {
+        if (!current) return;
+        setGenres([]);
+        setGenresServerId(createServerId);
+      });
+    return () => { current = false; };
+  }, [createServerId, editingSmartId, offlineBrowseActive]);
 
   useEffect(() => {
     if (creating) nameInputRef.current?.focus();
@@ -140,44 +191,75 @@ export default function Playlists() {
 
   const createPlaylist = usePlaylistStore(s => s.createPlaylist);
 
-  const availableGenres = genres
-    .map(g => g.value)
-    .filter(v => !smartFilters.selectedGenres.includes(v))
-    .filter(v => !genreQuery.trim() || v.toLowerCase().includes(genreQuery.trim().toLowerCase()))
-    .sort((a, b) => a.localeCompare(b));
-
   const handleCreate = async () => {
+    if (!createServerId) return;
     const name = newName.trim() || t('playlists.unnamed');
-    await createPlaylist(name);
+    await createPlaylist(name, [], createServerId);
     // Refresh playlists from API to get the new one
     await fetchPlaylists();
     setCreating(false);
     setNewName('');
   };
 
-  const handleOpenSmartEditor = (pl: SubsonicPlaylist) => runPlaylistsOpenSmartEditor({
-    pl, isNavidromeServer, allGenres: genres, t,
-    setSmartFilters, setEditingSmartId, setGenreQuery,
-    setCreating, setCreatingSmart, setCreatingSmartBusy,
-  });
+  const handleOpenSmartEditor = async (pl: SubsonicPlaylist) => {
+    const playlistServerId = pl.serverId;
+    if (!playlistServerId) return;
+    smartOperationGenerationRef.current += 1;
+    const generation = ++smartEditorGenerationRef.current;
+    const playlistIsNavidrome = Boolean(
+      playlistServerId
+      && (subsonicIdentityByServer[playlistServerId]?.type ?? '').toLowerCase() === 'navidrome'
+    );
+    const playlistGenres = await getGenresForServer(playlistServerId).catch(() => []);
+    if (smartEditorGenerationRef.current !== generation) return;
+    setGenres(playlistGenres);
+    setGenresServerId(playlistServerId);
+    await runPlaylistsOpenSmartEditor({
+      pl, serverId: playlistServerId, isNavidromeServer: playlistIsNavidrome, allGenres: playlistGenres, t,
+      setSmartFilters, setEditingSmartId, setGenreQuery,
+      setCreating, setCreatingSmart, setCreatingSmartBusy,
+      setEditingSmartServerId,
+      isCurrent: () => smartEditorGenerationRef.current === generation,
+    });
+  };
 
-  const handleCreateSmart = () => runPlaylistsSaveSmart({
-    isNavidromeServer, smartFilters, allGenres: genres.map(g => g.value), editingSmartId, playlists, fetchPlaylists, t,
-    setPendingSmart, setCreatingSmart, setEditingSmartId, setSmartFilters,
-    setGenreQuery, setCreatingSmartBusy,
-  });
+  const smartEditorServerId = editingSmartId
+    ? editingSmartServerId ?? createServerId
+    : createServerId;
+  const smartEditorIsNavidrome = editingSmartId
+    ? Boolean((subsonicIdentityByServer[smartEditorServerId]?.type ?? '').toLowerCase() === 'navidrome')
+    : isNavidromeServer;
+  const smartEditorGenres = genresServerId === smartEditorServerId ? genres : [];
+  const smartGenresReady = genresServerId === smartEditorServerId;
+  const availableGenres = smartEditorGenres
+    .map(g => g.value)
+    .filter(v => !smartFilters.selectedGenres.includes(v))
+    .filter(v => !genreQuery.trim() || v.toLowerCase().includes(genreQuery.trim().toLowerCase()))
+    .sort((a, b) => a.localeCompare(b));
+  const handleCreateSmart = () => {
+    if (!smartGenresReady) return Promise.resolve();
+    const generation = ++smartOperationGenerationRef.current;
+    return runPlaylistsSaveSmart({
+      isNavidromeServer: smartEditorIsNavidrome, serverId: smartEditorServerId, smartFilters,
+      allGenres: smartEditorGenres.map(g => g.value), editingSmartId, playlists, fetchPlaylists, t,
+      setPendingSmart, setCreatingSmart, setEditingSmartId, setSmartFilters,
+      setGenreQuery, setCreatingSmartBusy, setEditingSmartServerId,
+      isCurrent: () => smartOperationGenerationRef.current === generation,
+    });
+  };
 
   // Smart playlist rules are processed asynchronously on server.
   usePendingSmartPolling(pendingSmart, setPendingSmart, fetchPlaylists);
 
   const handlePlay = async (e: React.MouseEvent, pl: SubsonicPlaylist) => {
     e.stopPropagation();
-    if (playingId === pl.id) return;
-    setPlayingId(pl.id);
+    const key = ownedEntityKey(pl);
+    if (playingId === key) return;
+    setPlayingId(key);
     try {
-      const tracks = await resolvePlaylistTracks(pl.id);
+      const tracks = await resolvePlaylistTracks(pl.id, pl.serverId);
       if (tracks.length > 0) {
-        touchPlaylist(pl.id);
+        touchPlaylist(pl.id, pl.serverId);
         playTrack(tracks[0], tracks);
       }
     } catch { /* ignore: best-effort */ }
@@ -211,6 +293,9 @@ export default function Playlists() {
       pendingSmart={pendingSmart}
       filteredSongCountByPlaylist={filteredSongCountByPlaylist}
       filteredDurationByPlaylist={filteredDurationByPlaylist}
+      serverLabel={effectiveServerIds.length > 1 && pl.serverId
+        ? serverLabelById.get(pl.serverId)
+        : undefined}
     />
   );
 
@@ -282,11 +367,25 @@ export default function Playlists() {
         setNewName={setNewName}
         nameInputRef={nameInputRef}
         handleCreate={handleCreate}
-        isNavidromeServer={isNavidromeServer}
+        createServerId={createServerId}
+        setCreateServerId={serverId => {
+          smartOperationGenerationRef.current += 1;
+          smartEditorGenerationRef.current += 1;
+          setCreatingSmartBusy(false);
+          setRequestedCreateServerId(serverId);
+        }}
+        createServerOptions={createServerOptions}
+        smartCreateServerOptions={smartCreateServerOptions}
         setEditingSmartId={setEditingSmartId}
         setSmartFilters={setSmartFilters}
         setGenreQuery={setGenreQuery}
+        onEditorIntent={() => {
+          smartOperationGenerationRef.current += 1;
+          smartEditorGenerationRef.current += 1;
+          setCreatingSmartBusy(false);
+        }}
         actionPolicy={playlistsActionPolicy}
+        foldersEnabled={effectiveServerIds.length === 1 && effectiveServerIds[0] === activeServerId}
       />
 
       {creatingSmart && (
@@ -298,9 +397,23 @@ export default function Playlists() {
           setGenreQuery={setGenreQuery}
           editingSmartId={editingSmartId}
           creatingSmartBusy={creatingSmartBusy}
+          genresReady={smartGenresReady}
+          createServerId={smartEditorServerId}
+          setCreateServerId={serverId => {
+            smartOperationGenerationRef.current += 1;
+            smartEditorGenerationRef.current += 1;
+            setCreatingSmartBusy(false);
+            setRequestedCreateServerId(serverId);
+          }}
+          createServerOptions={smartCreateServerOptions}
           setCreatingSmart={setCreatingSmart}
           setEditingSmartId={setEditingSmartId}
           onSave={handleCreateSmart}
+          onCancel={() => {
+            smartOperationGenerationRef.current += 1;
+            smartEditorGenerationRef.current += 1;
+            setCreatingSmartBusy(false);
+          }}
         />
       )}
 
@@ -327,7 +440,7 @@ export default function Playlists() {
           ) : (
             <VirtualCardGrid
               items={visiblePlaylists}
-              itemKey={(pl, _i) => pl.id}
+              itemKey={(pl, _i) => ownedEntityKey(pl)}
               rowVariant="playlist"
               disableVirtualization={perfFlags.disableMainstageVirtualLists}
               layoutSignal={visiblePlaylists.length}

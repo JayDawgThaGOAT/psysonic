@@ -1,5 +1,5 @@
 import { queueSongStar, queueSongRating } from '@/features/playback/store/pendingStarSync';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTracklistColumns, type ColDef, TRACK_TITLE_FLEX_COL } from '@/lib/hooks/useTracklistColumns';
 import { TopFavoriteArtistsRow } from '@/features/favorites/components/TopFavoriteArtists';
 import { RadioStationRow } from '@/features/favorites/components/RadioFavorites';
@@ -15,6 +15,17 @@ import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useTranslation } from 'react-i18next';
 import { useSelectionStore } from '@/store/selectionStore';
 import FavoritesOfflineHeader from '@/features/favorites/components/FavoritesOfflineHeader';
+import {
+  emitFavoritesBrowseDebug,
+  formatFavoritesBrowseTraceReport,
+  getFavoritesBrowseTraceSnapshot,
+  subscribeFavoritesBrowseTrace,
+} from '@/lib/library/favoritesBrowseDebug';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
+import type { SubsonicSong } from '@/lib/api/subsonicTypes';
+import { sameRadioStation } from '@/features/radio';
 
 const FAV_COLUMNS: readonly ColDef[] = [
   { key: 'num',        i18nKey: null,              minWidth: 60,  defaultWidth: 60,  required: true  },
@@ -36,6 +47,12 @@ const MIN_YEAR = 1950;
 
 export default function Favorites() {
   const { t } = useTranslation();
+  const favoritesBrowseDiagnosticsEnabled = usePsyLabDebugTraces().favoritesBrowse;
+  const favoritesTraceEntries = useSyncExternalStore(
+    subscribeFavoritesBrowseTrace,
+    getFavoritesBrowseTraceSnapshot,
+    getFavoritesBrowseTraceSnapshot,
+  );
   const {
     albums, artists, songs, setSongs, radioStations,
     loading, topFavoriteArtists, unfavoriteStation,
@@ -78,17 +95,18 @@ export default function Favorites() {
   const isPlaying = usePlayerStore(s => s.isPlaying);
   const starredOverrides = usePlayerStore(s => s.starredOverrides);
 
-  const handleRate = (songId: string, rating: number) => {
-    setRatings(r => ({ ...r, [songId]: rating }));
+  const handleRate = (song: SubsonicSong, rating: number) => {
+    const key = ownedEntityKey(song);
+    setRatings(r => ({ ...r, [key]: rating }));
     // F4: optimistic override + retried server sync via the central helper.
-    queueSongRating(songId, rating);
+    queueSongRating(song.id, rating, song.serverId, { scopedOverride: true });
   };
 
-  function removeSong(id: string) {
+  function removeSong(song: SubsonicSong) {
     // F4: optimistic un-star + retried server sync via the central helper.
-    const song = songs.find(s => s.id === id);
-    queueSongStar(id, false, song?.serverId);
-    setSongs(prev => prev.filter(s => s.id !== id));
+    const key = ownedEntityKey(song);
+    queueSongStar(song.id, false, song.serverId, { scopedOverride: true });
+    setSongs(prev => prev.filter(candidate => ownedEntityKey(candidate) !== key));
   }
 
   const { visibleSongs, handleSortClick, getSortIndicator } = useFavoritesSongFiltering({
@@ -111,11 +129,50 @@ export default function Favorites() {
     if (!inSelectMode) setShowPlPicker(false);
   }, [inSelectMode]);
 
+  useEffect(() => {
+    if (loading) return;
+    emitFavoritesBrowseDebug('render_ready', {
+      albumCount: albums.length,
+      artistCount: artists.length,
+      songCount: songs.length,
+      radioStationCount: radioStations.length,
+      visibleSongCount: visibleSongs.length,
+    });
+  }, [albums.length, artists.length, loading, radioStations.length, songs.length, visibleSongs.length]);
+
+  const copyFavoritesBrowseDiagnostics = async () => {
+    const text = formatFavoritesBrowseTraceReport({
+      route: '/favorites',
+      libraryScopeCount: getLibraryBrowseScope().pairs.length,
+      loading,
+      albumCount: albums.length,
+      artistCount: artists.length,
+      songCount: songs.length,
+      visibleSongCount: visibleSongs.length,
+      radioStationCount: radioStations.length,
+      traceEntryCount: favoritesTraceEntries.length,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
+
 
   if (loading) {
     return (
-      <div className="content-body" style={{ display: 'flex', justifyContent: 'center', padding: '4rem' }}>
+      <div className="content-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '4rem' }}>
         <div className="spinner" />
+        {favoritesBrowseDiagnosticsEnabled && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void copyFavoritesBrowseDiagnostics()}
+          >
+            {t('albums.copyDiagnostics')}
+          </button>
+        )}
       </div>
     );
   }
@@ -124,6 +181,17 @@ export default function Favorites() {
 
   return (
     <div className="content-body animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '3rem' }}>
+      {favoritesBrowseDiagnosticsEnabled && (
+        <div className="mainstage-diagnostic-copy-all">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void copyFavoritesBrowseDiagnostics()}
+          >
+            {t('albums.copyDiagnostics')}
+          </button>
+        </div>
+      )}
       <div className="playlists-header" style={{ marginBottom: '-1.5rem' }}>
         <h1 className="page-title" style={{ marginBottom: 0 }}>{t('favorites.title')}</h1>
         <FavoritesOfflineHeader />
@@ -148,7 +216,7 @@ export default function Favorites() {
               currentRadio={currentRadio}
               isPlaying={isPlaying}
               onPlay={s => {
-                if (currentRadio?.id === s.id && isPlaying) stop();
+                if (sameRadioStation(currentRadio, s) && isPlaying) stop();
                 else playRadio(s);
               }}
               onUnfavorite={unfavoriteStation}

@@ -16,8 +16,15 @@ import {
   bootstrapIndexedServer,
   type BindServerResult,
 } from '@/lib/library/librarySession';
-import { enqueueLibrarySync } from '@/lib/library/librarySyncQueue';
+import {
+  clearPendingLibrarySync,
+  enqueueLibrarySync,
+} from '@/lib/library/librarySyncQueue';
 import { syncIngestDisplayCount } from '@/lib/library/libraryReady';
+import {
+  publishServerConnectionStatus,
+  useServerReachabilitySnapshot,
+} from '@/lib/network/serverReachability';
 
 export type LibraryServerConnection = 'online' | 'offline' | 'unknown';
 
@@ -25,11 +32,41 @@ const STATUS_POLL_MS = 3000;
 const SYNC_POLL_MS = 2500;
 const OFFLINE_RETRY_MS = 60_000;
 
+function shallowObjectEqual(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(key => Object.is(left[key], right[key]));
+}
+
+function syncStatusEqual(left: SyncStateDto | null, right: SyncStateDto | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return shallowObjectEqual(
+    left as unknown as Record<string, unknown>,
+    right as unknown as Record<string, unknown>,
+  );
+}
+
+function statusMapEqual(
+  left: Record<string, SyncStateDto | null>,
+  right: Record<string, SyncStateDto | null>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(key => key in right && syncStatusEqual(left[key] ?? null, right[key] ?? null));
+}
+
 export function useLibraryIndexSync() {
   const { t } = useTranslation();
   const servers = useAuthStore(s => s.servers);
   const activeServerId = useAuthStore(s => s.activeServerId);
   const masterEnabled = useLibraryIndexStore(s => s.masterEnabled);
+  const reachabilityByServer = useServerReachabilitySnapshot();
 
   const serverKeyById = useMemo(
     () => Object.fromEntries(servers.map(s => [s.id, serverIndexKeyForProfile(s)])),
@@ -56,93 +93,179 @@ export function useLibraryIndexSync() {
   }, [servers, serverKeyById, activeServerId]);
 
   const [statusByServer, setStatusByServer] = useState<Record<string, SyncStateDto | null>>({});
-  const [connectionByServer, setConnectionByServer] = useState<Record<string, LibraryServerConnection>>({});
   const [progressByServer, setProgressByServer] = useState<Record<string, string | null>>({});
   const [busyServerId, setBusyServerId] = useState<string | null>(null);
   const [bootstrapping, setBootstrapping] = useState(false);
 
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ingestCountRef = useRef<Record<string, number>>({});
   const syncPhaseRef = useRef<Record<string, string | null>>({});
+  const generationRef = useRef(0);
+  const statusFlightRef = useRef<{ generation: number; promise: Promise<void> } | null>(null);
+  const retryFlightRef = useRef<{ generation: number; promise: Promise<void> } | null>(null);
+  const bootstrapGenerationRef = useRef<number | null>(null);
+  const indexedKeysKey = indexedKeys.join(',');
+  const connectionByServer = useMemo<Record<string, LibraryServerConnection>>(() => (
+    Object.fromEntries(indexedServers.map(({ key, server }) => {
+      const reachability = reachabilityByServer.get(server.id);
+      return [
+        key,
+        reachability === 'available' ? 'online' : reachability === 'unavailable' ? 'offline' : 'unknown',
+      ];
+    }))
+  ), [indexedServers, reachabilityByServer]);
 
-  const applyConnectionResults = useCallback((results: Record<string, BindServerResult>) => {
-    setConnectionByServer(prev => {
-      const next = { ...prev };
-      for (const [id, result] of Object.entries(results)) {
-        next[id] = result === 'offline' ? 'offline' : result === 'bound' ? 'online' : 'unknown';
-      }
-      return next;
+  useEffect(() => {
+    generationRef.current += 1;
+    statusFlightRef.current = null;
+    retryFlightRef.current = null;
+    bootstrapGenerationRef.current = null;
+    const keys = masterEnabled ? indexedKeys : [];
+    const keySet = new Set(keys);
+    ingestCountRef.current = Object.fromEntries(
+      Object.entries(ingestCountRef.current).filter(([key]) => keySet.has(key)),
+    );
+    syncPhaseRef.current = Object.fromEntries(
+      Object.entries(syncPhaseRef.current).filter(([key]) => keySet.has(key)),
+    );
+    // React Compiler set-state-in-effect rule: invalidate obsolete async bootstrap state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBootstrapping(false);
+    setBusyServerId(current => current && keySet.has(current) ? current : null);
+    setStatusByServer(prev => {
+      const next = Object.fromEntries(keys.map(key => [key, prev[key] ?? null]));
+      return statusMapEqual(prev, next) ? prev : next;
     });
-  }, []);
+    setProgressByServer(prev => {
+      const next = Object.fromEntries(keys.map(key => [key, prev[key] ?? null]));
+      return shallowObjectEqual(prev, next) ? prev : next;
+    });
+    return () => {
+      generationRef.current += 1;
+    };
+  }, [masterEnabled, indexedKeysKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const refreshAllStatuses = useCallback(async () => {
-    if (!masterEnabled || indexedServers.length === 0) return;
-    const entries = await Promise.all(
+  const publishConnectionResults = useCallback((
+    results: Record<string, BindServerResult>,
+    generation = generationRef.current,
+  ) => {
+    if (generation !== generationRef.current) return;
+    for (const { key, server } of indexedServers) {
+      const result = results[key];
+      if (!result) continue;
+      publishServerConnectionStatus(
+        server.id,
+        result === 'bound' ? 'online' : result === 'offline' ? 'offline' : 'unknown',
+        useAuthStore.getState().activeServerId === server.id,
+      );
+    }
+  }, [indexedServers]);
+
+  const refreshAllStatuses = useCallback((generation = generationRef.current): Promise<void> => {
+    if (!masterEnabled || indexedServers.length === 0) return Promise.resolve();
+    const existing = statusFlightRef.current;
+    if (existing?.generation === generation) return existing.promise;
+    const promise = Promise.all(
       indexedServers.map(async ({ key }) => {
         try {
           const fresh = await libraryGetStatus(key);
-          syncPhaseRef.current[key] = fresh.syncPhase;
-          if (fresh.syncPhase === 'initial_sync') {
-            const next = Math.max(ingestCountRef.current[key] ?? 0, syncIngestDisplayCount(fresh));
-            ingestCountRef.current[key] = next;
-            setProgressByServer(p => ({
-              ...p,
-              [key]: t('settings.libraryIndexProgressIngest', { count: next }),
-            }));
-          } else if (fresh.syncPhase === 'ready' || fresh.syncPhase === 'idle') {
-            ingestCountRef.current[key] = 0;
-          }
           return [key, fresh] as const;
         } catch {
           return [key, null] as const;
         }
       }),
-    );
-    setStatusByServer(Object.fromEntries(entries));
-  }, [masterEnabled, indexedServers, t]);
+    ).then(entries => {
+      if (generation !== generationRef.current) return;
+      const nextStatus = Object.fromEntries(entries) as Record<string, SyncStateDto | null>;
+      const progressUpdates: Record<string, string | null> = {};
+      for (const [key, fresh] of entries) {
+        syncPhaseRef.current[key] = fresh?.syncPhase ?? null;
+        if (fresh?.syncPhase === 'initial_sync') {
+          const count = Math.max(ingestCountRef.current[key] ?? 0, syncIngestDisplayCount(fresh));
+          ingestCountRef.current[key] = count;
+          progressUpdates[key] = t('settings.libraryIndexProgressIngest', { count });
+        } else if (fresh?.syncPhase === 'ready' || fresh?.syncPhase === 'idle') {
+          ingestCountRef.current[key] = 0;
+          progressUpdates[key] = null;
+        }
+      }
+      setStatusByServer(prev => statusMapEqual(prev, nextStatus) ? prev : nextStatus);
+      setProgressByServer(prev => {
+        const next = Object.fromEntries(indexedKeys.map(key => [
+          key,
+          key in progressUpdates ? progressUpdates[key] : (prev[key] ?? null),
+        ]));
+        return shallowObjectEqual(prev, next) ? prev : next;
+      });
+    });
+    statusFlightRef.current = { generation, promise };
+    void promise.finally(() => {
+      if (statusFlightRef.current?.promise === promise) statusFlightRef.current = null;
+    });
+    return promise;
+  }, [masterEnabled, indexedServers, indexedKeys, t]);
 
   const runBootstrap = useCallback(async () => {
     if (!masterEnabled) return;
+    const generation = generationRef.current;
+    bootstrapGenerationRef.current = generation;
     setBootstrapping(true);
     try {
       const results = await bootstrapAllIndexedServers();
-      applyConnectionResults(results);
-      await refreshAllStatuses();
+      if (generation !== generationRef.current) return;
+      publishConnectionResults(results, generation);
+      await refreshAllStatuses(generation);
     } finally {
-      setBootstrapping(false);
+      if (bootstrapGenerationRef.current === generation) {
+        bootstrapGenerationRef.current = null;
+        setBootstrapping(false);
+      }
     }
-  }, [masterEnabled, applyConnectionResults, refreshAllStatuses]);
+  }, [masterEnabled, publishConnectionResults, refreshAllStatuses]);
 
-  const retryOfflineServers = useCallback(async () => {
-    if (!masterEnabled) return;
+  const retryOfflineServers = useCallback((generation = generationRef.current): Promise<void> => {
+    if (!masterEnabled) return Promise.resolve();
+    const existing = retryFlightRef.current;
+    if (existing?.generation === generation) return existing.promise;
     const offline = indexedServers.filter(s => connectionByServer[s.key] === 'offline');
-    if (offline.length === 0) return;
-    const results: Record<string, BindServerResult> = {};
-    for (const srv of offline) {
-      results[srv.key] = await bootstrapIndexedServer(srv.server);
-    }
-    applyConnectionResults(results);
-    void refreshAllStatuses();
-  }, [masterEnabled, indexedServers, connectionByServer, applyConnectionResults, refreshAllStatuses]);
+    if (offline.length === 0) return Promise.resolve();
+    const promise = Promise.all(offline.map(async srv => {
+      const result: BindServerResult = await bootstrapIndexedServer(srv.server)
+        .catch(() => 'error');
+      publishConnectionResults({ [srv.key]: result }, generation);
+    })).then(async () => {
+      if (generation === generationRef.current) await refreshAllStatuses(generation);
+    });
+    retryFlightRef.current = { generation, promise };
+    void promise.finally(() => {
+      if (retryFlightRef.current?.promise === promise) retryFlightRef.current = null;
+    });
+    return promise;
+  }, [masterEnabled, indexedServers, connectionByServer, publishConnectionResults, refreshAllStatuses]);
 
   useEffect(() => {
     if (!masterEnabled || indexedKeys.length === 0) return;
     // React Compiler set-state-in-effect rule: state set from a timer/animation callback.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void runBootstrap();
-  }, [masterEnabled, indexedKeys.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [masterEnabled, indexedKeysKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!masterEnabled) return;
-    const poll = () => {
-      void refreshAllStatuses();
+    const generation = generationRef.current;
+    let cancelled = false;
+    const poll = async () => {
+      await refreshAllStatuses(generation);
+      if (cancelled || generation !== generationRef.current) return;
       const anyInitial = indexedKeys.some(
         key => syncPhaseRef.current[key] === 'initial_sync',
       );
-      pollTimer.current = setTimeout(poll, anyInitial ? SYNC_POLL_MS : STATUS_POLL_MS);
+      pollTimer.current = setTimeout(() => void poll(), anyInitial ? SYNC_POLL_MS : STATUS_POLL_MS);
     };
-    poll();
+    void poll();
     return () => {
+      cancelled = true;
       if (pollTimer.current) clearTimeout(pollTimer.current);
       pollTimer.current = null;
     };
@@ -154,10 +277,19 @@ export function useLibraryIndexSync() {
 
   useEffect(() => {
     if (!masterEnabled) return;
-    const retryTimer = setInterval(() => {
-      void retryOfflineServers();
-    }, OFFLINE_RETRY_MS);
-    return () => clearInterval(retryTimer);
+    const generation = generationRef.current;
+    let cancelled = false;
+    const retry = async () => {
+      await retryOfflineServers(generation);
+      if (cancelled || generation !== generationRef.current) return;
+      retryTimer.current = setTimeout(() => void retry(), OFFLINE_RETRY_MS);
+    };
+    retryTimer.current = setTimeout(() => void retry(), OFFLINE_RETRY_MS);
+    return () => {
+      cancelled = true;
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    };
   }, [masterEnabled, retryOfflineServers]);
 
   useEffect(() => {
@@ -192,7 +324,7 @@ export function useLibraryIndexSync() {
         setBusyServerId(cur => (cur === key ? null : cur));
         ingestCountRef.current[key] = 0;
         setProgressByServer(prev => ({ ...prev, [key]: null }));
-        void refreshAllStatuses();
+        void refreshAllStatuses(generationRef.current);
         if (!p.ok && p.error) {
           showToast(t('settings.libraryIndexSyncError', { error: p.error }), 5000, 'error');
         }
@@ -226,7 +358,8 @@ export function useLibraryIndexSync() {
     }
   }, [statusByServer, t]);
 
-  const handleCancel = useCallback(async () => {
+  const handleCancel = useCallback(async (serverId: string) => {
+    clearPendingLibrarySync(resolveIndexKey(serverId));
     try {
       await librarySyncCancel();
     } catch {

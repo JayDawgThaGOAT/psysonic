@@ -1,5 +1,5 @@
-import { getAlbumList } from '@/lib/api/subsonicLibrary';
-import { getAlbumsByGenre } from '@/lib/api/subsonicGenres';
+import { getAlbumList, getAlbumListForServer } from '@/lib/api/subsonicLibrary';
+import { getAlbumsByGenre, getAlbumsByGenreForServer } from '@/lib/api/subsonicGenres';
 import type { SubsonicAlbum } from '@/lib/api/subsonicTypes';
 import { dedupeById } from '@/lib/util/dedupeById';
 import {
@@ -11,8 +11,12 @@ import { albumListFetchType, sortSubsonicAlbums } from './albumBrowseSort';
 import type { AlbumBrowsePageResult, AlbumBrowseQuery } from './albumBrowseTypes';
 import { GENRE_ALBUM_FETCH_LIMIT } from './albumBrowseTypes';
 
-async function fetchByGenres(genres: string[]) {
-  const results = await Promise.all(genres.map(g => getAlbumsByGenre(g, GENRE_ALBUM_FETCH_LIMIT, 0)));
+async function fetchByGenres(genres: string[], serverId?: string | null) {
+  const results = await Promise.all(genres.map(g => (
+    serverId
+      ? getAlbumsByGenreForServer(serverId, g, GENRE_ALBUM_FETCH_LIMIT, 0)
+      : getAlbumsByGenre(g, GENRE_ALBUM_FETCH_LIMIT, 0)
+  )));
   return dedupeById(results.flat());
 }
 
@@ -28,24 +32,29 @@ export async function fetchAlbumBrowseNetwork(
   query: AlbumBrowseQuery,
   offset: number,
   pageSize: number,
+  serverId?: string | null,
 ): Promise<AlbumBrowsePageResult> {
   if (query.genres.length > 0) {
     if (query.genres.length === 1) {
       const data = applyNetworkPostFilters(
-        await getAlbumsByGenre(query.genres[0], pageSize, offset),
+        serverId
+          ? await getAlbumsByGenreForServer(serverId, query.genres[0], pageSize, offset)
+          : await getAlbumsByGenre(query.genres[0], pageSize, offset),
         query,
       );
       return { albums: data, hasMore: data.length === pageSize };
     }
     if (offset > 0) return { albums: [], hasMore: false };
-    const data = applyNetworkPostFilters(await fetchByGenres(query.genres), query);
+    const data = applyNetworkPostFilters(await fetchByGenres(query.genres, serverId), query);
     return { albums: data, hasMore: false };
   }
 
   if (query.starredOnly) {
     const extra = query.year ? albumYearSubsonicParams(query.year) : {};
     const data = applyNetworkPostFilters(
-      await getAlbumList('starred', pageSize, offset, extra),
+      serverId
+        ? await getAlbumListForServer(serverId, 'starred', pageSize, offset, extra)
+        : await getAlbumList('starred', pageSize, offset, extra),
       query,
     );
     return { albums: data, hasMore: data.length === pageSize };
@@ -53,19 +62,29 @@ export async function fetchAlbumBrowseNetwork(
 
   if (query.year) {
     const data = applyNetworkPostFilters(
-      await getAlbumList(
-        'byYear',
-        pageSize,
-        offset,
-        albumYearSubsonicParams(query.year),
-      ),
+      serverId
+        ? await getAlbumListForServer(
+            serverId,
+            'byYear',
+            pageSize,
+            offset,
+            albumYearSubsonicParams(query.year),
+          )
+        : await getAlbumList(
+            'byYear',
+            pageSize,
+            offset,
+            albumYearSubsonicParams(query.year),
+          ),
       query,
     );
     return { albums: data, hasMore: data.length === pageSize };
   }
 
   const data = applyNetworkPostFilters(
-    await getAlbumList(albumListFetchType(query.sort), pageSize, offset, {}),
+    serverId
+      ? await getAlbumListForServer(serverId, albumListFetchType(query.sort), pageSize, offset, {})
+      : await getAlbumList(albumListFetchType(query.sort), pageSize, offset, {}),
     query,
   );
   return { albums: data, hasMore: data.length === pageSize };

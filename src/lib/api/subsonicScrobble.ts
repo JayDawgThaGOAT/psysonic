@@ -88,3 +88,20 @@ export async function getNowPlaying(): Promise<SubsonicNowPlaying[]> {
     return [];
   }
 }
+
+export async function getNowPlayingForServer(serverId: string): Promise<SubsonicNowPlaying[]> {
+  if (!serverId) return [];
+  const data = await apiForServer<{
+    nowPlaying: { entry?: SubsonicNowPlaying | SubsonicNowPlaying[] };
+  }>(serverId, 'getNowPlaying.view', { _t: Date.now() });
+  const raw = data.nowPlaying?.entry;
+  const entries = !raw ? [] : Array.isArray(raw) ? raw : [raw];
+  return entries.map(entry => ({ ...entry, serverId }));
+}
+
+/** Aggregate live listeners from the selected server scope; one failed server does not hide the rest. */
+export async function getNowPlayingForServers(serverIds: string[]): Promise<SubsonicNowPlaying[]> {
+  const uniqueServerIds = [...new Set(serverIds.filter(Boolean))];
+  const results = await Promise.allSettled(uniqueServerIds.map(getNowPlayingForServer));
+  return results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+}

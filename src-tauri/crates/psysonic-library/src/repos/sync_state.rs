@@ -73,16 +73,17 @@ impl<'a> SyncStateRepository<'a> {
         cursor: &Value,
     ) -> Result<(), String> {
         let json = serde_json::to_string(cursor).map_err(|e| e.to_string())?;
-        self.store.with_conn("sync_state.set_initial_sync_cursor", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, initial_sync_cursor_json) \
+        self.store
+            .with_conn("sync_state.set_initial_sync_cursor", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, initial_sync_cursor_json) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    initial_sync_cursor_json = excluded.initial_sync_cursor_json",
-                params![server_id, library_scope, json],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, json],
+                )?;
+                Ok(())
+            })
     }
 
     /// Single write-lock acquisition for cursor + local count during ingest.
@@ -102,6 +103,33 @@ impl<'a> SyncStateRepository<'a> {
                    initial_sync_cursor_json = excluded.initial_sync_cursor_json, \
                    local_track_count = excluded.local_track_count",
                 params![server_id, library_scope, json, local_track_count],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Atomically publish a completed initial sync. Keeping the cursor clear,
+    /// count snapshot, timestamp, and ready phase in one statement prevents a
+    /// crash from exposing `ready` with an ingest cursor still present.
+    pub fn complete_initial_sync(
+        &self,
+        server_id: &str,
+        library_scope: &str,
+        local_track_count: i64,
+        finished_at: i64,
+    ) -> Result<(), String> {
+        self.store.with_conn("sync_state.complete_initial_sync", |conn| {
+            conn.execute(
+                "INSERT INTO sync_state (server_id, library_scope, local_track_count, \
+                 last_full_sync_at, initial_sync_cursor_json, sync_phase, last_error) \
+                 VALUES (?1, ?2, ?3, ?4, '{}', 'ready', NULL) \
+                 ON CONFLICT(server_id, library_scope) DO UPDATE SET \
+                   local_track_count = excluded.local_track_count, \
+                   last_full_sync_at = excluded.last_full_sync_at, \
+                   initial_sync_cursor_json = '{}', \
+                   sync_phase = 'ready', \
+                   last_error = NULL",
+                params![server_id, library_scope, local_track_count, finished_at],
             )?;
             Ok(())
         })
@@ -134,16 +162,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         flags: u32,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_capability_flags", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, capability_flags) \
+        self.store
+            .with_conn("sync_state.set_capability_flags", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, capability_flags) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    capability_flags = excluded.capability_flags",
-                params![server_id, library_scope, flags as i64],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, flags as i64],
+                )?;
+                Ok(())
+            })
     }
 
     /// Read `sync_phase` (state-machine values per spec §6.2:
@@ -204,6 +233,26 @@ impl<'a> SyncStateRepository<'a> {
         })
     }
 
+    /// Change `sync_phase` only when it still matches `expected_phase`.
+    /// Returns `false` when another writer advanced the state first.
+    pub(crate) fn set_sync_phase_if(
+        &self,
+        server_id: &str,
+        library_scope: &str,
+        expected_phase: &str,
+        phase: &str,
+    ) -> Result<bool, String> {
+        self.store
+            .with_conn("sync_state.set_sync_phase_if", |conn| {
+                let changed = conn.execute(
+                    "UPDATE sync_state SET sync_phase = ?3 \
+                 WHERE server_id = ?1 AND library_scope = ?2 AND sync_phase = ?4",
+                    params![server_id, library_scope, phase, expected_phase],
+                )?;
+                Ok(changed == 1)
+            })
+    }
+
     /// Write `server_last_scan_iso` — server-reported timestamp of the
     /// last completed scan, captured from `getScanStatus.lastScan`.
     pub fn set_server_last_scan_iso(
@@ -212,16 +261,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         last_scan_iso: Option<&str>,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_server_last_scan_iso", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, server_last_scan_iso) \
+        self.store
+            .with_conn("sync_state.set_server_last_scan_iso", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, server_last_scan_iso) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    server_last_scan_iso = excluded.server_last_scan_iso",
-                params![server_id, library_scope, last_scan_iso],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, last_scan_iso],
+                )?;
+                Ok(())
+            })
     }
 
     /// Write `indexes_last_modified_ms` — watermark for the file-tree
@@ -232,16 +282,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         last_modified_ms: i64,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_indexes_last_modified_ms", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, indexes_last_modified_ms) \
+        self.store
+            .with_conn("sync_state.set_indexes_last_modified_ms", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, indexes_last_modified_ms) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    indexes_last_modified_ms = excluded.indexes_last_modified_ms",
-                params![server_id, library_scope, last_modified_ms],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, last_modified_ms],
+                )?;
+                Ok(())
+            })
     }
 
     /// Read `artists_last_modified_ms`. Returns `None` when the row
@@ -375,16 +426,17 @@ impl<'a> SyncStateRepository<'a> {
         stats: &Value,
     ) -> Result<(), String> {
         let json = serde_json::to_string(stats).map_err(|e| e.to_string())?;
-        self.store.with_conn("sync_state.set_poll_stats_json", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, poll_stats_json) \
+        self.store
+            .with_conn("sync_state.set_poll_stats_json", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, poll_stats_json) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    poll_stats_json = excluded.poll_stats_json",
-                params![server_id, library_scope, json],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, json],
+                )?;
+                Ok(())
+            })
     }
 
     /// Read `local_track_count` snapshot (counts kept in sync by C8 /
@@ -412,16 +464,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         count: i64,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_local_track_count", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, local_track_count) \
+        self.store
+            .with_conn("sync_state.set_local_track_count", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, local_track_count) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    local_track_count = excluded.local_track_count",
-                params![server_id, library_scope, count],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, count],
+                )?;
+                Ok(())
+            })
     }
 
     pub fn get_server_track_count(
@@ -447,16 +500,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         count: i64,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_server_track_count", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, server_track_count) \
+        self.store
+            .with_conn("sync_state.set_server_track_count", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, server_track_count) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    server_track_count = excluded.server_track_count",
-                params![server_id, library_scope, count],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, count],
+                )?;
+                Ok(())
+            })
     }
 
     /// Read `n1_bulk_unreliable` — per-server learned flag (R7-15). When
@@ -488,16 +542,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         unreliable: bool,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_n1_bulk_unreliable", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, n1_bulk_unreliable) \
+        self.store
+            .with_conn("sync_state.set_n1_bulk_unreliable", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, n1_bulk_unreliable) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    n1_bulk_unreliable = excluded.n1_bulk_unreliable",
-                params![server_id, library_scope, unreliable as i64],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, unreliable as i64],
+                )?;
+                Ok(())
+            })
     }
 
     /// Stamp `last_full_sync_at = now` (epoch ms). Called by IS-6 when
@@ -508,16 +563,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         epoch_ms: i64,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_last_full_sync_at", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, last_full_sync_at) \
+        self.store
+            .with_conn("sync_state.set_last_full_sync_at", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, last_full_sync_at) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    last_full_sync_at = excluded.last_full_sync_at",
-                params![server_id, library_scope, epoch_ms],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, epoch_ms],
+                )?;
+                Ok(())
+            })
     }
 
     /// Stamp `last_delta_sync_at = now` (epoch ms). Called by DS-9 at
@@ -528,16 +584,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         epoch_ms: i64,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_last_delta_sync_at", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, last_delta_sync_at) \
+        self.store
+            .with_conn("sync_state.set_last_delta_sync_at", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, last_delta_sync_at) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    last_delta_sync_at = excluded.last_delta_sync_at",
-                params![server_id, library_scope, epoch_ms],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, epoch_ms],
+                )?;
+                Ok(())
+            })
     }
 
     /// Write `artists_last_modified_ms` — watermark for the ID3 path
@@ -549,16 +606,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         last_modified_ms: i64,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_artists_last_modified_ms", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, artists_last_modified_ms) \
+        self.store
+            .with_conn("sync_state.set_artists_last_modified_ms", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, artists_last_modified_ms) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    artists_last_modified_ms = excluded.artists_last_modified_ms",
-                params![server_id, library_scope, last_modified_ms],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, last_modified_ms],
+                )?;
+                Ok(())
+            })
     }
 
     /// Read `ignored_articles` from the last `getArtists` pass (Navidrome
@@ -587,16 +645,17 @@ impl<'a> SyncStateRepository<'a> {
         library_scope: &str,
         ignored_articles: &str,
     ) -> Result<(), String> {
-        self.store.with_conn("sync_state.set_ignored_articles", |conn| {
-            conn.execute(
-                "INSERT INTO sync_state (server_id, library_scope, ignored_articles) \
+        self.store
+            .with_conn("sync_state.set_ignored_articles", |conn| {
+                conn.execute(
+                    "INSERT INTO sync_state (server_id, library_scope, ignored_articles) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT(server_id, library_scope) DO UPDATE SET \
                    ignored_articles = excluded.ignored_articles",
-                params![server_id, library_scope, ignored_articles],
-            )?;
-            Ok(())
-        })
+                    params![server_id, library_scope, ignored_articles],
+                )?;
+                Ok(())
+            })
     }
 
     /// Write `library_tier` (spec §6.2.2 — `small` / `medium` / `huge`
@@ -633,7 +692,11 @@ mod tests {
         repo.ensure("s1", "").unwrap();
 
         let cursor = repo.get_initial_sync_cursor("s1", "").unwrap();
-        assert_eq!(cursor, Some(json!({})), "DEFAULT must read back as empty object");
+        assert_eq!(
+            cursor,
+            Some(json!({})),
+            "DEFAULT must read back as empty object"
+        );
     }
 
     #[test]
@@ -644,7 +707,9 @@ mod tests {
         repo.ensure("s1", "").unwrap();
 
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM sync_state", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM sync_state", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -675,8 +740,10 @@ mod tests {
     fn set_overwrites_prior_cursor() {
         let store = LibraryStore::open_in_memory();
         let repo = SyncStateRepository::new(&store);
-        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 1})).unwrap();
-        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 2})).unwrap();
+        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 1}))
+            .unwrap();
+        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 2}))
+            .unwrap();
         let got = repo.get_initial_sync_cursor("s1", "").unwrap();
         assert_eq!(got, Some(json!({"offset": 2})));
     }
@@ -687,7 +754,8 @@ mod tests {
         // DEFAULT-backed fields stay at their initial values across upserts.
         let store = LibraryStore::open_in_memory();
         let repo = SyncStateRepository::new(&store);
-        repo.set_initial_sync_cursor("s1", "", &json!({"x": 1})).unwrap();
+        repo.set_initial_sync_cursor("s1", "", &json!({"x": 1}))
+            .unwrap();
 
         // Mutate a sibling column out-of-band to detect any accidental reset.
         store
@@ -700,7 +768,8 @@ mod tests {
             .unwrap();
 
         // Second cursor write must not touch sync_phase.
-        repo.set_initial_sync_cursor("s1", "", &json!({"x": 2})).unwrap();
+        repo.set_initial_sync_cursor("s1", "", &json!({"x": 2}))
+            .unwrap();
         let phase: String = store
             .with_conn("misc", |c| {
                 c.query_row(
@@ -717,8 +786,10 @@ mod tests {
     fn library_scope_separates_rows_per_server() {
         let store = LibraryStore::open_in_memory();
         let repo = SyncStateRepository::new(&store);
-        repo.set_initial_sync_cursor("s1", "", &json!({"all": true})).unwrap();
-        repo.set_initial_sync_cursor("s1", "lib-1", &json!({"lib": "one"})).unwrap();
+        repo.set_initial_sync_cursor("s1", "", &json!({"all": true}))
+            .unwrap();
+        repo.set_initial_sync_cursor("s1", "lib-1", &json!({"lib": "one"}))
+            .unwrap();
 
         assert_eq!(
             repo.get_initial_sync_cursor("s1", "").unwrap(),
@@ -755,7 +826,10 @@ mod tests {
         let repo = SyncStateRepository::new(&store);
         repo.set_capability_flags("s1", "", 0x008).unwrap();
         // sync_phase defaulted to 'idle' on the implicit insert.
-        assert_eq!(repo.get_sync_phase("s1", "").unwrap().as_deref(), Some("idle"));
+        assert_eq!(
+            repo.get_sync_phase("s1", "").unwrap().as_deref(),
+            Some("idle")
+        );
     }
 
     #[test]
@@ -763,7 +837,10 @@ mod tests {
         let store = LibraryStore::open_in_memory();
         let repo = SyncStateRepository::new(&store);
         repo.ensure("s1", "").unwrap();
-        assert_eq!(repo.get_sync_phase("s1", "").unwrap().as_deref(), Some("idle"));
+        assert_eq!(
+            repo.get_sync_phase("s1", "").unwrap().as_deref(),
+            Some("idle")
+        );
     }
 
     #[test]
@@ -780,14 +857,38 @@ mod tests {
     }
 
     #[test]
+    fn sync_phase_conditional_transition_only_updates_expected_phase() {
+        let store = LibraryStore::open_in_memory();
+        let repo = SyncStateRepository::new(&store);
+        repo.ensure("s1", "").unwrap();
+
+        assert!(!repo
+            .set_sync_phase_if("s1", "", "ready", "probing")
+            .unwrap());
+        assert_eq!(
+            repo.get_sync_phase("s1", "").unwrap().as_deref(),
+            Some("idle")
+        );
+
+        assert!(repo.set_sync_phase_if("s1", "", "idle", "probing").unwrap());
+        assert_eq!(
+            repo.get_sync_phase("s1", "").unwrap().as_deref(),
+            Some("probing")
+        );
+    }
+
+    #[test]
     fn watermark_setters_preserve_each_other() {
         // Each setter must scope its `ON CONFLICT … DO UPDATE` to its own
         // column. Set three and read all three back unchanged.
         let store = LibraryStore::open_in_memory();
         let repo = SyncStateRepository::new(&store);
-        repo.set_server_last_scan_iso("s1", "", Some("2026-05-01T12:00:00Z")).unwrap();
-        repo.set_indexes_last_modified_ms("s1", "", 1_700_000_000_000).unwrap();
-        repo.set_artists_last_modified_ms("s1", "", 1_700_000_500_000).unwrap();
+        repo.set_server_last_scan_iso("s1", "", Some("2026-05-01T12:00:00Z"))
+            .unwrap();
+        repo.set_indexes_last_modified_ms("s1", "", 1_700_000_000_000)
+            .unwrap();
+        repo.set_artists_last_modified_ms("s1", "", 1_700_000_500_000)
+            .unwrap();
 
         let (iso, idx_ms, art_ms): (Option<String>, Option<i64>, Option<i64>) = store
             .with_conn("misc", |c| {
@@ -840,7 +941,8 @@ mod tests {
     fn n1_bulk_unreliable_set_does_not_clobber_cursor() {
         let store = LibraryStore::open_in_memory();
         let repo = SyncStateRepository::new(&store);
-        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 7})).unwrap();
+        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 7}))
+            .unwrap();
         repo.set_n1_bulk_unreliable("s1", "", true).unwrap();
         assert_eq!(
             repo.get_initial_sync_cursor("s1", "").unwrap(),
@@ -854,7 +956,8 @@ mod tests {
         // `initial_sync_cursor_json` back to '{}'.
         let store = LibraryStore::open_in_memory();
         let repo = SyncStateRepository::new(&store);
-        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 42})).unwrap();
+        repo.set_initial_sync_cursor("s1", "", &json!({"offset": 42}))
+            .unwrap();
         repo.set_capability_flags("s1", "", 0x002).unwrap();
         assert_eq!(
             repo.get_initial_sync_cursor("s1", "").unwrap(),

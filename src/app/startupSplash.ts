@@ -4,6 +4,11 @@ import { applyStartupSplashThemeFromStorage } from '@/lib/themes/startupThemeApp
 import { getWindowKind } from './windowKind';
 
 export const STARTUP_SPLASH_ID = 'app-startup-splash';
+export const STARTUP_ROOT_PENDING_CLASS = 'app-root--startup-pending';
+
+function revealStartupContent(): void {
+  document.getElementById('root')?.classList.remove(STARTUP_ROOT_PENDING_CLASS);
+}
 
 /** Ensure the native shell is visible once the webview bundle is alive. */
 export function revealStartupWindow(): void {
@@ -15,10 +20,14 @@ export function revealStartupWindow(): void {
 /** Re-apply splash colors after bootstrap theme migration/injection. */
 export function configureStartupSplash(): void {
   const splash = document.getElementById(STARTUP_SPLASH_ID);
-  if (!splash) return;
+  if (!splash) {
+    revealStartupContent();
+    return;
+  }
 
   if (getWindowKind() === 'mini') {
     splash.remove();
+    revealStartupContent();
     return;
   }
 
@@ -26,19 +35,17 @@ export function configureStartupSplash(): void {
   revealStartupWindow();
 }
 
-/** Fade out the splash after the first React commit. */
+/** Replace the splash with the fully prepared React tree in one paint. */
 export function dismissStartupSplash(): void {
   const splash = document.getElementById(STARTUP_SPLASH_ID);
-  if (!splash || splash.classList.contains('app-startup-splash--hide')) return;
-
-  splash.classList.add('app-startup-splash--hide');
-  const remove = () => splash.remove();
-  splash.addEventListener('transitionend', remove, { once: true });
-  window.setTimeout(remove, 500);
+  splash?.remove();
+  revealStartupContent();
 }
 
-/** Schedule dismiss on the frame after the first paint. */
+/** Schedule the atomic handoff after the ready React state has committed. */
 export function scheduleStartupSplashDismiss(): void {
+  const root = document.getElementById('root');
+  if (!document.getElementById(STARTUP_SPLASH_ID) && !root?.classList.contains(STARTUP_ROOT_PENDING_CLASS)) return;
   requestAnimationFrame(() => {
     requestAnimationFrame(dismissStartupSplash);
   });

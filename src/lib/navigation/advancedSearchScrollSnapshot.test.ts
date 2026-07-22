@@ -88,6 +88,8 @@ describe('advancedSearchScrollSnapshot', () => {
       JSON.stringify({ scrollTop: 100, albumRowScrollLeft: 80, artistRowScrollLeft: 55 }),
     );
     expect(resolveAdvancedSearchLeaveSnapshot({
+      browseScopeFingerprint: 'scope-a',
+      librarySyncRevision: 0,
       query: '',
       genre: '',
       yearFrom: '',
@@ -104,6 +106,7 @@ describe('advancedSearchScrollSnapshot', () => {
       localMode: false,
       songsServerOffset: 0,
       songsHasMore: false,
+      songsBrowseCursor: null,
       genreNote: false,
       basicSearchMode: false,
       tracksBrowseMode: false,
@@ -121,6 +124,8 @@ describe('advancedSearchScrollSnapshot', () => {
     document.body.appendChild(viewport);
 
     const unregister = registerAdvancedSearchSessionProvider(() => ({
+      browseScopeFingerprint: 'scope-a',
+      librarySyncRevision: 0,
       query: 'rock',
       genre: 'Jazz',
       yearFrom: '',
@@ -137,6 +142,7 @@ describe('advancedSearchScrollSnapshot', () => {
       localMode: false,
       songsServerOffset: 0,
       songsHasMore: false,
+      songsBrowseCursor: null,
       genreNote: false,
       basicSearchMode: false,
       tracksBrowseMode: false,

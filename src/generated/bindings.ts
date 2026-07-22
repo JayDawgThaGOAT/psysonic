@@ -24,6 +24,13 @@ export const commands = {
 	libraryAnalysisProgress: (serverId: string) => typedError<LibraryAnalysisProgressDto, string>(__TAURI_INVOKE("library_analysis_progress", { serverId })),
 	libraryCountLiveTracks: (serverId: string) => typedError<number, string>(__TAURI_INVOKE("library_count_live_tracks", { serverId })),
 	libraryGetStatus: (serverId: string, libraryScope: string | null) => typedError<SyncStateDto, string>(__TAURI_INVOKE("library_get_status", { serverId, libraryScope })),
+	/**
+	 *  Index-backed Statistics aggregates for one or more selected servers/folders.
+	 *  Deliberately does not merge equivalent albums/artists between scopes.
+	 */
+	libraryScopeStatistics: (request: LibraryStatisticsRequest) => typedError<LibraryStatisticsDto, string>(__TAURI_INVOKE("library_scope_statistics", { request })),
+	/**  Ranked local-index albums and album artists for selected servers/folders. */
+	libraryScopeMostPlayed: (request: LibraryMostPlayedRequest) => typedError<LibraryMostPlayedResponse, string>(__TAURI_INVOKE("library_scope_most_played", { request })),
 	libraryGetArtifact: (serverId: string, trackId: string, artifactKind: string, sourceKind: string | null, sourceId: string | null, format: string | null) => typedError<{
 	serverId: string,
 	trackId: string,
@@ -39,12 +46,16 @@ export const commands = {
 	fetchedAt: number,
 	expiresAt: number | null,
 } | null, string>(__TAURI_INVOKE("library_get_artifact", { serverId, trackId, artifactKind, sourceKind, sourceId, format })),
+	/**  Read cached owner-scoped ratings. Invalid keys and cache misses are omitted. */
+	libraryGetEntityUserRatings: (refs: EntityUserRatingRefDto[]) => typedError<EntityUserRatingDto[], string>(__TAURI_INVOKE("library_get_entity_user_ratings", { refs })),
 	libraryGetFacts: (serverId: string, trackId: string, factKinds: string[] | null) => typedError<TrackFactDto[], string>(__TAURI_INVOKE("library_get_facts", { serverId, trackId, factKinds })),
 	libraryGetOfflinePath: (serverId: string, trackId: string) => typedError<OfflinePathDto, string>(__TAURI_INVOKE("library_get_offline_path", { serverId, trackId })),
 	libraryGenreTagsInspect: () => typedError<GenreTagsInspectDto, string>(__TAURI_INVOKE("library_genre_tags_inspect")),
 	libraryGenreTagsRun: () => typedError<null, string>(__TAURI_INVOKE("library_genre_tags_run")),
-	/**  Rebuild precomputed cluster identity keys (`library-cluster.db` attach). */
+	/**  Ensure precomputed cluster identity keys are current without blocking Tauri's main thread. */
 	libraryClusterRebuild: (serverId: string | null) => typedError<number, string>(__TAURI_INVOKE("library_cluster_rebuild", { serverId })),
+	libraryResolveEntitySources: (request: LibraryResolveEntitySourcesRequest) => typedError<LibraryEntitySourceDto[], string>(__TAURI_INVOKE("library_resolve_entity_sources", { request })),
+	libraryResolveAlbumOverlay: (request: LibraryResolveAlbumOverlayRequest) => typedError<LibraryAlbumOverlayResolutionDto[], string>(__TAURI_INVOKE("library_resolve_album_overlay", { request })),
 	librarySyncBindSession: (serverId: string, baseUrl: string, username: string, password: string, libraryScope: string | null) => typedError<null, string>(__TAURI_INVOKE("library_sync_bind_session", { serverId, baseUrl, username, password, libraryScope })),
 	librarySyncClearSession: (serverId: string) => typedError<null, string>(__TAURI_INVOKE("library_sync_clear_session", { serverId })),
 	librarySetPlaybackHint: (hint: string) => typedError<null, string>(__TAURI_INVOKE("library_set_playback_hint", { hint })),
@@ -52,15 +63,14 @@ export const commands = {
 	librarySyncStart: (serverId: string, mode: string, libraryScope: string | null) => typedError<SyncJobDto, string>(__TAURI_INVOKE("library_sync_start", { serverId, mode, libraryScope })),
 	/**
 	 *  Manual «Verify library integrity» — same dispatch shape as
-	 *  `library_sync_start { mode: 'delta' }` but always sets the full
-	 *  `DELTA_MISMATCH_CAP` tombstone budget regardless of the
-	 *  local/server count gap. Per PR-5b review §5 note 2: spec §6.7
-	 *  Mode A user-initiated full reconcile bypasses the threshold
-	 *  check.
+	 *  `library_sync_start { mode: 'delta' }`, but the runner bypasses delta
+	 *  watermarks and completes a stable full tombstone pass.
 	 */
 	librarySyncVerifyIntegrity: (serverId: string, libraryScope: string | null) => typedError<SyncJobDto, string>(__TAURI_INVOKE("library_sync_verify_integrity", { serverId, libraryScope })),
 	librarySyncCancel: (jobId: string | null) => typedError<null, string>(__TAURI_INVOKE("library_sync_cancel", { jobId })),
 	libraryPutArtifact: (serverId: string, trackId: string, artifact: ArtifactInputDto) => typedError<null, string>(__TAURI_INVOKE("library_put_artifact", { serverId, trackId, artifact })),
+	/**  Upsert cached owner-scoped ratings. Invalid keys are ignored. */
+	libraryPutEntityUserRatings: (ratings: EntityUserRatingDto[]) => typedError<null, string>(__TAURI_INVOKE("library_put_entity_user_ratings", { ratings })),
 	libraryPutFact: (serverId: string, trackId: string, fact: FactInputDto) => typedError<null, string>(__TAURI_INVOKE("library_put_fact", { serverId, trackId, fact })),
 	libraryRecordPlaySession: (input: PlaySessionInputDto) => typedError<null, string>(__TAURI_INVOKE("library_record_play_session", { input })),
 	libraryGetPlayerStatsYearSummary: (year: number) => typedError<PlaySessionYearSummaryDto, string>(__TAURI_INVOKE("library_get_player_stats_year_summary", { year })),
@@ -295,7 +305,7 @@ export const commands = {
 	 *  Emits throttled `device:sync:progress` events (max once per 500ms) and a
 	 *  final `device:sync:complete` event with the summary.
 	 */
-	syncBatchToDevice: (tracks: TrackSyncInfo[], destDir: string, jobId: string, expectedBytes: number) => typedError<SyncBatchResult, string>(__TAURI_INVOKE("sync_batch_to_device", { tracks, destDir, jobId, expectedBytes })),
+	syncBatchToDevice: (tracks: TrackSyncInfo[], destDir: string, jobId: string, expectedBytes: number, serverId: string | null) => typedError<SyncBatchResult, string>(__TAURI_INVOKE("sync_batch_to_device", { tracks, destDir, jobId, expectedBytes, serverId })),
 	/**  Signals a running `sync_batch_to_device` job to stop after its current tracks finish. */
 	cancelDeviceSync: (jobId: string) => __TAURI_INVOKE<void>("cancel_device_sync", { jobId }),
 	/**
@@ -944,6 +954,22 @@ export type CustomHeadersApplyTo = "local" | "public" | "both";
 
 export type EndpointKind = "local" | "public";
 
+/**  Cached user rating together with the time it was fetched from its owner. */
+export type EntityUserRatingDto = {
+	serverId: string,
+	entityKind: string,
+	entityId: string,
+	rating: number,
+	fetchedAt: number,
+};
+
+/**  Owner-scoped cache key for a user rating on a track, album, or artist. */
+export type EntityUserRatingRefDto = {
+	serverId: string,
+	entityKind: string,
+	entityId: string,
+};
+
 /**
  *  Input to `library_put_fact`. Shape matches `TrackFactDto` minus the
  *  indices.
@@ -1008,6 +1034,28 @@ export type LegacyOfflineMigrationResult = {
 	skippedReason: string | null,
 };
 
+/**
+ *  One raw network album that the New Releases freshness overlay needs to
+ *  reconcile with the local scope identity graph.
+ */
+export type LibraryAlbumOverlayCandidateDto = {
+	serverId: string,
+	id: string,
+	name: string,
+	artist: string | null,
+};
+
+/**
+ *  Order-preserving overlay resolution. `group` is valid only within this
+ *  response and lets the frontend collapse logical copies without persisting
+ *  internal cluster identity keys.
+ */
+export type LibraryAlbumOverlayResolutionDto = {
+	group: number,
+	representativeServerId: string | null,
+	representativeId: string | null,
+};
+
 export type LibraryAnalysisBackfillBatchDto = {
 	trackIds: string[],
 	nextCursor: string | null,
@@ -1034,9 +1082,125 @@ export type LibraryCoverProgressDto = {
 	done: number,
 };
 
+/**
+ *  Concrete source metadata for one browse identity partition. Identity keys
+ *  remain internal so the frontend cannot persist raw cluster hashes.
+ */
+export type LibraryEntitySourceDto = {
+	serverId: string,
+	id: string,
+	libraryId: string,
+	priority: number,
+	durationSec: number | null,
+	suffix: string | null,
+	bitRate: number | null,
+	sizeBytes: number | null,
+	starredAt: number | null,
+	userRating: number | null,
+};
+
+/**
+ *  Ranked album row over the selected Statistics-style server/library scopes.
+ *  Equivalent albums remain distinct across folders and servers.
+ */
+export type LibraryMostPlayedAlbumDto = {
+	serverId: string,
+	libraryId: string,
+	id: string,
+	name: string,
+	artist: string,
+	artistId: string | null,
+	year: number | null,
+	coverArtId: string | null,
+	playCount: number,
+};
+
+export type LibraryMostPlayedArtistDto = {
+	serverId: string,
+	id: string,
+	name: string,
+	coverArtId: string | null,
+	playCount: number,
+};
+
+export type LibraryMostPlayedRequest = {
+	scopes: LibraryStatisticsScope[],
+	limit?: number | null,
+	offset?: number | null,
+};
+
+export type LibraryMostPlayedResponse = {
+	albums: LibraryMostPlayedAlbumDto[],
+	artists: LibraryMostPlayedArtistDto[],
+	hasMore: boolean,
+};
+
+/**  Resolve a bounded network overlay batch against one ordered browse scope. */
+export type LibraryResolveAlbumOverlayRequest = {
+	scopes: LibraryScopePair[],
+	albums: LibraryAlbumOverlayCandidateDto[],
+};
+
+/**
+ *  Resolve one concrete browse entity to every matching concrete source in an
+ *  explicitly ordered scope.
+ */
+export type LibraryResolveEntitySourcesRequest = {
+	entityType: LibrarySourceEntityType,
+	anchorServerId: string,
+	anchorId: string,
+	scopes: LibraryScopePair[],
+};
+
+/**
+ *  One `(server_id, library_id)` pair in priority order (index 0 = highest).
+ *  `None` selects every indexed library on the server; `Some("")` selects only
+ *  concrete rows whose library id is empty.
+ */
+export type LibraryScopePair = {
+	serverId: string,
+	libraryId: string | null,
+};
+
 export type LibraryServerKeyMigrationDto = {
 	legacyId: string,
 	indexKey: string,
+};
+
+/**  Entity kind accepted by `library_resolve_entity_sources`. */
+export type LibrarySourceEntityType = "track" | "album" | "artist";
+
+export type LibraryStatisticsDto = {
+	artistCount: number,
+	albumCount: number,
+	songCount: number,
+	playtimeSec: number,
+	genres: LibraryStatisticsGenreDto[],
+	formats: LibraryStatisticsFormatDto[],
+};
+
+export type LibraryStatisticsFormatDto = {
+	value: string,
+	songCount: number,
+};
+
+export type LibraryStatisticsGenreDto = {
+	value: string,
+	songCount: number,
+	albumCount: number,
+};
+
+export type LibraryStatisticsRequest = {
+	scopes: LibraryStatisticsScope[],
+};
+
+/**
+ *  One selected server and its optional music-folder filter for aggregate index reads.
+ *  An empty `library_ids` list includes every indexed folder on that server.
+ */
+export type LibraryStatisticsScope = {
+	serverId: string,
+	libraryIds?: string[],
 };
 
 export type LibraryTierDiskHit = {

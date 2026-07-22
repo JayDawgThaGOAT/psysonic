@@ -1,4 +1,17 @@
 /* ─── Recent searches ─── */
+.mobile-search-recent-apply {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
 .mobile-search-recent-remove {
   display: flex;
   align-items: center;
@@ -6,7 +19,9 @@
   background: none;
   border: none;
   color: var(--text-muted);
-  padding: 6px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   cursor: pointer;
   flex-shrink: 0;
   opacity: 0.6;
@@ -15,4 +30,3 @@
 .mobile-search-recent-remove:hover {
   opacity: 1;
 }
-

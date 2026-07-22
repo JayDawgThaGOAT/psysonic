@@ -1,4 +1,4 @@
-import { getSong } from '@/lib/api/subsonicLibrary';
+import { getSongForServer } from '@/lib/api/subsonicLibrary';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { useEffect, useMemo, useState } from 'react';
 import { Radio, Clock } from 'lucide-react';
@@ -24,6 +24,7 @@ const ORBIT_QUEUE_COVER_SM_CSS_PX = 48;
 export default function OrbitGuestQueue() {
   const { t } = useTranslation();
   const state        = useOrbitStore(s => s.state);
+  const serverId     = useOrbitStore(s => s.serverId);
   const pending      = useOrbitStore(s => s.pendingSuggestions);
   const queueItems   = useMemo(() => state?.playQueue ?? [], [state?.playQueue]);
   const totalUpcoming = state?.playQueueTotal ?? queueItems.length;
@@ -33,7 +34,11 @@ export default function OrbitGuestQueue() {
   // Local song cache — keyed by trackId. Survives parent re-renders triggered
   // by the store tick so list rows don't remount and recomputed URLs don't
   // kick off duplicate `getSong` calls.
-  const [songs, setSongs] = useState<Record<string, SubsonicSong>>({});
+  const [songCache, setSongCache] = useState<{ serverId: string; songs: Record<string, SubsonicSong> }>({
+    serverId: '',
+    songs: {},
+  });
+  const songs = songCache.serverId === serverId ? songCache.songs : {};
 
   // Track IDs we need but don't yet have. String-joined so useEffect deps
   // stay stable across identical queue snapshots (e.g. reshuffle).
@@ -48,20 +53,20 @@ export default function OrbitGuestQueue() {
   useEffect(() => {
     const wanted = wantedKey ? wantedKey.split('|') : [];
     const missing = wanted.filter(id => id && !songs[id]);
-    if (missing.length === 0) return;
+    if (!serverId || missing.length === 0) return;
 
     let cancelled = false;
-    void Promise.all(missing.map(id => getSong(id).catch(() => null)))
+    void Promise.all(missing.map(id => getSongForServer(serverId, id).catch(() => null)))
       .then(results => {
         if (cancelled) return;
-        setSongs(prev => {
-          const next = { ...prev };
+        setSongCache(prev => {
+          const next = prev.serverId === serverId ? { ...prev.songs } : {};
           results.forEach((s, i) => { if (s) next[missing[i]] = s; });
-          return next;
+          return { serverId, songs: next };
         });
       });
     return () => { cancelled = true; };
-  }, [wantedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serverId, wantedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!state) return null;
 

@@ -6,21 +6,39 @@ use std::sync::{Mutex, OnceLock};
 use rusqlite::{params_from_iter, Connection, OpenFlags};
 use tauri::{AppHandle, Emitter, Manager};
 
-const LIBRARY_TABLES: &[&str] = &[
-    "track_extension",
-    "track_fact",
-    "track_artifact",
-    "track_canonical_link",
-    "track_id_history",
-    "play_session",
-    "track_offline",
-    "track",
-    "album",
-    "artist",
-    "sync_state",
+#[derive(Clone, Copy)]
+struct ScopedTable {
+    table: &'static str,
+    column: &'static str,
+}
+
+const LIBRARY_TABLES: &[ScopedTable] = &[
+    ScopedTable { table: "track_extension", column: "server_id" },
+    ScopedTable { table: "track_fact", column: "server_id" },
+    ScopedTable { table: "track_artifact", column: "server_id" },
+    ScopedTable { table: "track_canonical_link", column: "server_id" },
+    ScopedTable { table: "track_id_history", column: "server_id" },
+    ScopedTable { table: "play_session", column: "server_id" },
+    ScopedTable { table: "track_offline", column: "server_id" },
+    ScopedTable { table: "track_genre", column: "server_id" },
+    ScopedTable { table: "artist_artwork_lookup", column: "server_id" },
+    ScopedTable { table: "library_tag_state", column: "server_id" },
+    ScopedTable { table: "library_tag_cursor", column: "server_id" },
+    ScopedTable { table: "entity_user_rating", column: "server_id" },
+    ScopedTable { table: "album_browse_projection", column: "server_id" },
+    ScopedTable { table: "composer_album_projection", column: "server_id" },
+    ScopedTable { table: "canonical_enrichment_link", column: "owner_server_id" },
+    ScopedTable { table: "track", column: "server_id" },
+    ScopedTable { table: "album", column: "server_id" },
+    ScopedTable { table: "artist", column: "server_id" },
+    ScopedTable { table: "sync_state", column: "server_id" },
 ];
 
-const ANALYSIS_TABLES: &[&str] = &["analysis_track", "waveform_cache", "loudness_cache"];
+const ANALYSIS_TABLES: &[ScopedTable] = &[
+    ScopedTable { table: "analysis_track", column: "server_id" },
+    ScopedTable { table: "waveform_cache", column: "server_id" },
+    ScopedTable { table: "loudness_cache", column: "server_id" },
+];
 
 fn migration_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -93,14 +111,23 @@ pub fn migration_inspect(
 
 #[tauri::command]
 #[specta::specta]
-pub fn migration_run(
+pub async fn migration_run(
     app: AppHandle,
     mappings: Vec<ServerIndexMapping>,
 ) -> Result<MigrationRunResult, String> {
-    let _guard = migration_lock()
-        .lock()
-        .map_err(|_| "migration lock poisoned".to_string())?;
-    run_internal(&app, mappings)
+    let barrier = match app.try_state::<psysonic_library::LibraryRuntime>() {
+        Some(runtime) => Some(runtime.cancel_and_drain_sync(None, None).await?),
+        None => None,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let _barrier = barrier;
+        let _guard = migration_lock()
+            .lock()
+            .map_err(|_| "migration lock poisoned".to_string())?;
+        run_internal(&app, mappings)
+    })
+    .await
+    .map_err(|e| format!("migration worker failed: {e}"))?
 }
 
 fn inspect_internal(
@@ -131,11 +158,11 @@ fn inspect_internal(
     if paths.analysis_active.exists() {
         let conn = open_readonly(&paths.analysis_active)?;
         for table in ANALYSIS_TABLES {
-            let empty_count = count_rows_eq(&conn, table, "")?;
+            let empty_count = count_rows_eq(&conn, *table, "")?;
             if empty_count > 0 {
                 has_empty_bucket_rows = true;
                 if normalized.len() == 1 {
-                    let entry = analysis_tables.entry((*table).to_string()).or_insert(0);
+                    let entry = analysis_tables.entry(table.table.to_string()).or_insert(0);
                     *entry = entry.saturating_add(empty_count as u64);
                     analysis_total = analysis_total.saturating_add(empty_count as u64);
                 }
@@ -178,7 +205,10 @@ fn inspect_internal(
     })
 }
 
-fn run_internal(app: &AppHandle, mappings: Vec<ServerIndexMapping>) -> Result<MigrationRunResult, String> {
+fn run_internal(
+    app: &AppHandle,
+    mappings: Vec<ServerIndexMapping>,
+) -> Result<MigrationRunResult, String> {
     let inspect = inspect_internal(app, mappings)?;
     if !inspect.needs_migration {
         return Ok(MigrationRunResult {
@@ -209,13 +239,7 @@ fn run_internal(app: &AppHandle, mappings: Vec<ServerIndexMapping>) -> Result<Mi
         None
     };
 
-    emit_progress(
-        app,
-        "library",
-        "prepare",
-        0,
-        LIBRARY_TABLES.len() as u64,
-    )?;
+    emit_progress(app, "library", "prepare", 0, LIBRARY_TABLES.len() as u64)?;
     let (library_source_rows, library_imported_rows, library_skipped_unknown_rows) =
         run_library_import(app, &paths, &mappings)?;
     let (analysis_source_rows, analysis_imported_rows, analysis_skipped_unknown_rows) =
@@ -235,15 +259,51 @@ fn run_internal(app: &AppHandle, mappings: Vec<ServerIndexMapping>) -> Result<Mi
         }
     }
     if paths.analysis_v2.exists() {
-        if let Some(cache) = app.try_state::<psysonic_analysis::analysis_cache::AnalysisCache>() {
-            analysis_backup = cache.swap_database_file(&paths.analysis_active, &paths.analysis_v2)?;
-        } else {
-            analysis_backup = Some(switch_file(&paths.analysis_active, &paths.analysis_v2)?);
+        let switch_result =
+            if let Some(cache) = app.try_state::<psysonic_analysis::analysis_cache::AnalysisCache>() {
+                cache.swap_database_file(&paths.analysis_active, &paths.analysis_v2)
+            } else {
+                switch_file(&paths.analysis_active, &paths.analysis_v2).map(Some)
+            };
+        match switch_result {
+            Ok(backup) => analysis_backup = backup,
+            Err(err) => {
+                let mut rollback_errors = Vec::new();
+                if let Some(ref backup) = library_backup {
+                    if let Some(runtime) = app.try_state::<psysonic_library::LibraryRuntime>() {
+                        if let Err(rollback) = runtime
+                            .store
+                            .restore_database_backup(backup, &paths.library_active)
+                            .and_then(|_| runtime.store.verify_operational_schema())
+                        {
+                            rollback_errors.push(format!("library rollback failed: {rollback}"));
+                        }
+                    } else {
+                        if let Err(rollback) = restore_backup(backup, &paths.library_active) {
+                            rollback_errors.push(format!("library rollback failed: {rollback}"));
+                        }
+                    }
+                }
+                if let Some(cache) =
+                    app.try_state::<psysonic_analysis::analysis_cache::AnalysisCache>()
+                {
+                    if let Err(rollback) = cache.verify_operational_schema() {
+                        rollback_errors.push(format!("analysis rollback failed: {rollback}"));
+                    }
+                }
+                if !rollback_errors.is_empty() {
+                    return Err(format!(
+                        "analysis switch failed: {err}; {}",
+                        rollback_errors.join("; ")
+                    ));
+                }
+                return Err(err);
+            }
         }
     }
     let switched = library_backup.is_some() || analysis_backup.is_some();
 
-    if let Err(err) = health_check(&paths.library_active, &paths.analysis_active) {
+    if let Err(err) = health_check(app, &paths.library_active, &paths.analysis_active) {
         if let Some(ref backup) = library_backup {
             if let Some(runtime) = app.try_state::<psysonic_library::LibraryRuntime>() {
                 let _ = runtime
@@ -254,7 +314,8 @@ fn run_internal(app: &AppHandle, mappings: Vec<ServerIndexMapping>) -> Result<Mi
             }
         }
         if let Some(ref backup) = analysis_backup {
-            if let Some(cache) = app.try_state::<psysonic_analysis::analysis_cache::AnalysisCache>() {
+            if let Some(cache) = app.try_state::<psysonic_analysis::analysis_cache::AnalysisCache>()
+            {
                 let _ = cache.restore_database_backup(backup, &paths.analysis_active);
             } else {
                 let _ = restore_backup(backup, &paths.analysis_active);
@@ -283,7 +344,8 @@ fn run_internal(app: &AppHandle, mappings: Vec<ServerIndexMapping>) -> Result<Mi
             source_rows: analysis_source_rows,
             skipped_unknown_server_rows: analysis_skipped_unknown_rows,
         },
-        has_skipped_unknown_server_rows: library_skipped_unknown_rows > 0 || analysis_skipped_unknown_rows > 0,
+        has_skipped_unknown_server_rows: library_skipped_unknown_rows > 0
+            || analysis_skipped_unknown_rows > 0,
         switched,
         backup_removed,
     })
@@ -307,23 +369,15 @@ fn run_library_import(
     let total = LIBRARY_TABLES.len() as u64;
     let mut done = 0_u64;
     with_foreign_keys_disabled(&dest, || {
-        for table in LIBRARY_TABLES {
-            purge_unknown_rows(&dest, table, &legacy_ids, &index_keys)?;
-            for mapping in mappings {
-                dest.execute(
-                    &format!("UPDATE OR REPLACE {table} SET server_id = ?2 WHERE server_id = ?1"),
-                    [&mapping.legacy_id, &mapping.index_key],
-                )
-                .map_err(|e| e.to_string())?;
-            }
+        rewrite_scoped_tables(&dest, LIBRARY_TABLES, mappings, None, |table| {
             done = done.saturating_add(1);
-            emit_progress(app, "library", table, done, total)?;
-        }
-        Ok(())
+            emit_progress(app, "library", table, done, total)
+        })
     })?;
     let source_rows = sum_table_rows(&source, LIBRARY_TABLES)?;
     let imported_rows = sum_table_rows(&dest, LIBRARY_TABLES)?;
-    let skipped_unknown_server_rows = sum_unknown_rows(&source, LIBRARY_TABLES, &legacy_ids, &index_keys)?;
+    let skipped_unknown_server_rows =
+        sum_unknown_rows(&source, LIBRARY_TABLES, &legacy_ids, &index_keys)?;
     Ok((source_rows, imported_rows, skipped_unknown_server_rows))
 }
 
@@ -346,30 +400,15 @@ fn run_analysis_import(
     let total = ANALYSIS_TABLES.len() as u64;
     let mut done = 0_u64;
     with_foreign_keys_disabled(&dest, || {
-        for table in ANALYSIS_TABLES {
-            purge_unknown_rows(&dest, table, &legacy_ids, &index_keys)?;
-            for mapping in mappings {
-                dest.execute(
-                    &format!("UPDATE OR REPLACE {table} SET server_id = ?2 WHERE server_id = ?1"),
-                    [&mapping.legacy_id, &mapping.index_key],
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            if let Some(index_key) = single_mapping {
-                dest.execute(
-                    &format!("UPDATE OR REPLACE {table} SET server_id = ?2 WHERE server_id = ?1"),
-                    ["", index_key],
-                )
-                .map_err(|e| e.to_string())?;
-            }
+        rewrite_scoped_tables(&dest, ANALYSIS_TABLES, mappings, single_mapping, |table| {
             done = done.saturating_add(1);
-            emit_progress(app, "analysis", table, done, total)?;
-        }
-        Ok(())
+            emit_progress(app, "analysis", table, done, total)
+        })
     })?;
     let source_rows = sum_table_rows(&source, ANALYSIS_TABLES)?;
     let imported_rows = sum_table_rows(&dest, ANALYSIS_TABLES)?;
-    let skipped_unknown_server_rows = sum_unknown_rows(&source, ANALYSIS_TABLES, &legacy_ids, &index_keys)?;
+    let skipped_unknown_server_rows =
+        sum_unknown_rows(&source, ANALYSIS_TABLES, &legacy_ids, &index_keys)?;
     Ok((source_rows, imported_rows, skipped_unknown_server_rows))
 }
 
@@ -393,9 +432,45 @@ fn normalize_mappings(mappings: Vec<ServerIndexMapping>) -> Vec<ServerIndexMappi
     out
 }
 
+fn rewrite_scoped_tables(
+    conn: &Connection,
+    tables: &[ScopedTable],
+    mappings: &[ServerIndexMapping],
+    empty_bucket_index_key: Option<&str>,
+    mut table_completed: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let legacy_ids: Vec<String> = mappings.iter().map(|m| m.legacy_id.clone()).collect();
+    let index_keys: Vec<String> = mappings.iter().map(|m| m.index_key.clone()).collect();
+    for table in tables {
+        purge_unknown_rows(conn, *table, &legacy_ids, &index_keys)?;
+        for mapping in mappings {
+            conn.execute(
+                &format!(
+                    "UPDATE OR REPLACE {} SET {} = ?2 WHERE {} = ?1",
+                    table.table, table.column, table.column
+                ),
+                [&mapping.legacy_id, &mapping.index_key],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(index_key) = empty_bucket_index_key {
+            conn.execute(
+                &format!(
+                    "UPDATE OR REPLACE {} SET {} = ?2 WHERE {} = ?1",
+                    table.table, table.column, table.column
+                ),
+                ["", index_key],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        table_completed(table.table)?;
+    }
+    Ok(())
+}
+
 fn inspect_tables(
     db_path: &Path,
-    tables: &[&str],
+    tables: &[ScopedTable],
     legacy_ids: &[String],
     known_index_keys: &[String],
 ) -> Result<(HashMap<String, u64>, u64, u64), String> {
@@ -407,31 +482,38 @@ fn inspect_tables(
     let mut total = 0_u64;
     let mut skipped_unknown_server_rows = 0_u64;
     for table in tables {
-        let count = count_rows_in(&conn, table, legacy_ids)? as u64;
+        let count = count_rows_in(&conn, *table, legacy_ids)? as u64;
         if count > 0 {
-            counts.insert((*table).to_string(), count);
+            counts.insert(table.table.to_string(), count);
             total = total.saturating_add(count);
         }
-        let unknown =
-            count_unknown_rows(&conn, table, legacy_ids, known_index_keys)? as u64;
+        let unknown = count_unknown_rows(&conn, *table, legacy_ids, known_index_keys)? as u64;
         skipped_unknown_server_rows = skipped_unknown_server_rows.saturating_add(unknown);
     }
     Ok((counts, total, skipped_unknown_server_rows))
 }
 
-fn count_rows_in(conn: &Connection, table: &str, values: &[String]) -> Result<i64, String> {
+fn count_rows_in(conn: &Connection, table: ScopedTable, values: &[String]) -> Result<i64, String> {
     if values.is_empty() {
         return Ok(0);
     }
-    let placeholders = std::iter::repeat_n("?", values.len()).collect::<Vec<_>>().join(",");
-    let sql = format!("SELECT COUNT(*) FROM {table} WHERE server_id IN ({placeholders})");
+    let placeholders = std::iter::repeat_n("?", values.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT COUNT(*) FROM {} WHERE {} IN ({placeholders})",
+        table.table, table.column
+    );
     conn.query_row(&sql, params_from_iter(values.iter()), |row| row.get(0))
         .map_err(|e| e.to_string())
 }
 
-fn count_rows_eq(conn: &Connection, table: &str, value: &str) -> Result<i64, String> {
+fn count_rows_eq(conn: &Connection, table: ScopedTable, value: &str) -> Result<i64, String> {
     conn.query_row(
-        &format!("SELECT COUNT(*) FROM {table} WHERE server_id = ?1"),
+        &format!(
+            "SELECT COUNT(*) FROM {} WHERE {} = ?1",
+            table.table, table.column
+        ),
         [&value],
         |row| row.get(0),
     )
@@ -440,7 +522,7 @@ fn count_rows_eq(conn: &Connection, table: &str, value: &str) -> Result<i64, Str
 
 fn count_unknown_rows(
     conn: &Connection,
-    table: &str,
+    table: ScopedTable,
     known_legacy_ids: &[String],
     known_index_keys: &[String],
 ) -> Result<i64, String> {
@@ -448,7 +530,10 @@ fn count_unknown_rows(
     if known.is_empty() {
         return conn
             .query_row(
-                &format!("SELECT COUNT(*) FROM {table} WHERE server_id <> ''"),
+                &format!(
+                    "SELECT COUNT(*) FROM {} WHERE {} <> ''",
+                    table.table, table.column
+                ),
                 [],
                 |row| row.get(0),
             )
@@ -457,29 +542,36 @@ fn count_unknown_rows(
     let placeholders = std::iter::repeat_n("?", known.len())
         .collect::<Vec<_>>()
         .join(",");
-    let sql =
-        format!("SELECT COUNT(*) FROM {table} WHERE server_id <> '' AND server_id NOT IN ({placeholders})");
+    let sql = format!(
+        "SELECT COUNT(*) FROM {} WHERE {} <> '' AND {} NOT IN ({placeholders})",
+        table.table, table.column, table.column
+    );
     conn.query_row(&sql, params_from_iter(known.iter()), |row| row.get(0))
         .map_err(|e| e.to_string())
 }
 
 fn purge_unknown_rows(
     conn: &Connection,
-    table: &str,
+    table: ScopedTable,
     known_legacy_ids: &[String],
     known_index_keys: &[String],
 ) -> Result<(), String> {
     let known = known_server_ids(known_legacy_ids, known_index_keys);
     if known.is_empty() {
-        conn.execute(&format!("DELETE FROM {table} WHERE server_id <> ''"), [])
+        conn.execute(
+            &format!("DELETE FROM {} WHERE {} <> ''", table.table, table.column),
+            [],
+        )
             .map_err(|e| e.to_string())?;
         return Ok(());
     }
     let placeholders = std::iter::repeat_n("?", known.len())
         .collect::<Vec<_>>()
         .join(",");
-    let sql =
-        format!("DELETE FROM {table} WHERE server_id <> '' AND server_id NOT IN ({placeholders})");
+    let sql = format!(
+        "DELETE FROM {} WHERE {} <> '' AND {} NOT IN ({placeholders})",
+        table.table, table.column, table.column
+    );
     conn.execute(&sql, params_from_iter(known.iter()))
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -494,11 +586,13 @@ fn known_server_ids(known_legacy_ids: &[String], known_index_keys: &[String]) ->
     known
 }
 
-fn sum_table_rows(conn: &Connection, tables: &[&str]) -> Result<u64, String> {
+fn sum_table_rows(conn: &Connection, tables: &[ScopedTable]) -> Result<u64, String> {
     let mut total = 0_u64;
     for table in tables {
         let rows: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .query_row(&format!("SELECT COUNT(*) FROM {}", table.table), [], |row| {
+                row.get(0)
+            })
             .map_err(|e| e.to_string())?;
         total = total.saturating_add(rows.max(0) as u64);
     }
@@ -507,13 +601,13 @@ fn sum_table_rows(conn: &Connection, tables: &[&str]) -> Result<u64, String> {
 
 fn sum_unknown_rows(
     conn: &Connection,
-    tables: &[&str],
+    tables: &[ScopedTable],
     known_legacy_ids: &[String],
     known_index_keys: &[String],
 ) -> Result<u64, String> {
     let mut total = 0_u64;
     for table in tables {
-        let rows = count_unknown_rows(conn, table, known_legacy_ids, known_index_keys)?;
+        let rows = count_unknown_rows(conn, *table, known_legacy_ids, known_index_keys)?;
         total = total.saturating_add(rows.max(0) as u64);
     }
     Ok(total)
@@ -562,7 +656,13 @@ fn ensure_foreign_keys_clean(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn emit_progress(app: &AppHandle, stage: &str, table: &str, done: u64, total: u64) -> Result<(), String> {
+fn emit_progress(
+    app: &AppHandle,
+    stage: &str,
+    table: &str,
+    done: u64,
+    total: u64,
+) -> Result<(), String> {
     app.emit(
         "migration:progress",
         MigrationProgressEvent {
@@ -600,10 +700,19 @@ fn switch_file(active: &Path, destination: &Path) -> Result<PathBuf, String> {
             .unwrap_or("db.sqlite")
     ));
     remove_db_with_sidecars(&backup).ok();
+    let mut active_backed_up = false;
     if active.exists() {
         fs::rename(active, &backup).map_err(|e| e.to_string())?;
+        active_backed_up = true;
     }
-    fs::rename(destination, active).map_err(|e| e.to_string())?;
+    if let Err(error) = fs::rename(destination, active) {
+        if active_backed_up {
+            fs::rename(&backup, active).map_err(|rollback| {
+                format!("database switch failed: {error}; rollback failed: {rollback}")
+            })?;
+        }
+        return Err(error.to_string());
+    }
     Ok(backup)
 }
 
@@ -617,16 +726,24 @@ fn restore_backup(backup: &Path, active: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn health_check(library_active: &Path, analysis_active: &Path) -> Result<(), String> {
+fn health_check(app: &AppHandle, library_active: &Path, analysis_active: &Path) -> Result<(), String> {
     if library_active.exists() {
-        let conn = open_readonly(library_active)?;
-        conn.query_row("SELECT COUNT(*) FROM track", [], |_row| Ok(()))
-            .map_err(|e| e.to_string())?;
+        if let Some(runtime) = app.try_state::<psysonic_library::LibraryRuntime>() {
+            runtime.store.verify_operational_schema()?;
+        } else {
+            let conn = open_readonly(library_active)?;
+            conn.query_row("SELECT COUNT(*) FROM track", [], |_row| Ok(()))
+                .map_err(|e| e.to_string())?;
+        }
     }
     if analysis_active.exists() {
-        let conn = open_readonly(analysis_active)?;
-        conn.query_row("SELECT COUNT(*) FROM analysis_track", [], |_row| Ok(()))
-            .map_err(|e| e.to_string())?;
+        if let Some(cache) = app.try_state::<psysonic_analysis::analysis_cache::AnalysisCache>() {
+            cache.verify_operational_schema()?;
+        } else {
+            let conn = open_readonly(analysis_active)?;
+            conn.query_row("SELECT COUNT(*) FROM analysis_track", [], |_row| Ok(()))
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -672,6 +789,85 @@ fn migration_paths(app: &AppHandle) -> Result<MigrationPaths, String> {
 mod tests {
     use super::*;
 
+    const TEST_TRACK_TABLE: ScopedTable = ScopedTable {
+        table: "track",
+        column: "server_id",
+    };
+
+    fn full_library_schema() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        for migration in [
+            include_str!("../../../crates/psysonic-library/migrations/001_initial.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/012_track_genre_legacy_repair.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/013_artist_artwork_lookup.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/014_artist_name_sort.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/015_replay_gain_peak.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/016_multi_library_scope.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/017_library_tag_state.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/018_artist_synced_index.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/019_mainstage_feed_indexes.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/020_scope_browse_projection.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/021_scope_browse_tracks.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/022_artist_name_fold.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/023_starred_browse_indexes.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/024_composer_browse_projection.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/025_identity_invalidation.sql"),
+            include_str!("../../../crates/psysonic-library/migrations/026_library_tag_cursor.sql"),
+        ] {
+            conn.execute_batch(migration).expect("apply library migration");
+        }
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        conn
+    }
+
+    fn populate_all_library_scopes(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO canonical_track(id, created_at, updated_at) VALUES ('canonical-1', 1, 1);
+             INSERT INTO sync_state(server_id, library_scope) VALUES ('legacy-a', '');
+             INSERT INTO artist(server_id, id, name, synced_at) VALUES ('legacy-a', 'artist-1', 'Artist', 1);
+             INSERT INTO album(server_id, id, name, synced_at) VALUES ('legacy-a', 'album-1', 'Album', 1);
+             INSERT INTO track(server_id, id, title, album, duration_sec, synced_at, raw_json)
+               VALUES ('legacy-a', 'track-1', 'Track', 'Album', 1, 1, '{}');
+             INSERT INTO track_extension(server_id, track_id, kind, payload, updated_at)
+               VALUES ('legacy-a', 'track-1', 'waveform', X'01', 1);
+             INSERT INTO track_fact(server_id, track_id, fact_kind, source_kind, source_id, fetched_at)
+               VALUES ('legacy-a', 'track-1', 'bpm', 'server', 'source', 1);
+             INSERT INTO track_artifact(server_id, track_id, artifact_kind, format, source_kind, source_id, fetched_at)
+               VALUES ('legacy-a', 'track-1', 'lyrics', 'text', 'server', 'source', 1);
+             INSERT INTO track_canonical_link(server_id, track_id, canonical_id, match_method, confidence, linked_at)
+               VALUES ('legacy-a', 'track-1', 'canonical-1', 'isrc', 1.0, 1);
+             INSERT INTO track_id_history(server_id, old_id, new_id, remapped_at)
+               VALUES ('legacy-a', 'old-track', 'track-1', 1);
+             INSERT INTO play_session(server_id, track_id, started_at_ms, listened_sec, position_max_sec, completion, end_reason)
+               VALUES ('legacy-a', 'track-1', 1, 1.0, 1.0, 'full', 'ended');
+             INSERT INTO track_offline(server_id, track_id, local_path, cached_at)
+               VALUES ('legacy-a', 'track-1', '/tmp/track-1', 1);
+             INSERT INTO track_genre(server_id, track_id, genre, album_id)
+               VALUES ('legacy-a', 'track-1', 'Rock', 'album-1');
+             INSERT INTO artist_artwork_lookup(server_id, artist_id, surface_kind, status, updated_at)
+               VALUES ('legacy-a', 'artist-1', 'fanart', 'hit', 1);
+              INSERT INTO library_tag_state(server_id, folders_hash, completed_at)
+                VALUES ('legacy-a', 'hash', 1);
+              INSERT INTO library_tag_cursor(server_id, folders_hash, next_folder_id, updated_at)
+                VALUES ('legacy-a', 'hash', 'folder-1', 1);
+             INSERT INTO entity_user_rating(server_id, entity_kind, entity_id, rating, fetched_at)
+               VALUES ('legacy-a', 'track', 'track-1', 5, 1);
+              INSERT INTO album_browse_projection(
+               server_id, library_id, album_id, name, song_count, duration_sec, synced_at, representative_track_id
+              ) VALUES ('legacy-a', '', 'album-1', 'Album', 1, 1, 1, 'track-1');
+              INSERT INTO composer_album_projection(
+                server_id, library_id, composer_id, composer_name, name_sort, identity_key,
+                album_id, synced_at, representative_track_id
+              ) VALUES ('legacy-a', '', 'composer-1', 'Composer', 'composer', 'composer',
+                        'album-1', 1, 'track-1');
+             INSERT INTO canonical_enrichment_link(
+               canonical_id, enrichment_kind, owner_server_id, owner_track_id, linked_at
+             ) VALUES ('canonical-1', 'lyrics', 'legacy-a', 'track-1', 1);",
+        )
+        .expect("populate every server-scoped table");
+    }
+
     #[test]
     fn inspect_reports_skipped_unknown_rows() {
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
@@ -684,7 +880,7 @@ mod tests {
 
         let known_legacy_ids = vec!["legacy-a".to_string()];
         let known_index_keys = vec!["idx-a".to_string()];
-        let unknown = count_unknown_rows(&conn, "track", &known_legacy_ids, &known_index_keys)
+        let unknown = count_unknown_rows(&conn, TEST_TRACK_TABLE, &known_legacy_ids, &known_index_keys)
             .expect("unknown count");
         assert_eq!(unknown, 1);
     }
@@ -694,15 +890,26 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         conn.execute_batch("CREATE TABLE analysis_track (server_id TEXT NOT NULL);")
             .expect("create table");
-        conn.execute("INSERT INTO analysis_track(server_id) VALUES (?1)", ["legacy-a"])
-            .expect("insert known legacy");
-        conn.execute("INSERT INTO analysis_track(server_id) VALUES (?1)", ["removed-x"])
-            .expect("insert unknown");
+        conn.execute(
+            "INSERT INTO analysis_track(server_id) VALUES (?1)",
+            ["legacy-a"],
+        )
+        .expect("insert known legacy");
+        conn.execute(
+            "INSERT INTO analysis_track(server_id) VALUES (?1)",
+            ["removed-x"],
+        )
+        .expect("insert unknown");
 
         let known_legacy_ids = vec!["legacy-a".to_string()];
         let known_index_keys = vec!["idx-a".to_string()];
-        let skipped = sum_unknown_rows(&conn, &["analysis_track"], &known_legacy_ids, &known_index_keys)
-            .expect("sum unknown rows");
+        let skipped = sum_unknown_rows(
+            &conn,
+            &[ANALYSIS_TABLES[0]],
+            &known_legacy_ids,
+            &known_index_keys,
+        )
+        .expect("sum unknown rows");
         assert_eq!(skipped, 1);
     }
 
@@ -716,8 +923,8 @@ mod tests {
 
         let known_legacy_ids = vec!["legacy-a".to_string()];
         let known_index_keys = vec!["idx-a".to_string()];
-        let legacy = count_rows_in(&conn, "track", &known_legacy_ids).expect("legacy count");
-        let unknown = count_unknown_rows(&conn, "track", &known_legacy_ids, &known_index_keys)
+        let legacy = count_rows_in(&conn, TEST_TRACK_TABLE, &known_legacy_ids).expect("legacy count");
+        let unknown = count_unknown_rows(&conn, TEST_TRACK_TABLE, &known_legacy_ids, &known_index_keys)
             .expect("unknown count");
         assert_eq!(legacy, 0);
         assert_eq!(unknown, 1);
@@ -739,7 +946,7 @@ mod tests {
 
         let known_legacy_ids = vec!["legacy-a".to_string()];
         let known_index_keys = vec!["idx-a".to_string()];
-        purge_unknown_rows(&conn, "track", &known_legacy_ids, &known_index_keys)
+        purge_unknown_rows(&conn, TEST_TRACK_TABLE, &known_legacy_ids, &known_index_keys)
             .expect("purge unknown rows");
 
         let remaining: i64 = conn
@@ -754,5 +961,38 @@ mod tests {
             .expect("count removed server rows");
         assert_eq!(remaining, 3);
         assert_eq!(removed_left, 0);
+    }
+
+    #[test]
+    fn full_library_schema_rewrites_every_server_scope_and_keeps_foreign_keys_clean() {
+        let conn = full_library_schema();
+        populate_all_library_scopes(&conn);
+        let mappings = vec![ServerIndexMapping {
+            legacy_id: "legacy-a".to_string(),
+            index_key: "index-a".to_string(),
+        }];
+
+        with_foreign_keys_disabled(&conn, || {
+            rewrite_scoped_tables(&conn, LIBRARY_TABLES, &mappings, None, |_| Ok(()))
+        })
+        .expect("rewrite populated production schema");
+
+        for table in LIBRARY_TABLES {
+            assert_eq!(
+                count_rows_eq(&conn, *table, "legacy-a").unwrap(),
+                0,
+                "legacy rows remain in {}.{}",
+                table.table,
+                table.column
+            );
+            assert_eq!(
+                count_rows_eq(&conn, *table, "index-a").unwrap(),
+                1,
+                "rewritten row missing from {}.{}",
+                table.table,
+                table.column
+            );
+        }
+        ensure_foreign_keys_clean(&conn).expect("rewritten production schema foreign keys");
     }
 }

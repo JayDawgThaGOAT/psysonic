@@ -46,10 +46,10 @@ describe('useArtistOfflineState', () => {
 
   it('reports queued when bulk progress is active but albums only wait in pin queue', () => {
     useOfflineJobStore.setState({
-      bulkProgress: { 'artist-1': { done: 0, total: 2 } },
+      bulkProgress: { 'srv:artist-1': { done: 0, total: 2 } },
       pinQueue: [
-        { albumId: 'al-1', albumName: 'One', pinKind: 'artist', status: 'queued', queuedAt: 1 },
-        { albumId: 'al-2', albumName: 'Two', pinKind: 'artist', status: 'queued', queuedAt: 2 },
+        { albumId: 'al-1', albumName: 'One', pinKind: 'artist', status: 'queued', queuedAt: 1, serverId: 'srv' },
+        { albumId: 'al-2', albumName: 'Two', pinKind: 'artist', status: 'queued', queuedAt: 2, serverId: 'srv' },
       ],
       jobs: [],
     });
@@ -59,5 +59,18 @@ describe('useArtistOfflineState', () => {
     );
     expect(result.current.status).toBe('queued');
     expect(result.current.progress).toEqual({ done: 0, total: 2 });
+  });
+
+  it('ignores duplicate album ids queued on another server', () => {
+    useOfflineJobStore.setState({
+      bulkProgress: { 'srv:artist-1': { done: 0, total: 1 } },
+      pinQueue: [{
+        albumId: 'al-1', albumName: 'Other', pinKind: 'artist', status: 'queued', queuedAt: 1, serverId: 'other',
+      }],
+      jobs: [],
+    });
+
+    const { result } = renderHook(() => useArtistOfflineState('artist-1', 'srv', ['al-1']));
+    expect(result.current.status).toBe('downloading');
   });
 });

@@ -1,7 +1,7 @@
 import { updatePlaylist } from '@/lib/api/subsonicPlaylists';
 import type { SubsonicPlaylist, SubsonicSong } from '@/lib/api/subsonicTypes';
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useTracklistColumns, type ColDef, TRACK_TITLE_FLEX_COL } from '@/lib/hooks/useTracklistColumns';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -43,6 +43,8 @@ import { useBulkPlPickerOutsideClick } from '@/features/playlist/hooks/useBulkPl
 import { usePlaylistDnDReorder } from '@/features/playlist/hooks/usePlaylistDnDReorder';
 import { useOfflineBrowseContext } from '@/features/offline';
 import { offlineActionPolicy } from '@/features/offline';
+import { readDetailServerId } from '@/lib/navigation/detailServerScope';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 // ── Column configuration ──────────────────────────────────────────────────────
 const PL_COLUMNS: readonly ColDef[] = [
@@ -66,6 +68,7 @@ export default function PlaylistDetail() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { playTrack, enqueue } = usePlayerStore(
     useShallow(s => ({
       playTrack: s.playTrack,
@@ -76,7 +79,8 @@ export default function PlaylistDetail() {
   const { startDrag } = useDragDrop();
   const downloadPlaylist = useOfflineStore(s => s.downloadPlaylist);
   const deleteAlbum = useOfflineStore(s => s.deleteAlbum);
-  const activeServerId = useAuthStore(s => s.activeServerId) ?? '';
+  const activeServerId = useAuthStore(s => s.activeServerId);
+  const serverId = readDetailServerId(searchParams, activeServerId) ?? '';
   void useLocalPlaybackStore(s => s.entries);
   const downloadFolder = useAuthStore(s => s.downloadFolder);
   const requestDownloadFolder = useDownloadModalStore(s => s.requestFolder);
@@ -84,7 +88,7 @@ export default function PlaylistDetail() {
   const [playlist, setPlaylist] = useState<SubsonicPlaylist | null>(null);
   const [songs, setSongs] = useState<SubsonicSong[]>([]);
   const offlineSongIds = useMemo(() => songs.map(s => s.id), [songs]);
-  const { resolvedOfflineStatus, offlineProgress } = useAlbumOfflineState(id ?? '', activeServerId, offlineSongIds);
+  const { resolvedOfflineStatus, offlineProgress } = useAlbumOfflineState(id ?? '', serverId, offlineSongIds);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [ratings, setRatings] = useState<Record<string, number>>({});
@@ -100,6 +104,9 @@ export default function PlaylistDetail() {
   const zipDownloads = useZipDownloadStore(s => s.downloads);
   const [zipDownloadId, setZipDownloadId] = useState<string | null>(null);
   const activeZip = zipDownloadId ? zipDownloads.find(d => d.id === zipDownloadId) : undefined;
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const saveOwnerGenerationRef = useRef(0);
+  const saveSequenceRef = useRef(0);
 
   // ── CSV Import ───────────────────────────────────────────────────
   const [csvImporting, setCsvImporting] = useState(false);
@@ -113,18 +120,35 @@ export default function PlaylistDetail() {
   } | null>(null);
 
   // ── Save ──────────────────────────────────────────────────────
-  const savePlaylist = useCallback(async (updatedSongs: SubsonicSong[], prevCount = 0) => {
-    if (!id) return;
+  const savePlaylist = useCallback((updatedSongs: SubsonicSong[], prevCount = 0) => {
+    if (!id || !serverId) return Promise.resolve();
+    const ownerGeneration = saveOwnerGenerationRef.current;
+    const sequence = ++saveSequenceRef.current;
     setSaving(true);
-    try {
-      await updatePlaylist(id, updatedSongs.map(s => s.id), prevCount);
-      usePlaylistMembershipStore.getState().replacePlaylistSongIds(id, updatedSongs.map(s => s.id));
-      touchPlaylist(id);
-    } catch {
-      usePlaylistMembershipStore.getState().invalidatePlaylistSongIds(id);
-    }
-    setSaving(false);
-  }, [id, touchPlaylist]);
+    const songIds = updatedSongs.map(song => song.id);
+    const operation = saveChainRef.current.then(async () => {
+      if (saveOwnerGenerationRef.current !== ownerGeneration) return;
+      try {
+        await updatePlaylist(id, songIds, prevCount, serverId);
+        if (saveOwnerGenerationRef.current !== ownerGeneration) return;
+        usePlaylistMembershipStore.getState().replacePlaylistSongIds(id, songIds, serverId);
+        touchPlaylist(id, serverId);
+      } catch {
+        if (saveOwnerGenerationRef.current === ownerGeneration) {
+          usePlaylistMembershipStore.getState().invalidatePlaylistSongIds(id, serverId);
+        }
+      }
+    });
+    saveChainRef.current = operation;
+    return operation.finally(() => {
+      if (
+        saveOwnerGenerationRef.current === ownerGeneration
+        && saveSequenceRef.current === sequence
+      ) {
+        setSaving(false);
+      }
+    });
+  }, [id, serverId, touchPlaylist]);
 
   // ── Bulk select ───────────────────────────────────────────────────
   const [showBulkPlPicker, setShowBulkPlPicker] = useState(false);
@@ -133,7 +157,7 @@ export default function PlaylistDetail() {
   useBulkPlPickerOutsideClick(showBulkPlPicker, setShowBulkPlPicker);
 
   // ── 2×2 cover quad (first 4 unique album covers) ─────────────
-  const { coverQuadIds, resolvedBgUrl } = usePlaylistCovers(songs, customCoverId);
+  const { coverQuadIds, resolvedBgUrl } = usePlaylistCovers(songs, customCoverId, serverId || undefined);
 
   // Song search
   const [searchOpen, setSearchOpen] = useState(false);
@@ -141,11 +165,11 @@ export default function PlaylistDetail() {
   const [selectedSearchIds, setSelectedSearchIds] = useState<Set<string>>(new Set());
   const [searchPlPickerOpen, setSearchPlPickerOpen] = useState(false);
   const { searchResults, setSearchResults, searching } =
-    usePlaylistSongSearch(songs, searchOpen, searchQuery);
+    usePlaylistSongSearch(songs, searchOpen, searchQuery, serverId || undefined);
 
   // Suggestions
   const { suggestions, setSuggestions, loadingSuggestions, loadSuggestions } =
-    usePlaylistSuggestions(songs, playlist?.id);
+    usePlaylistSuggestions(songs, playlist?.id, serverId || undefined);
 
   // ── Column resize/visibility ──────────────────────────────────────────────
   const {
@@ -157,16 +181,52 @@ export default function PlaylistDetail() {
   usePlaylistRouteEffects({ setContextMenuSongId, setEditingMeta, location, navigate });
 
   // ── Load ─────────────────────────────────────────────────────
-  const lastModified = usePlaylistStore(s => (id ? s.lastModified[id] : undefined));
+  const lastModified = usePlaylistStore(s => (
+    id ? s.lastModified[ownedEntityKey({ id, serverId })] : undefined
+  ));
   const { active: offlineBrowseActive } = useOfflineBrowseContext();
   const actionPolicy = offlineActionPolicy('playlistDetail', offlineBrowseActive);
 
+  const loadGenerationRef = useRef(0);
+  const loadedOwnerKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!id) return;
+    const generation = ++loadGenerationRef.current;
+    const ownerKey = ownedEntityKey({ id, serverId });
+    const ownerChanged = loadedOwnerKeyRef.current !== ownerKey;
+    loadedOwnerKeyRef.current = ownerKey;
+    if (ownerChanged) {
+      saveOwnerGenerationRef.current += 1;
+      saveSequenceRef.current += 1;
+    }
     runPlaylistLoad({
-      id, setLoading, setPlaylist, setSongs, setCustomCoverId, setRatings, setStarredSongs,
+      id, serverId, setLoading, setPlaylist, setSongs, setCustomCoverId, setRatings, setStarredSongs,
+      resetForOwnerChange: ownerChanged ? () => {
+        setSaving(false);
+        setEditingMeta(false);
+        setFilterText('');
+        setSortKey('natural');
+        setSortDir('asc');
+        setSortClickCount(0);
+        setHoveredSuggestionId(null);
+        setContextMenuSongId(null);
+        setZipDownloadId(null);
+        setCsvImporting(false);
+        setCsvImportReport(null);
+        setShowBulkPlPicker(false);
+        setSelectedIds(new Set());
+        setSearchOpen(false);
+        setSearchQuery('');
+        setSelectedSearchIds(new Set());
+        setSearchPlPickerOpen(false);
+        setSearchResults([]);
+        setSuggestions([]);
+      } : undefined,
+      isCurrent: () => loadGenerationRef.current === generation,
     });
-  }, [id, lastModified, offlineBrowseActive]);
+  }, [
+    id, serverId, lastModified, offlineBrowseActive, setSelectedIds, setSearchResults, setSuggestions,
+  ]);
 
   // ── Meta edit ─────────────────────────────────────────────────
   const handleSaveMeta = async (opts: {
@@ -174,8 +234,12 @@ export default function PlaylistDetail() {
     coverFile: File | null; coverRemoved: boolean;
   }) => {
     if (!id || !playlist) return;
+    const ownerKey = ownedEntityKey({ id, serverId });
     await runPlaylistSaveMeta(
-      { id, playlist, t, setPlaylist, setCustomCoverId, setEditingMeta },
+      {
+        id, serverId: serverId || undefined, playlist, t, setPlaylist, setCustomCoverId, setEditingMeta,
+        isCurrent: () => loadedOwnerKeyRef.current === ownerKey,
+      },
       opts,
     );
   };
@@ -184,16 +248,20 @@ export default function PlaylistDetail() {
   const handleDownload = async () => {
     if (!playlist || !id) return;
     await runPlaylistZipDownload({
-      playlist, id, downloadFolder, requestDownloadFolder, setZipDownloadId,
+      playlist, id, serverId: serverId || undefined,
+      downloadFolder, requestDownloadFolder, setZipDownloadId,
     });
   };
 
   // ── CSV Import ────────────────────────────────────────────────
   const handleImportCsv = async () => {
     if (!id || csvImporting) return;
+    const ownerKey = ownedEntityKey({ id, serverId });
     await runPlaylistCsvImport({
       songs, t, savePlaylist,
       setSongs, setCsvImporting, setCsvImportReport,
+      serverId: serverId || undefined,
+      isCurrent: () => loadedOwnerKeyRef.current === ownerKey,
     });
   };
 
@@ -207,7 +275,7 @@ export default function PlaylistDetail() {
 
   // ── Rating / Star ─────────────────────────────────────────────
   const { handleRate, handleToggleStar } = usePlaylistStarRating({
-    ratings, setRatings, starredSongs, setStarredSongs,
+    ratings, setRatings, starredSongs, setStarredSongs, serverId: serverId || undefined,
   });
 
   // ── DnD reorder listener + drag-over visual feedback ──────────
@@ -260,7 +328,7 @@ export default function PlaylistDetail() {
         activeZip={activeZip}
         offlineStatus={resolvedOfflineStatus}
         offlineProgress={offlineProgress}
-        activeServerId={activeServerId}
+        activeServerId={serverId}
         actionPolicy={actionPolicy}
         setEditingMeta={setEditingMeta}
         setSearchOpen={setSearchOpen}
@@ -292,6 +360,7 @@ export default function PlaylistDetail() {
           contextMenuSongId={contextMenuSongId}
           setContextMenuSongId={setContextMenuSongId}
           addSong={addSong}
+          serverId={serverId || undefined}
         />
       )}
 
@@ -328,6 +397,7 @@ export default function PlaylistDetail() {
         isFiltered={isFiltered}
         hasActiveFilter={filterText.trim().length > 0}
         id={id}
+        serverId={serverId || undefined}
         sortKey={sortKey}
         setSortKey={setSortKey}
         sortDir={sortDir}
@@ -396,4 +466,3 @@ export default function PlaylistDetail() {
     </div>
   );
 }
-

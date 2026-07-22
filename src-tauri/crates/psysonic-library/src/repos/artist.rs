@@ -1,6 +1,8 @@
 //! `artist` table — browse index rows from `getArtists` and track-derived backfill.
 
-use rusqlite::{params, Transaction};
+use std::collections::HashSet;
+
+use rusqlite::{params, OptionalExtension, Transaction};
 
 use crate::artist_sort::{ignored_articles_or_default, sort_key_for_display_name};
 use crate::store::LibraryStore;
@@ -26,8 +28,18 @@ impl<'a> ArtistRepository<'a> {
         let mut count = 0u32;
         self.store.with_conn_mut("artist.upsert_index", |conn| {
             let tx = conn.transaction()?;
+            let mut changed_identity = HashSet::new();
+            let mut previous_name = tx.prepare_cached(
+                "SELECT name FROM artist WHERE server_id = ?1 AND id = ?2",
+            )?;
             for bucket in &index.index {
                 for artist in &bucket.artist {
+                    let previous = previous_name
+                        .query_row(params![server_id, artist.id], |row| row.get::<_, String>(0))
+                        .optional()?;
+                    if previous.as_deref() != Some(artist.name.as_str()) {
+                        changed_identity.insert(artist.id.as_str());
+                    }
                     let name_sort = sort_key_for_display_name(&artist.name, ignored);
                     upsert_artist_row(
                         &tx,
@@ -41,6 +53,8 @@ impl<'a> ArtistRepository<'a> {
                     count += 1;
                 }
             }
+            drop(previous_name);
+            crate::identity::record_artists(&tx, server_id, changed_identity)?;
             tx.commit()?;
             Ok(())
         })?;
@@ -90,6 +104,11 @@ impl<'a> ArtistRepository<'a> {
                 upsert_artist_row(&tx, server_id, id, name, &name_sort, None, synced_at)?;
                 count += 1;
             }
+            crate::identity::record_artists(
+                &tx,
+                server_id,
+                rows.iter().map(|(id, _)| id.as_str()),
+            )?;
             tx.commit()?;
             Ok(())
         })?;
@@ -148,14 +167,15 @@ fn upsert_artist_row(
     synced_at: i64,
 ) -> rusqlite::Result<()> {
     tx.execute(
-        "INSERT INTO artist (server_id, id, name, name_sort, album_count, synced_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+        "INSERT INTO artist (server_id, id, name, name_sort, name_fold, album_count, synced_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(server_id, id) DO UPDATE SET \
-           name = excluded.name, \
-           name_sort = excluded.name_sort, \
-           album_count = COALESCE(excluded.album_count, artist.album_count), \
-           synced_at = excluded.synced_at",
-        params![server_id, id, name, name_sort, album_count, synced_at],
+            name = excluded.name, \
+            name_sort = excluded.name_sort, \
+            name_fold = excluded.name_fold, \
+            album_count = COALESCE(excluded.album_count, artist.album_count), \
+            synced_at = excluded.synced_at",
+        params![server_id, id, name, name_sort, name.trim().to_lowercase(), album_count, synced_at],
     )?;
     Ok(())
 }

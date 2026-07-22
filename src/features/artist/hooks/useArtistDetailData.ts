@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { search } from '@/lib/api/subsonicSearch';
-import { getArtist, getArtistForServer, getArtistInfo, getTopSongs } from '@/lib/api/subsonicArtists';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
+import {
+  getArtist, getArtistForServer, getArtistInfo, getArtistInfoForServer, getTopSongs, getTopSongsForServer,
+} from '@/lib/api/subsonicArtists';
 import type {
   SubsonicAlbum, SubsonicArtist, SubsonicArtistInfo, SubsonicSong,
 } from '@/lib/api/subsonicTypes';
@@ -13,8 +15,10 @@ import { loadArtistFromLocalPlayback, offlineLocalBrowseEnabled } from '@/featur
 import { readDetailServerId } from '@/lib/navigation/detailServerScope';
 import { runLocalArtistLosslessBrowse } from '@/lib/library/browseTextSearch';
 import { isLosslessSuffix } from '@/lib/library/losslessFormats';
-import { librarySelectionForServer } from '@/lib/api/subsonicClient';
-import { tryLoadArtistDetailMultiScope } from '@/features/artist/hooks/loadArtistDetailMultiScope';
+import { tryLoadArtistDetailMultiScope } from '@/lib/library/loadArtistDetailMultiScope';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import { loadScopedArtistTopSongs } from '@/lib/library/loadScopedArtistTopSongs';
+import { shouldAttemptSubsonicForServer } from '@/lib/network/subsonicNetworkGuard';
 
 export interface UseArtistDetailDataOptions {
   /** When true, albums and top tracks are limited to lossless containers (local index preferred). */
@@ -29,6 +33,7 @@ export interface ArtistDetailDataResult {
   info: SubsonicArtistInfo | null;
   featuredAlbums: SubsonicAlbum[];
   loading: boolean;
+  topSongsLoading: boolean;
   artistInfoLoading: boolean;
   featuredLoading: boolean;
   isStarred: boolean;
@@ -61,8 +66,8 @@ export function useArtistDetailData(
   const audiomuseNavidromeEnabled = useAuthStore(
     s => !!(serverId && s.audiomuseNavidromeByServer[serverId]),
   );
-  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
-  const musicLibrarySelectionByServer = useAuthStore(s => s.musicLibrarySelectionByServer);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const browseScope = getLibraryBrowseScope();
   const offlineBrowseActive = useOfflineBrowseContext().active && !!serverId;
   const preferLocalBytesOnly = offlineBrowseActive && offlineLocalBrowseEnabled(serverId);
   const preferLocalArtist = preferLocalBytesOnly
@@ -74,6 +79,7 @@ export function useArtistDetailData(
   const [topSongs, setTopSongs] = useState<SubsonicSong[]>([]);
   const [infoEntry, setInfoEntry] = useState<{ id: string; value: SubsonicArtistInfo | null } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [topSongsLoading, setTopSongsLoading] = useState(false);
   const [isStarred, setIsStarred] = useState(false);
   const [artistInfoLoading, setArtistInfoLoading] = useState(false);
   const [featuredLoading, setFeaturedLoading] = useState(false);
@@ -86,16 +92,20 @@ export function useArtistDetailData(
     setLoading(true);
     setInfoEntry(null);
     setTopSongs([]);
+    setTopSongsLoading(false);
     setFeaturedAlbums([]);
 
     (async () => {
       try {
+        const currentBrowseScope = getLibraryBrowseScope();
         if (offlineBrowseActive && !preferLocalBytesOnly) {
           setLoading(false);
           return;
         }
-        if (serverId && librarySelectionForServer(serverId).length > 0) {
-          const multi = await tryLoadArtistDetailMultiScope(serverId, id);
+        if (serverId && currentBrowseScope.pairs.length > 0) {
+          const multi = losslessOnly
+            ? await tryLoadArtistDetailMultiScope(currentBrowseScope.pairs, serverId, id, null)
+            : await tryLoadArtistDetailMultiScope(currentBrowseScope.pairs, serverId, id);
           if (cancelled) return;
           if (multi) {
             setArtist(multi.artist);
@@ -103,8 +113,31 @@ export function useArtistDetailData(
             setAlbums(multi.albums);
             setTopSongs(multi.topSongs);
             setLoading(false);
+            if (
+              !losslessOnly
+              && multi.topTracksServerId
+              && multi.topTracksFingerprint
+              && shouldAttemptSubsonicForServer(multi.topTracksServerId)
+            ) {
+              setTopSongsLoading(true);
+              try {
+                const ranked = await loadScopedArtistTopSongs({
+                  artistName: multi.artist.name,
+                  sourceServerId: multi.topTracksServerId,
+                  scopes: currentBrowseScope.pairs,
+                  localFallback: multi.topSongs,
+                  tracksFingerprint: multi.topTracksFingerprint,
+                }).catch(() => multi.topSongs);
+                if (cancelled) return;
+                setTopSongs(ranked);
+              } finally {
+                if (!cancelled) setTopSongsLoading(false);
+              }
+            }
             return;
           }
+          setLoading(false);
+          return;
         }
         if (preferLocalArtist && serverId && id) {
           const local = preferLocalBytesOnly
@@ -153,7 +186,13 @@ export function useArtistDetailData(
         setIsStarred(!!artistData.artist.starred);
         setLoading(false);
 
-        const songsData = await getTopSongs(artistData.artist.name).catch(() => [] as SubsonicSong[]);
+        const canLoadTopSongs = !serverId || shouldAttemptSubsonicForServer(serverId);
+        if (!canLoadTopSongs) return;
+        setTopSongsLoading(true);
+        const songsData = await (serverId
+          ? getTopSongsForServer(serverId, artistData.artist.name)
+          : getTopSongs(artistData.artist.name)
+        ).catch(() => [] as SubsonicSong[]);
         if (cancelled) return;
         let nextSongs = songsData ?? [];
         if (losslessOnly) {
@@ -161,6 +200,7 @@ export function useArtistDetailData(
         }
         setAlbums(nextAlbums);
         setTopSongs(nextSongs);
+        setTopSongsLoading(false);
       } catch (err) {
         if (cancelled) return;
         // Network `getArtist` can fail for an id that is a valid card link but
@@ -186,6 +226,7 @@ export function useArtistDetailData(
           } catch { /* ignore */ }
         }
         console.error(err);
+        setTopSongsLoading(false);
         setLoading(false);
       }
     })();
@@ -193,9 +234,8 @@ export function useArtistDetailData(
     return () => { cancelled = true; };
   }, [
     id,
+    libraryBrowseScopeVersion,
     losslessOnly,
-    musicLibraryFilterVersion,
-    musicLibrarySelectionByServer,
     offlineBrowseActive,
     preferLocalArtist,
     preferLocalBytesOnly,
@@ -204,12 +244,14 @@ export function useArtistDetailData(
   ]);
 
   useEffect(() => {
-    if (!id || preferLocalArtist) return;
+    if (!id || preferLocalArtist || browseScope.multiServer) return;
     let cancelled = false;
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setArtistInfoLoading(true);
-    getArtistInfo(id, { similarArtistCount: audiomuseNavidromeEnabled ? 24 : undefined })
+    (serverId
+      ? getArtistInfoForServer(serverId, id, { similarArtistCount: audiomuseNavidromeEnabled ? 24 : undefined })
+      : getArtistInfo(id, { similarArtistCount: audiomuseNavidromeEnabled ? 24 : undefined }))
       .then(artistInfo => {
         if (!cancelled) setInfoEntry({ id, value: artistInfo ?? null });
       })
@@ -220,15 +262,17 @@ export function useArtistDetailData(
         if (!cancelled) setArtistInfoLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, audiomuseNavidromeEnabled, preferLocalArtist]);
+  }, [id, serverId, audiomuseNavidromeEnabled, preferLocalArtist, browseScope.multiServer]);
 
   useEffect(() => {
-    if (!id || !artist || preferLocalArtist) return;
+    if (!id || !artist || preferLocalArtist || browseScope.multiServer) return;
     const ownAlbumIds = new Set(albums.map(a => a.id));
     // React Compiler set-state-in-effect rule: state set from an async result resolved in this effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setFeaturedLoading(true);
-    search(artist.name, { songCount: 500, artistCount: 0, albumCount: 0 })
+    (serverId
+      ? searchForServer(serverId, artist.name, { songCount: 500, artistCount: 0, albumCount: 0 })
+      : search(artist.name, { songCount: 500, artistCount: 0, albumCount: 0 }))
       .catch(() => ({ songs: [], albums: [], artists: [] }))
       .then(searchResults => {
         let featuredSongs = (searchResults.songs ?? []).filter(
@@ -265,13 +309,13 @@ export function useArtistDetailData(
         setFeaturedLoading(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artist?.id, musicLibraryFilterVersion, losslessOnly, albums, preferLocalArtist]);
+  }, [artist?.id, libraryBrowseScopeVersion, losslessOnly, albums, preferLocalArtist, browseScope.multiServer, serverId]);
 
   const info = infoEntry && infoEntry.id === id ? infoEntry.value : null;
 
   return {
     artist, setArtist, albums, topSongs, info, featuredAlbums,
-    loading, artistInfoLoading, featuredLoading,
+    loading, topSongsLoading, artistInfoLoading, featuredLoading,
     isStarred, setIsStarred,
     losslessOnly,
   };

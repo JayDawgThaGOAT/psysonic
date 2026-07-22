@@ -5,6 +5,7 @@ import type { SubsonicAlbum, SubsonicArtist } from '@/lib/api/subsonicTypes';
 import type { Track } from '@/lib/media/trackTypes';
 import { useAuthStore } from '@/store/authStore';
 import { showToast } from '@/lib/dom/toast';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 type RatingKind = 'song' | 'album' | 'artist';
 
@@ -18,7 +19,7 @@ interface Args {
 }
 
 interface Result {
-  applySongRating: (songId: string, rating: number) => void;
+  applySongRating: (song: Pick<Track, 'id' | 'serverId'>, rating: number) => void;
   applyAlbumRating: (album: SubsonicAlbum, rating: number) => void;
   applyArtistRating: (artist: SubsonicArtist, rating: number) => void;
   getRatingValueByKind: (kind: RatingKind, id: string) => number;
@@ -31,16 +32,17 @@ export function useContextMenuRating({
   const setEntityRatingSupport = useAuthStore(s => s.setEntityRatingSupport);
   const activeServerId = useAuthStore(s => s.activeServerId);
 
-  const applySongRating = useCallback((songId: string, rating: number) => {
+  const applySongRating = useCallback((song: Pick<Track, 'id' | 'serverId'>, rating: number) => {
     // F4: optimistic override + retry-with-backoff sync via the central helper.
-    queueSongRating(songId, rating);
+    queueSongRating(song.id, rating, song.serverId, { scopedOverride: Boolean(song.serverId) });
   }, []);
 
   const applyAlbumRating = useCallback((album: SubsonicAlbum, rating: number) => {
-    setUserRatingOverride(album.id, rating);
+    const ownerServerId = album.serverId ?? activeServerId ?? undefined;
+    setUserRatingOverride(ownedEntityKey(album), rating);
     if (entityRatingSupport !== 'full') return;
-    setRating(album.id, rating).catch(err => {
-      if (activeServerId) setEntityRatingSupport(activeServerId, 'track_only');
+    setRating(album.id, rating, { serverId: ownerServerId, kind: 'album' }).catch(err => {
+      if (ownerServerId) setEntityRatingSupport(ownerServerId, 'track_only');
       showToast(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
         4500,
@@ -50,10 +52,11 @@ export function useContextMenuRating({
   }, [setUserRatingOverride, entityRatingSupport, activeServerId, setEntityRatingSupport, t]);
 
   const applyArtistRating = useCallback((artist: SubsonicArtist, rating: number) => {
-    setUserRatingOverride(artist.id, rating);
+    const ownerServerId = artist.serverId ?? activeServerId ?? undefined;
+    setUserRatingOverride(ownedEntityKey(artist), rating);
     if (entityRatingSupport !== 'full') return;
-    setRating(artist.id, rating).catch(err => {
-      if (activeServerId) setEntityRatingSupport(activeServerId, 'track_only');
+    setRating(artist.id, rating, { serverId: ownerServerId, kind: 'artist' }).catch(err => {
+      if (ownerServerId) setEntityRatingSupport(ownerServerId, 'track_only');
       showToast(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t('entityRating.saveFailed'),
         4500,
@@ -65,31 +68,31 @@ export function useContextMenuRating({
   const getRatingValueByKind = useCallback((kind: RatingKind, id: string): number => {
     if (kind === 'song' && (type === 'song' || type === 'album-song' || type === 'queue-item')) {
       const song = item as Track;
-      if (song.id === id) return userRatingOverrides[id] ?? song.userRating ?? 0;
+      if (song.id === id) return userRatingOverrides[ownedEntityKey(song)] ?? userRatingOverrides[id] ?? song.userRating ?? 0;
     }
     if (kind === 'album' && type === 'album') {
       const album = item as SubsonicAlbum;
-      if (album.id === id) return userRatingOverrides[id] ?? album.userRating ?? 0;
+      if (album.id === id) return userRatingOverrides[ownedEntityKey(album)] ?? userRatingOverrides[id] ?? album.userRating ?? 0;
     }
     if (kind === 'album' && type === 'multi-album') {
       const albums = item as SubsonicAlbum[];
       const compositeId = [...albums.map(a => a.id)].sort().join('\x1e');
       if (id !== compositeId) return userRatingOverrides[id] ?? 0;
       if (albums.length === 0) return 0;
-      const vals = albums.map(a => userRatingOverrides[a.id] ?? a.userRating ?? 0);
+      const vals = albums.map(a => userRatingOverrides[ownedEntityKey(a)] ?? userRatingOverrides[a.id] ?? a.userRating ?? 0);
       const first = vals[0];
       return vals.every(v => v === first) ? first : 0;
     }
     if (kind === 'artist' && type === 'artist') {
       const artist = item as SubsonicArtist;
-      if (artist.id === id) return userRatingOverrides[id] ?? artist.userRating ?? 0;
+      if (artist.id === id) return userRatingOverrides[ownedEntityKey(artist)] ?? userRatingOverrides[id] ?? artist.userRating ?? 0;
     }
     if (kind === 'artist' && type === 'multi-artist') {
       const artists = item as SubsonicArtist[];
       const compositeId = [...artists.map(a => a.id)].sort().join('\x1e');
       if (id !== compositeId) return userRatingOverrides[id] ?? 0;
       if (artists.length === 0) return 0;
-      const vals = artists.map(a => userRatingOverrides[a.id] ?? a.userRating ?? 0);
+      const vals = artists.map(a => userRatingOverrides[ownedEntityKey(a)] ?? userRatingOverrides[a.id] ?? a.userRating ?? 0);
       const first = vals[0];
       return vals.every(v => v === first) ? first : 0;
     }
@@ -98,7 +101,8 @@ export function useContextMenuRating({
 
   const commitRatingByKind = useCallback((kind: RatingKind, id: string, rating: number) => {
     if (kind === 'song') {
-      applySongRating(id, rating);
+      const song = item as Track;
+      applySongRating({ id, serverId: song.serverId }, rating);
       return;
     }
     if (kind === 'album' && type === 'album') {

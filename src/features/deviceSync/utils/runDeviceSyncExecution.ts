@@ -1,13 +1,21 @@
 import type { TFunction } from 'i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { computeSyncPaths, deleteDeviceFiles, syncBatchToDevice } from '@/lib/api/syncfs';
-import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
-import { useDeviceSyncStore, type DeviceSyncSource } from '@/features/deviceSync/store/deviceSyncStore';
-import { useDeviceSyncJobStore } from '@/features/deviceSync/store/deviceSyncJobStore';
+import {
+  deviceSyncOwnerKey,
+  deviceSyncSourceKey,
+  useDeviceSyncStore,
+  type DeviceSyncSource,
+} from '@/features/deviceSync/store/deviceSyncStore';
+import { useDeviceSyncJobStore, type DeviceSyncJobContext } from '@/features/deviceSync/store/deviceSyncJobStore';
 import { showToast } from '@/lib/dom/toast';
 import { trackToSyncInfo, uuid } from '@/features/deviceSync/utils/deviceSyncHelpers';
 import { fetchTracksForSource } from '@/features/playback/utils/playback/fetchTracksForSource';
+import { connectBaseUrlForServer } from '@/lib/server/serverEndpoint';
+import { findServerByIdOrIndexKey } from '@/lib/server/serverLookup';
+import { getAuthParams, restBaseFromUrl } from '@/lib/api/subsonicClient';
 
 export interface SyncDelta {
   addBytes: number;
@@ -16,6 +24,30 @@ export interface SyncDelta {
   delCount: number;
   availableBytes: number;
   tracks: SubsonicSong[];
+  context: (DeviceSyncJobContext & { pendingDeletion: string[] }) | null;
+}
+
+function deviceSyncAuth(serverIndexKey: string) {
+  const server = findServerByIdOrIndexKey(serverIndexKey);
+  if (!server) throw new Error(`Unknown device sync server: ${serverIndexKey}`);
+  return {
+    baseUrl: restBaseFromUrl(connectBaseUrlForServer(server)),
+    ...getAuthParams(server.username, server.password),
+    serverId: server.id,
+    serverIndexKey,
+  };
+}
+
+function manifestArgs(context: DeviceSyncJobContext) {
+  return {
+    destDir: context.targetDir,
+    ownerServerIndexKey: context.serverIndexKey,
+    sources: context.sources,
+  };
+}
+
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 export interface RunDeviceSyncSummaryDeps {
@@ -38,16 +70,36 @@ export async function runDeviceSyncSummaryPrompt(deps: RunDeviceSyncSummaryDeps)
   setPreSyncOpen(true);
 
   try {
-    const { getClient } = await import('@/lib/api/subsonicClient');
-    const { baseUrl, params } = getClient();
-    const payload = await invoke<SyncDelta>('calculate_sync_payload', {
-      sources,
-      deletionIds: pendingDeletion,
-      auth: { baseUrl, ...params },
+    const serverIndexKey = deviceSyncOwnerKey(sources);
+    if (!serverIndexKey) throw new Error('Device sync sources do not have one server owner');
+    const sourceSnapshot = sources.map(source => ({ ...source }));
+    const deletionSnapshot = [...pendingDeletion];
+    const payload = await invoke<Omit<SyncDelta, 'context'>>('calculate_sync_payload', {
+      sources: sourceSnapshot,
+      deletionIds: deletionSnapshot,
+      auth: deviceSyncAuth(serverIndexKey),
       targetDir,
     });
+    const liveState = useDeviceSyncStore.getState();
+    const sourceKeys = sourceSnapshot.map(deviceSyncSourceKey);
+    if (
+      liveState.targetDir !== targetDir ||
+      !sameStrings(liveState.sources.map(deviceSyncSourceKey), sourceKeys) ||
+      !sameStrings(liveState.pendingDeletion, deletionSnapshot)
+    ) {
+      setPreSyncOpen(false);
+      return;
+    }
 
-    setSyncDelta(payload);
+    setSyncDelta({
+      ...payload,
+      context: {
+        targetDir,
+        serverIndexKey,
+        sources: sourceSnapshot,
+        pendingDeletion: deletionSnapshot,
+      },
+    });
   } catch {
     showToast(t('deviceSync.fetchError'), 3000, 'error');
     setPreSyncOpen(false);
@@ -57,9 +109,6 @@ export async function runDeviceSyncSummaryPrompt(deps: RunDeviceSyncSummaryDeps)
 }
 
 export interface RunDeviceSyncExecuteDeps {
-  targetDir: string | null;
-  sources: DeviceSyncSource[];
-  pendingDeletion: string[];
   syncDelta: SyncDelta;
   t: TFunction;
   setPreSyncOpen: (v: boolean) => void;
@@ -68,13 +117,23 @@ export interface RunDeviceSyncExecuteDeps {
 }
 
 export async function runDeviceSyncExecute(deps: RunDeviceSyncExecuteDeps): Promise<void> {
-  const { targetDir, sources, pendingDeletion, syncDelta, t, setPreSyncOpen, removeSources, scanDevice } = deps;
-  if (!targetDir) return;
+  const { syncDelta, t, setPreSyncOpen, removeSources, scanDevice } = deps;
+  const { context } = syncDelta;
+  if (!context) return;
+  const { targetDir, sources, pendingDeletion, serverIndexKey } = context;
+  const runtimeServer = findServerByIdOrIndexKey(serverIndexKey);
+  if (!runtimeServer) {
+    setPreSyncOpen(false);
+    showToast(t('deviceSync.fetchError'), 3000, 'error');
+    return;
+  }
 
   setPreSyncOpen(false);
 
   // 1. Handle pending deletions first
-  const deletionSources = sources.filter(s => pendingDeletion.includes(s.id));
+  const deletionSources = sources.filter(s => pendingDeletion.includes(deviceSyncSourceKey(s)));
+  const remainingSources = sources.filter(s => !pendingDeletion.includes(deviceSyncSourceKey(s)));
+  let resultingSources = sources;
   if (deletionSources.length > 0) {
     try {
       const allPaths: string[] = [];
@@ -93,10 +152,12 @@ export async function runDeviceSyncExecute(deps: RunDeviceSyncExecuteDeps): Prom
       }
 
       await deleteDeviceFiles({ paths: allPaths });
-      removeSources(deletionSources.map(s => s.id));
+      removeSources(deletionSources.map(deviceSyncSourceKey));
+      resultingSources = remainingSources;
       // Update manifest so it stays in sync after deletions
-      const remainingSources = useDeviceSyncStore.getState().sources;
-      if (targetDir) invoke('write_device_manifest', { destDir: targetDir, sources: remainingSources }).catch(() => {});
+      await invoke('write_device_manifest', manifestArgs({
+        targetDir, serverIndexKey, sources: remainingSources,
+      }));
       showToast(
         t('deviceSync.deleteComplete', { count: deletionSources.length }),
         3000, 'info'
@@ -111,8 +172,8 @@ export async function runDeviceSyncExecute(deps: RunDeviceSyncExecuteDeps): Prom
     // No new downloads needed, but the user may still have added a
     // playlist source — (re)write its .m3u8 against the existing files.
     if (targetDir) {
-      const playlistSources = sources.filter(s => s.type === 'playlist');
-      playlistSources.forEach(async playlist => {
+      const playlistSources = resultingSources.filter(s => s.type === 'playlist');
+      await Promise.all(playlistSources.map(async playlist => {
         try {
           const tracks = await fetchTracksForSource(playlist);
           await invoke('write_playlist_m3u8', {
@@ -121,22 +182,33 @@ export async function runDeviceSyncExecute(deps: RunDeviceSyncExecuteDeps): Prom
             tracks: tracks.map((tr, idx) => trackToSyncInfo(tr, '', { name: playlist.name, index: idx + 1 })),
           });
         } catch { /* non-fatal */ }
-      });
+      }));
+      await invoke('write_device_manifest', manifestArgs({
+        targetDir, serverIndexKey, sources: resultingSources,
+      }));
     }
-    scanDevice();
+    await scanDevice();
     return;
   }
 
   const jobId = uuid();
-  useDeviceSyncJobStore.getState().startSync(jobId, allTracks.length);
+  useDeviceSyncJobStore.getState().startSync(jobId, allTracks.length, {
+    targetDir,
+    serverIndexKey,
+    sources: resultingSources,
+  });
 
   showToast(t('deviceSync.syncInBackground'), 3000, 'info');
 
   syncBatchToDevice({
-    tracks: allTracks.map(track => trackToSyncInfo(track, buildDownloadUrl(track.id))),
+    tracks: allTracks.map(track => trackToSyncInfo(
+      track,
+      buildDownloadUrlForServer(runtimeServer.id, track.id),
+    )),
     destDir: targetDir,
     jobId,
     expectedBytes: syncDelta.addBytes,
+    serverId: runtimeServer.id,
   }).catch((err: unknown) => {
     // The typed facade rejects with an Error whose message is the raw Rust error
     // string (previously invoke rejected with the bare string).

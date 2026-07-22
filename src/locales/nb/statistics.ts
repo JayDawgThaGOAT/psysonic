@@ -13,7 +13,7 @@ export const statistics = {
   statPlaytime: 'Total spilletid',
   genreInsights: 'Sjangerinnsikt',
   formatDistribution: 'Formatdistribusjon',
-  formatSample: 'Utvalg av {{n}} spor',
+  formatSample: 'På tvers av {{n}} spor',
   computing: 'Utregner…',								   
   genreSongs: '{{count}} Sanger',
   genreAlbums: '{{count}} Album',

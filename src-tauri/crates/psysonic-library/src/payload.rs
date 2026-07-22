@@ -90,10 +90,107 @@ impl LibrarySyncProgressPayload {
     pub const IDLE_EVENT_NAME: &'static str = "library:sync-idle";
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySyncIdlePayload {
+    pub server_id: String,
+    pub library_scope: String,
+    pub kind: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+impl LibrarySyncIdlePayload {
+    pub fn ok(server_id: &str, library_scope: &str, kind: &str, source: &str) -> Self {
+        Self {
+            server_id: server_id.to_string(),
+            library_scope: library_scope.to_string(),
+            kind: kind.to_string(),
+            source: source.to_string(),
+            job_id: None,
+            ok: true,
+            error: None,
+        }
+    }
+
+    pub fn err(
+        server_id: &str,
+        library_scope: &str,
+        kind: &str,
+        source: &str,
+        message: &str,
+    ) -> Self {
+        Self {
+            server_id: server_id.to_string(),
+            library_scope: library_scope.to_string(),
+            kind: kind.to_string(),
+            source: source.to_string(),
+            job_id: None,
+            ok: false,
+            error: Some(message.to_string()),
+        }
+    }
+
+    pub fn with_job_id(mut self, job_id: &str) -> Self {
+        self.job_id = Some(job_id.to_string());
+        self
+    }
+
+    pub fn mark_failed(&mut self, message: impl Into<String>) {
+        self.ok = false;
+        self.error = Some(message.into());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::repos::RemapEntry;
+
+    #[test]
+    fn idle_payload_serializes_sync_source() {
+        let foreground = serde_json::to_value(LibrarySyncIdlePayload::ok(
+            "s1",
+            "scope",
+            "delta_sync",
+            "foreground",
+        ))
+        .unwrap();
+        assert_eq!(foreground["source"], "foreground");
+
+        let foreground_job = serde_json::to_value(
+            LibrarySyncIdlePayload::ok("s1", "scope", "delta_sync", "foreground")
+                .with_job_id("job-1"),
+        )
+        .unwrap();
+        assert_eq!(foreground_job["jobId"], "job-1");
+
+        let background = serde_json::to_value(LibrarySyncIdlePayload::err(
+            "s1",
+            "scope",
+            "delta_sync",
+            "background",
+            "failed",
+        ))
+        .unwrap();
+        assert_eq!(background["source"], "background");
+        assert!(background.get("jobId").is_none());
+    }
+
+    #[test]
+    fn idle_payload_failure_preserves_job_context() {
+        let mut payload =
+            LibrarySyncIdlePayload::ok("s1", "scope", "delta_sync", "foreground")
+                .with_job_id("job-1");
+        payload.mark_failed("identity maintenance failed");
+
+        assert!(!payload.ok);
+        assert_eq!(payload.error.as_deref(), Some("identity maintenance failed"));
+        assert_eq!(payload.job_id.as_deref(), Some("job-1"));
+    }
 
     #[test]
     fn phase_changed_maps_to_phase_kind() {

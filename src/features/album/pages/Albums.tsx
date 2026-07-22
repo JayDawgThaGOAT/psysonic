@@ -1,7 +1,7 @@
-import { buildDownloadUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildDownloadUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { resolveAlbum } from '@/features/offline';
 import { songToTrack } from '@/lib/media/songToTrack';
-import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import AlbumCard from '@/features/album/components/AlbumCard';
 import AlbumBrowseGridSkeleton from '@/features/album/components/AlbumBrowseGridSkeleton';
 import { albumGridWarmCovers, coverDisplayCssPxForAlbumGrid } from '@/cover/layoutSizes';
@@ -57,8 +57,13 @@ import { useScopedBrowseSearchQuery } from '@/store/liveSearchScopeStore';
 import {
   beginAlbumBrowseTrace,
   emitAlbumBrowseDebug,
+  formatAlbumBrowseTraceReport,
+  getAlbumBrowseTraceSnapshot,
+  subscribeAlbumBrowseTrace,
 } from '@/lib/library/albumBrowseDebug';
 import { librarySelectionForServer } from '@/lib/api/subsonicClient';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 type SortType = AlbumBrowseSort;
 
@@ -69,8 +74,16 @@ function sanitizeFilename(name: string): string {
 
 export default function Albums() {
   const perfFlags = usePerfProbeFlags();
+  const albumsBrowseDiagnosticsEnabled = usePsyLabDebugTraces().albumsBrowse;
+  const traceEntries = useSyncExternalStore(
+    subscribeAlbumBrowseTrace,
+    getAlbumBrowseTraceSnapshot,
+    getAlbumBrowseTraceSnapshot,
+  );
   const { t } = useTranslation();
   const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const libraryBrowseVersion = musicLibraryFilterVersion + libraryBrowseScopeVersion;
   const auth = useAuthStore();
   const serverId = useAuthStore(s => s.activeServerId ?? '');
   const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
@@ -79,11 +92,11 @@ export default function Albums() {
     beginAlbumBrowseTrace({
       serverId,
       indexEnabled,
-      libraryFilterVersion: musicLibraryFilterVersion,
+      libraryFilterVersion: libraryBrowseVersion,
       libraryScopeCount: librarySelectionForServer(serverId).length,
     });
     return () => emitAlbumBrowseDebug('page_unmount');
-  }, [serverId, indexEnabled, musicLibraryFilterVersion]);
+  }, [serverId, indexEnabled, libraryBrowseVersion]);
 
   const downloadAlbum = useOfflineStore(s => s.downloadAlbum);
   const requestDownloadFolder = useDownloadModalStore(s => s.requestFolder);
@@ -128,7 +141,7 @@ export default function Albums() {
   const browseData = useAlbumBrowseData({
     serverId,
     indexEnabled,
-    musicLibraryFilterVersion,
+    musicLibraryFilterVersion: libraryBrowseVersion,
     sort,
     selectedGenres,
     yearFrom,
@@ -268,7 +281,10 @@ export default function Albums() {
   // `displayAlbums` — visible grid slice (local index) or loaded SQL pages (network).
   const [selectionMode, setSelectionMode] = useState(false);
 
-  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(displayAlbums);
+  const { selectedIds, toggleSelect, clearSelection: resetSelection } = useRangeSelection(
+    displayAlbums,
+    ownedEntityKey,
+  );
 
   const toggleSelectionMode = () => {
     setSelectionMode(v => !v);
@@ -280,7 +296,7 @@ export default function Albums() {
     resetSelection();
   };
 
-  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(a.id));
+  const selectedAlbums = displayAlbums.filter(a => selectedIds.has(ownedEntityKey(a)));
   const enqueue = usePlayerStore(state => state.enqueue);
 
   const handleEnqueueSelected = async () => {
@@ -288,7 +304,7 @@ export default function Albums() {
     try {
       // Parallel album resolves — Navidrome handles concurrent requests fine.
       const results = await Promise.all(
-        selectedAlbums.map(a => resolveAlbum(serverId, a.id).catch(() => null)),
+        selectedAlbums.map(a => resolveAlbum(a.serverId ?? serverId, a.id).catch(() => null)),
       );
       const tracks = results.flatMap(r => r ? r.songs.map(songToTrack) : []);
       if (tracks.length > 0) {
@@ -314,7 +330,7 @@ export default function Albums() {
       const downloadId = crypto.randomUUID();
       const filename = `${sanitizeFilename(album.name)}.zip`;
       const destPath = await join(folder, filename);
-      const url = buildDownloadUrl(album.id);
+      const url = buildDownloadUrlForServer(album.serverId ?? serverId, album.id);
       start(downloadId, filename);
       try {
         await downloadZip({ id: downloadId, url, destPath });
@@ -332,9 +348,10 @@ export default function Albums() {
     let queued = 0;
     for (const album of selectedAlbums) {
       try {
-        const detail = await resolveAlbum(serverId, album.id);
+        const ownerServerId = album.serverId ?? serverId;
+        const detail = await resolveAlbum(ownerServerId, album.id);
         if (!detail) throw new Error('album unavailable');
-        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, serverId);
+        downloadAlbum(album.id, album.name, albumArtistDisplayName(album), album.coverArt, album.year, detail.songs, ownerServerId);
         queued++;
       } catch {
         showToast(t('albums.offlineFailed', { name: album.name }), 3000, 'error');
@@ -409,8 +426,48 @@ export default function Albums() {
     { value: 'byArtistThenYear',     label: t('albums.sortByArtistYear') },
   ];
 
+  const copyAlbumBrowseDiagnostics = async () => {
+    const text = formatAlbumBrowseTraceReport({
+      route: '/albums',
+      serverId,
+      indexEnabled,
+      libraryScopeCount: librarySelectionForServer(serverId).length,
+      browseMode: browseData.browseMode,
+      sort,
+      genres: selectedGenres,
+      yearFrom: debouncedYearFields.from || null,
+      yearTo: debouncedYearFields.to || null,
+      losslessOnly,
+      starredOnly,
+      compFilter,
+      loading,
+      loadingMore,
+      albumCount: albums.length,
+      visibleAlbumCount: visibleAlbums.length,
+      displayAlbumCount: displayAlbums.length,
+      hasMore,
+      traceEntryCount: traceEntries.length,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
+
   return (
     <div className={`content-body animate-fade-in mainstage-inpage-split${mainstageHeaderTight ? ' mainstage-inpage--header-tight' : ''}`}>
+      {albumsBrowseDiagnosticsEnabled && (
+        <div className="mainstage-diagnostic-copy-all">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void copyAlbumBrowseDiagnostics()}
+          >
+            {t('albums.copyDiagnostics')}
+          </button>
+        </div>
+      )}
       {!perfFlags.disableMainstageStickyHeader && (
         <div className="mainstage-inpage-toolbar">
           <div className="page-sticky-header mainstage-inpage-toolbar-row">
@@ -550,7 +607,7 @@ export default function Albums() {
                 <div ref={gridMeasureRef}>
                   <VirtualCardGrid
                     items={displayAlbums}
-                    itemKey={(a, _i) => a.id}
+                      itemKey={(a, _i) => ownedEntityKey(a)}
                     rowVariant="album"
                     disableVirtualization={albumBrowsePlainLayout}
                     layoutSignal={displayAlbums.length}
@@ -566,8 +623,8 @@ export default function Albums() {
                         observeScrollRootId={ALBUMS_INPAGE_SCROLL_VIEWPORT_ID}
                         linkQuery={losslessOnly ? LOSSLESS_MODE_QUERY : undefined}
                         selectionMode={selectionMode}
-                        selected={selectedIds.has(a.id)}
-                        onToggleSelect={toggleSelect}
+                        selected={selectedIds.has(ownedEntityKey(a))}
+                        onToggleSelect={(_id, opts) => toggleSelect(ownedEntityKey(a), opts)}
                         selectedAlbums={selectedAlbums}
                       />
                     )}

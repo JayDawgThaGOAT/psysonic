@@ -12,8 +12,27 @@ export function serverIndexKeyForProfile(server: Pick<ServerProfile, 'url'>): st
   return serverIndexKeyFromUrl(server.url);
 }
 
+const SERVER_PROFILE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve a durable storage key from a profile UUID, primary URL, or existing
+ * index key. Unknown UUIDs are rejected rather than leaking ephemeral profile
+ * identity into library/cover/analysis storage.
+ */
+export function resolveStorageServerIndexKey(serverIdOrKey: string): string | null {
+  const candidate = serverIdOrKey.trim();
+  if (!candidate) return null;
+  const servers = useAuthStore.getState().servers;
+  const server = servers?.find(s => s.id === candidate);
+  if (server) return serverIndexKeyForProfile(server) || null;
+  if (SERVER_PROFILE_UUID_RE.test(candidate)) return null;
+  return serverIndexKeyFromUrl(candidate) || null;
+}
+
 export function resolveIndexKey(serverIdOrKey: string): string {
-  const server = useAuthStore.getState().servers.find(s => s.id === serverIdOrKey);
+  const servers = useAuthStore.getState().servers;
+  if (!servers) return serverIdOrKey;
+  const server = servers.find(s => s.id === serverIdOrKey);
   if (!server) return serverIdOrKey;
   return serverIndexKeyFromUrl(server.url) || serverIdOrKey;
 }

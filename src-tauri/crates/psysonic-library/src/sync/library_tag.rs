@@ -19,6 +19,7 @@ use super::now_unix_ms;
 use super::progress::{Progress, ProgressEvent};
 
 const ALBUM_PAGE_SIZE: u32 = 500;
+const MAX_ALBUM_LIST_REQUESTS_PER_PASS: u32 = 8;
 
 /// Summary of a library-tagging pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,12 +29,20 @@ pub struct TagReport {
     pub tracks_tagged: u64,
     pub untagged_remaining: u64,
     pub skipped: bool,
+    pub completed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TagStateRow {
     folders_hash: String,
     last_untagged_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TagCursorRow {
+    folders_hash: String,
+    next_folder_id: String,
+    next_album_offset: u32,
 }
 
 /// Stable fingerprint of the server's music-folder list for gating.
@@ -55,10 +64,14 @@ pub(crate) fn folders_hash(folders: &[MusicFolder]) -> String {
 pub(crate) fn should_run_tagging_pass(
     untagged: u64,
     prior: Option<&TagStateRow>,
+    cursor_active: bool,
     folders_hash: &str,
 ) -> bool {
     if untagged == 0 {
         return false;
+    }
+    if cursor_active {
+        return true;
     }
     if let Some(p) = prior {
         if p.last_untagged_count == untagged && p.folders_hash == folders_hash {
@@ -66,6 +79,29 @@ pub(crate) fn should_run_tagging_pass(
         }
     }
     true
+}
+
+fn read_tag_cursor(
+    store: &LibraryStore,
+    server_id: &str,
+) -> Result<Option<TagCursorRow>, SyncError> {
+    store
+        .with_read_conn(|conn| {
+            conn.query_row(
+                "SELECT folders_hash, next_folder_id, next_album_offset \
+                 FROM library_tag_cursor WHERE server_id = ?1",
+                rusqlite::params![server_id],
+                |row| {
+                    Ok(TagCursorRow {
+                        folders_hash: row.get(0)?,
+                        next_folder_id: row.get(1)?,
+                        next_album_offset: row.get::<_, i64>(2)?.max(0) as u32,
+                    })
+                },
+            )
+            .optional()
+        })
+        .map_err(|e| SyncError::Storage(e.to_string()))
 }
 
 fn read_tag_state(store: &LibraryStore, server_id: &str) -> Result<Option<TagStateRow>, SyncError> {
@@ -86,7 +122,39 @@ fn read_tag_state(store: &LibraryStore, server_id: &str) -> Result<Option<TagSta
         .map_err(|e| SyncError::Storage(e.to_string()))
 }
 
-fn write_tag_state(
+fn write_tag_cursor(
+    store: &LibraryStore,
+    server_id: &str,
+    folders_hash: &str,
+    next_folder_id: &str,
+    next_album_offset: u32,
+) -> Result<(), SyncError> {
+    let now = now_unix_ms();
+    store
+        .with_conn_mut("library_tag.write_cursor", |conn| {
+            conn.execute(
+                "INSERT INTO library_tag_cursor \
+                   (server_id, folders_hash, next_folder_id, next_album_offset, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(server_id) DO UPDATE SET \
+                   folders_hash = excluded.folders_hash, \
+                   next_folder_id = excluded.next_folder_id, \
+                   next_album_offset = excluded.next_album_offset, \
+                   updated_at = excluded.updated_at",
+                rusqlite::params![
+                    server_id,
+                    folders_hash,
+                    next_folder_id,
+                    next_album_offset as i64,
+                    now
+                ],
+            )
+        })
+        .map_err(|e| SyncError::Storage(e.to_string()))?;
+    Ok(())
+}
+
+fn write_tag_completion(
     store: &LibraryStore,
     server_id: &str,
     folders_hash: &str,
@@ -94,19 +162,25 @@ fn write_tag_state(
 ) -> Result<(), SyncError> {
     let now = now_unix_ms();
     store
-        .with_conn_mut("library_tag.write_state", |conn| {
-            conn.execute(
-                "INSERT INTO library_tag_state (server_id, folders_hash, last_untagged_count, completed_at) \
+        .with_conn_mut("library_tag.write_completion", |conn| {
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO library_tag_state \
+                   (server_id, folders_hash, last_untagged_count, completed_at) \
                  VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(server_id) DO UPDATE SET \
                    folders_hash = excluded.folders_hash, \
                    last_untagged_count = excluded.last_untagged_count, \
                    completed_at = excluded.completed_at",
                 rusqlite::params![server_id, folders_hash, untagged as i64, now],
-            )
+            )?;
+            tx.execute(
+                "DELETE FROM library_tag_cursor WHERE server_id = ?1",
+                rusqlite::params![server_id],
+            )?;
+            tx.commit()
         })
-        .map_err(|e| SyncError::Storage(e.to_string()))?;
-    Ok(())
+        .map_err(|e| SyncError::Storage(e.to_string()))
 }
 
 fn check_cancel(cancel: Option<&Arc<AtomicBool>>) -> Result<(), SyncError> {
@@ -134,14 +208,19 @@ pub async fn tag_library_membership(
     let untagged = tracks
         .count_untagged_tracks(server_id)
         .map_err(SyncError::Storage)?;
+    let cursor = read_tag_cursor(store, server_id)?;
 
     if require_untagged && untagged == 0 {
+        if let Some(cursor) = cursor.as_ref() {
+            write_tag_completion(store, server_id, &cursor.folders_hash, 0)?;
+        }
         return Ok(TagReport {
             folders_processed: 0,
             albums_processed: 0,
             tracks_tagged: 0,
             untagged_remaining: 0,
             skipped: true,
+            completed: true,
         });
     }
 
@@ -156,18 +235,23 @@ pub async fn tag_library_membership(
             tracks_tagged: 0,
             untagged_remaining: untagged,
             skipped: true,
+            completed: true,
         });
     }
 
+    let mut folders = folders;
+    folders.sort_by(|a, b| a.id.cmp(&b.id));
     let hash = folders_hash(&folders);
     let prior = read_tag_state(store, server_id)?;
-    if !should_run_tagging_pass(untagged, prior.as_ref(), &hash) {
+    let active_cursor = cursor.as_ref().filter(|cursor| cursor.folders_hash == hash);
+    if !should_run_tagging_pass(untagged, prior.as_ref(), active_cursor.is_some(), &hash) {
         return Ok(TagReport {
             folders_processed: 0,
             albums_processed: 0,
             tracks_tagged: 0,
             untagged_remaining: untagged,
             skipped: true,
+            completed: true,
         });
     }
 
@@ -178,12 +262,31 @@ pub async fn tag_library_membership(
     let mut folders_processed = 0u32;
     let mut albums_processed = 0u32;
     let mut tracks_tagged = 0u64;
+    let mut requests_made = 0u32;
+    let mut completed = true;
+    let (start_folder_index, start_offset) = active_cursor
+        .and_then(|cursor| {
+            folders
+                .iter()
+                .position(|folder| folder.id == cursor.next_folder_id)
+                .map(|index| (index, cursor.next_album_offset))
+        })
+        .unwrap_or((0, 0));
 
-    for folder in &folders {
+    'folders: for (folder_index, folder) in folders.iter().enumerate().skip(start_folder_index) {
         check_cancel(cancel.as_ref())?;
-        let mut offset = 0u32;
+        let mut offset = if folder_index == start_folder_index {
+            start_offset
+        } else {
+            0
+        };
         loop {
             check_cancel(cancel.as_ref())?;
+            if requests_made >= MAX_ALBUM_LIST_REQUESTS_PER_PASS {
+                write_tag_cursor(store, server_id, &hash, &folder.id, offset)?;
+                completed = false;
+                break 'folders;
+            }
             let page = subsonic
                 .get_album_list2(
                     "alphabeticalByName",
@@ -193,7 +296,12 @@ pub async fn tag_library_membership(
                 )
                 .await
                 .map_err(SyncError::from)?;
+            requests_made += 1;
             if page.is_empty() {
+                folders_processed += 1;
+                if let Some(next_folder) = folders.get(folder_index + 1) {
+                    write_tag_cursor(store, server_id, &hash, &next_folder.id, 0)?;
+                }
                 break;
             }
             let album_ids: Vec<String> = page.iter().map(|a| a.id.clone()).collect();
@@ -204,17 +312,23 @@ pub async fn tag_library_membership(
             tracks_tagged += tagged;
 
             if page.len() < ALBUM_PAGE_SIZE as usize {
+                folders_processed += 1;
+                if let Some(next_folder) = folders.get(folder_index + 1) {
+                    write_tag_cursor(store, server_id, &hash, &next_folder.id, 0)?;
+                }
                 break;
             }
             offset = offset.saturating_add(ALBUM_PAGE_SIZE);
+            write_tag_cursor(store, server_id, &hash, &folder.id, offset)?;
         }
-        folders_processed += 1;
     }
 
     let untagged_remaining = tracks
         .count_untagged_tracks(server_id)
         .map_err(SyncError::Storage)?;
-    write_tag_state(store, server_id, &hash, untagged_remaining)?;
+    if completed {
+        write_tag_completion(store, server_id, &hash, untagged_remaining)?;
+    }
 
     Ok(TagReport {
         folders_processed,
@@ -222,6 +336,7 @@ pub async fn tag_library_membership(
         tracks_tagged,
         untagged_remaining,
         skipped: false,
+        completed,
     })
 }
 
@@ -247,11 +362,12 @@ pub async fn run_tag_pass_best_effort(
     {
         Ok(report) if !report.skipped => {
             crate::app_eprintln!(
-                "[library-tag] server `{server_id}`: tagged {} tracks across {} folders ({} albums), {} untagged left",
+                "[library-tag] server `{server_id}`: tagged {} tracks across {} folders ({} albums), {} untagged left, completed={}",
                 report.tracks_tagged,
                 report.folders_processed,
                 report.albums_processed,
                 report.untagged_remaining,
+                report.completed,
             );
         }
         Ok(_) => {}
@@ -265,247 +381,4 @@ pub async fn run_tag_pass_best_effort(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::repos::{TrackRepository, TrackRow};
-    use crate::store::LibraryStore;
-    use psysonic_integration::subsonic::{SubsonicClient, SubsonicCredentials};
-    use serde_json::json;
-    use wiremock::matchers::{method, path, query_param};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn track_row(server: &str, id: &str, album_id: &str) -> TrackRow {
-        TrackRow {
-            server_id: server.into(),
-            id: id.into(),
-            title: id.into(),
-            title_sort: None,
-            artist: Some("A".into()),
-            artist_id: Some("ar1".into()),
-            album: "Al".into(),
-            album_id: Some(album_id.into()),
-            album_artist: Some("A".into()),
-            duration_sec: 100,
-            track_number: Some(1),
-            disc_number: Some(1),
-            year: None,
-            genre: None,
-            suffix: None,
-            bit_rate: None,
-            size_bytes: None,
-            cover_art_id: None,
-            starred_at: None,
-            user_rating: None,
-            play_count: None,
-            played_at: None,
-            server_path: None,
-            library_id: None,
-            isrc: None,
-            mbid_recording: None,
-            bpm: None,
-            replay_gain_track_db: None,
-            replay_gain_album_db: None,
-            replay_gain_peak: None,
-            content_hash: None,
-            server_updated_at: None,
-            server_created_at: None,
-            deleted: false,
-            synced_at: 1,
-            raw_json: "{}".into(),
-        }
-    }
-
-    fn test_client(base: &str) -> SubsonicClient {
-        SubsonicClient::with_static_credentials(
-            base.to_string(),
-            SubsonicCredentials {
-                username: "u".into(),
-                token: "t".into(),
-                salt: "s".into(),
-            },
-            reqwest::Client::new(),
-        )
-    }
-
-    #[test]
-    fn folders_hash_is_order_independent() {
-        let a = vec![
-            MusicFolder {
-                id: "2".into(),
-                name: "B".into(),
-            },
-            MusicFolder {
-                id: "1".into(),
-                name: "A".into(),
-            },
-        ];
-        let b = vec![
-            MusicFolder {
-                id: "1".into(),
-                name: "A".into(),
-            },
-            MusicFolder {
-                id: "2".into(),
-                name: "B".into(),
-            },
-        ];
-        assert_eq!(folders_hash(&a), folders_hash(&b));
-        assert_eq!(folders_hash(&a), "1:A|2:B");
-    }
-
-    #[test]
-    fn should_run_tagging_pass_gates_no_progress() {
-        let prior = TagStateRow {
-            folders_hash: "1:Main".into(),
-            last_untagged_count: 5,
-        };
-        assert!(!should_run_tagging_pass(0, None, "1:Main"));
-        assert!(!should_run_tagging_pass(5, Some(&prior), "1:Main"));
-        assert!(should_run_tagging_pass(4, Some(&prior), "1:Main"));
-        assert!(should_run_tagging_pass(5, Some(&prior), "1:Other"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn tag_library_membership_tags_by_album_and_respects_prior_tags() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/rest/getMusicFolders.view"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "subsonic-response": {
-                    "status": "ok",
-                    "musicFolders": {
-                        "musicFolder": [
-                            { "id": 1, "name": "Main" },
-                            { "id": 2, "name": "Other" }
-                        ]
-                    }
-                }
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/rest/getAlbumList2.view"))
-            .and(query_param("musicFolderId", "1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "subsonic-response": {
-                    "status": "ok",
-                    "albumList2": {
-                        "album": [{ "id": "alb-a", "name": "A" }]
-                    }
-                }
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/rest/getAlbumList2.view"))
-            .and(query_param("musicFolderId", "2"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "subsonic-response": {
-                    "status": "ok",
-                    "albumList2": {
-                        "album": [{ "id": "alb-b", "name": "B" }]
-                    }
-                }
-            })))
-            .mount(&server)
-            .await;
-
-        let store = LibraryStore::open_in_memory();
-        let mut already = track_row("srv", "t0", "alb-a");
-        already.library_id = Some("9".into());
-        TrackRepository::new(&store)
-            .upsert_batch(&[
-                track_row("srv", "t1", "alb-a"),
-                track_row("srv", "t2", "alb-b"),
-                already,
-            ])
-            .unwrap();
-
-        let report = tag_library_membership(
-            &store,
-            &test_client(&server.uri()),
-            "srv",
-            None,
-            Arc::new(super::super::progress::NoopProgress),
-            false,
-        )
-        .await
-        .unwrap();
-
-        assert!(!report.skipped);
-        assert_eq!(report.folders_processed, 2);
-        assert_eq!(report.tracks_tagged, 2);
-        assert_eq!(report.untagged_remaining, 0);
-
-        let lib1: String = store
-            .with_read_conn(|c| {
-                c.query_row(
-                    "SELECT library_id FROM track WHERE id = 't1'",
-                    [],
-                    |r| r.get(0),
-                )
-            })
-            .unwrap();
-        let lib2: String = store
-            .with_read_conn(|c| {
-                c.query_row(
-                    "SELECT library_id FROM track WHERE id = 't2'",
-                    [],
-                    |r| r.get(0),
-                )
-            })
-            .unwrap();
-        let kept: String = store
-            .with_read_conn(|c| {
-                c.query_row(
-                    "SELECT library_id FROM track WHERE id = 't0'",
-                    [],
-                    |r| r.get(0),
-                )
-            })
-            .unwrap();
-        assert_eq!(lib1, "1");
-        assert_eq!(lib2, "2");
-        assert_eq!(kept, "9");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn tag_library_membership_skips_when_no_progress_possible() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/rest/getMusicFolders.view"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "subsonic-response": {
-                    "status": "ok",
-                    "musicFolders": {
-                        "musicFolder": { "id": 1, "name": "Main" }
-                    }
-                }
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let store = LibraryStore::open_in_memory();
-        TrackRepository::new(&store)
-            .upsert_batch(&[track_row("srv", "orphan", "no-album")])
-            .unwrap();
-        write_tag_state(&store, "srv", "1:Main", 1).unwrap();
-
-        let report = tag_library_membership(
-            &store,
-            &test_client(&server.uri()),
-            "srv",
-            None,
-            Arc::new(super::super::progress::NoopProgress),
-            false,
-        )
-        .await
-        .unwrap();
-
-        assert!(report.skipped);
-        assert_eq!(report.albums_processed, 0);
-        assert_eq!(report.tracks_tagged, 0);
-        assert_eq!(report.untagged_remaining, 1);
-    }
-}
+mod tests;

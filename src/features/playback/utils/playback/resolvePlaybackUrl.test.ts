@@ -29,6 +29,7 @@ import {
 } from '@/features/playback/utils/playback/resolvePlaybackUrl';
 import { useAuthStore } from '@/store/authStore';
 import { resetAuthStore } from '@/test/helpers/storeReset';
+import { queueTrackIdentityKey } from '@/features/playback/utils/playback/queueIdentity';
 
 function seedLibraryEntry(trackId: string, serverIndexKey: string, localPath: string): void {
   entriesMock[`${serverIndexKey}:${trackId}`] = {
@@ -124,6 +125,11 @@ describe('getPlaybackSourceKind', () => {
 
   it('returns "hot" when the engine reported a preload for this trackId (RAM-loaded)', () => {
     expect(getPlaybackSourceKind('t1', 'srv-1', 't1')).toBe('hot');
+  });
+
+  it('does not reuse a server-qualified preload from another owner', () => {
+    const preloadIdentity = queueTrackIdentityKey('t1', 'srv-other');
+    expect(getPlaybackSourceKind('t1', 'srv-1', preloadIdentity)).toBe('stream');
   });
 });
 

@@ -8,7 +8,13 @@ import type { Track } from '@/lib/media/trackTypes';
 import { describe, expect, it } from 'vitest';
 import {
   normalizeAnalysisTrackId,
+  queueIdentityContainsTrackId,
+  queueItemIdentityKey,
+  queueItemRefMatchesTrack,
+  queueTrackIdentityMatches,
   queuesStructuralEqual,
+  sameQueueItemRef,
+  sameQueueTrack,
   sameQueueTrackId,
   shallowCloneQueueTracks,
 } from '@/features/playback/utils/playback/queueIdentity';
@@ -60,6 +66,40 @@ describe('sameQueueTrackId', () => {
   });
 });
 
+describe('mixed-server queue identity', () => {
+  it('distinguishes equal raw ids owned by different servers', () => {
+    const a = track('shared', { serverId: 'srv-a' });
+    const b = track('shared', { serverId: 'srv-b' });
+
+    expect(sameQueueTrack(a, b)).toBe(false);
+    expect(queueItemRefMatchesTrack({ serverId: 'srv-a', trackId: 'shared' }, b)).toBe(false);
+    expect(sameQueueItemRef(
+      { serverId: 'srv-a', trackId: 'shared' },
+      { serverId: 'srv-b', trackId: 'shared' },
+    )).toBe(false);
+  });
+
+  it('normalizes stream ids inside composite keys', () => {
+    expect(queueItemIdentityKey({ serverId: 'srv-a', trackId: 'stream:shared' }))
+      .toBe(queueItemIdentityKey({ serverId: 'srv-a', trackId: 'shared' }));
+  });
+
+  it('matches composite preload identities without accepting another owner', () => {
+    const identity = queueItemIdentityKey({ serverId: 'srv-a', trackId: 'shared' });
+    expect(queueTrackIdentityMatches(identity, 'shared', 'srv-a')).toBe(true);
+    expect(queueTrackIdentityMatches(identity, 'shared', 'srv-b')).toBe(false);
+    expect(queueIdentityContainsTrackId(identity, 'stream:shared')).toBe(true);
+  });
+
+  it('keeps raw-id compatibility when one side is legacy ownerless data', () => {
+    expect(sameQueueTrack(track('shared'), track('shared', { serverId: 'srv-a' }))).toBe(true);
+    expect(queueItemRefMatchesTrack(
+      { serverId: '', trackId: 'shared' },
+      track('shared', { serverId: 'srv-a' }),
+    )).toBe(true);
+  });
+});
+
 describe('queuesStructuralEqual', () => {
   it('returns true for same ids in same order', () => {
     expect(queuesStructuralEqual([track('a'), track('b')], [track('a'), track('b')])).toBe(true);
@@ -78,6 +118,13 @@ describe('queuesStructuralEqual', () => {
 
   it('returns false for any id mismatch', () => {
     expect(queuesStructuralEqual([track('a'), track('b')], [track('a'), track('c')])).toBe(false);
+  });
+
+  it('returns false for equal raw ids from different servers', () => {
+    expect(queuesStructuralEqual(
+      [track('shared', { serverId: 'srv-a' })],
+      [track('shared', { serverId: 'srv-b' })],
+    )).toBe(false);
   });
 
   it('treats empty queues as equal', () => {

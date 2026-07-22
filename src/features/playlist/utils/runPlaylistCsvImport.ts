@@ -1,7 +1,7 @@
 import type { TFunction } from 'i18next';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
-import { search } from '@/lib/api/subsonicSearch';
+import { search, searchForServer } from '@/lib/api/subsonicSearch';
 import type { SubsonicSong } from '@/lib/api/subsonicTypes';
 import { showToast } from '@/lib/dom/toast';
 import { parseSpotifyCsv, type SpotifyCsvTrack } from '@/features/playlist/utils/spotifyCsvImport';
@@ -28,10 +28,12 @@ export interface RunPlaylistCsvImportDeps {
   setSongs: (next: SubsonicSong[]) => void;
   setCsvImporting: (v: boolean) => void;
   setCsvImportReport: (r: CsvImportReport | null) => void;
+  serverId?: string;
+  isCurrent?: () => boolean;
 }
 
 export async function runPlaylistCsvImport(deps: RunPlaylistCsvImportDeps): Promise<void> {
-  const { songs, t, savePlaylist, setSongs, setCsvImporting, setCsvImportReport } = deps;
+  const { songs, t, savePlaylist, setSongs, setCsvImporting, setCsvImportReport, serverId } = deps;
 
   try {
     const selected = await openDialog({
@@ -41,10 +43,12 @@ export async function runPlaylistCsvImport(deps: RunPlaylistCsvImportDeps): Prom
     });
 
     if (!selected || typeof selected !== 'string') return;
+    if (deps.isCurrent && !deps.isCurrent()) return;
 
     setCsvImporting(true);
     const content = await readTextFile(selected);
     const csvTracks = parseSpotifyCsv(content);
+    if (deps.isCurrent && !deps.isCurrent()) return;
 
     if (csvTracks.length === 0) {
       showToast(t('playlists.csvImportNoValidTracks'), 3000, 'error');
@@ -72,7 +76,9 @@ export async function runPlaylistCsvImport(deps: RunPlaylistCsvImportDeps): Prom
 
         while (attempts < maxAttempts) {
           try {
-            searchResult = await search(cleanTitleForSearch, { songCount: 40, artistCount: 0, albumCount: 0 });
+            searchResult = serverId
+              ? await searchForServer(serverId, cleanTitleForSearch, { songCount: 40, artistCount: 0, albumCount: 0 })
+              : await search(cleanTitleForSearch, { songCount: 40, artistCount: 0, albumCount: 0 });
             break;
           } catch (err) {
             attempts++;
@@ -95,7 +101,8 @@ export async function runPlaylistCsvImport(deps: RunPlaylistCsvImportDeps): Prom
         // Clean CSV title for fair comparison
         const cleanCsvTitle = cleanTrackTitle(track.trackName);
 
-        const scoredMatches = searchResult.songs.map(s => {
+        const scoredMatches = searchResult.songs.map(rawSong => {
+          const s = serverId ? { ...rawSong, serverId } : rawSong;
           // Fast ISRC path: if both have ISRC and they match, perfect score
           if (track.isrc && s.isrc && typeof s.isrc === 'string' && track.isrc.toUpperCase() === s.isrc.toUpperCase()) {
             return { song: s, score: 1.0, titleScore: 1.0, artistScore: 1.0, isrcMatch: true };
@@ -166,16 +173,19 @@ export async function runPlaylistCsvImport(deps: RunPlaylistCsvImportDeps): Prom
       }
     });
 
+    if (deps.isCurrent && !deps.isCurrent()) return;
     if (addedSongs.length > 0) {
       const next = [...songs, ...addedSongs];
       setSongs(next);
       await savePlaylist(next);
     }
+    if (deps.isCurrent && !deps.isCurrent()) return;
 
     // Auto-show report if there are not found tracks, duplicates, or search errors
     if (notFound.length > 0 || duplicateCount > 0 || searchErrors.length > 0) {
       // Small delay to let the toast appear first
       setTimeout(() => {
+        if (deps.isCurrent && !deps.isCurrent()) return;
         setCsvImportReport({
           added: addedSongs.length,
           notFound,
@@ -214,8 +224,8 @@ export async function runPlaylistCsvImport(deps: RunPlaylistCsvImportDeps): Prom
     );
   } catch (err) {
     console.error('CSV import failed:', err);
-    showToast(t('playlists.csvImportFailed'), 3000, 'error');
+    if (!deps.isCurrent || deps.isCurrent()) showToast(t('playlists.csvImportFailed'), 3000, 'error');
   } finally {
-    setCsvImporting(false);
+    if (!deps.isCurrent || deps.isCurrent()) setCsvImporting(false);
   }
 }

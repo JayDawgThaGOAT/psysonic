@@ -14,12 +14,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *
  * The anchor is a ref, not state — moving it does not trigger re-renders.
  */
-export function useRangeSelection<T extends { id: string }>(items: T[]) {
+export function useRangeSelection<T extends { id: string }>(
+  items: T[],
+  keyOf: (item: T) => string = item => item.id,
+) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const itemsRef = useRef(items);
+  const keyOfRef = useRef(keyOf);
   useEffect(() => {
     itemsRef.current = items;
-  }, [items]);
+    keyOfRef.current = keyOf;
+  }, [items, keyOf]);
   const anchorRef = useRef<string | null>(null);
 
   const toggleSelect = useCallback((id: string, opts?: { shiftKey?: boolean }) => {
@@ -33,13 +38,13 @@ export function useRangeSelection<T extends { id: string }>(items: T[]) {
       const list = itemsRef.current;
 
       if (opts?.shiftKey && anchorAtCallTime && anchorAtCallTime !== id) {
-        const startIdx = list.findIndex(x => x.id === anchorAtCallTime);
-        const endIdx = list.findIndex(x => x.id === id);
+        const startIdx = list.findIndex(x => keyOfRef.current(x) === anchorAtCallTime);
+        const endIdx = list.findIndex(x => keyOfRef.current(x) === id);
         if (startIdx >= 0 && endIdx >= 0) {
           const lo = Math.min(startIdx, endIdx);
           const hi = Math.max(startIdx, endIdx);
           for (let i = lo; i <= hi; i++) {
-            next.add(list[i].id);
+            next.add(keyOfRef.current(list[i]));
           }
           return next;
         }

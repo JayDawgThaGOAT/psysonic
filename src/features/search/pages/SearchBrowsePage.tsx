@@ -1,7 +1,7 @@
-import { getGenres } from '@/lib/api/subsonicGenres';
+import { getGenresForServer } from '@/lib/api/subsonicGenres';
 import type { SubsonicGenre } from '@/lib/api/subsonicTypes';
 import type { ResultType, SearchOpts, Results } from '@/features/search/searchBrowseTypes';
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom';
 import { SlidersVertical, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +45,17 @@ import {
   useScopedBrowseSearchQuery,
 } from '@/store/liveSearchScopeStore';
 import { useOfflineBrowseContext } from '@/features/offline';
+import { getLibraryBrowseScope } from '@/lib/library/libraryBrowseScope';
+import {
+  beginTrackBrowseTrace,
+  emitTrackBrowseDebug,
+  formatTrackBrowseTraceReport,
+  getTrackBrowseTraceSnapshot,
+  subscribeTrackBrowseTrace,
+} from '@/lib/library/trackBrowseDebug';
+import { usePsyLabDebugTraces } from '@/lib/perf/psyLabDebugTraces';
+import { filterStarredSearchResults } from '@/features/search/utils/filterStarredSearchResults';
+import { useLibraryScopeSyncRevision } from '@/store/offlineLocalLibrarySyncRevision';
 
 const MOOD_UI_ENABLED = OXIMEDIA_MOOD_SEARCH_ENABLED;
 
@@ -59,6 +70,12 @@ function peekAdvancedSearchRestoreStash(
 /** Shared shell for `/search`, `/search/advanced`, and `/tracks` (pathname picks chrome). */
 export default function SearchBrowsePage() {
   const perfFlags = usePerfProbeFlags();
+  const tracksBrowseDiagnosticsEnabled = usePsyLabDebugTraces().tracksBrowse;
+  const trackTraceEntries = useSyncExternalStore(
+    subscribeTrackBrowseTrace,
+    getTrackBrowseTraceSnapshot,
+    getTrackBrowseTraceSnapshot,
+  );
   const { t } = useTranslation();
   const navigationType = useNavigationType();
   const location = useLocation();
@@ -67,9 +84,25 @@ export default function SearchBrowsePage() {
   const qFromUrl = params.get('q') ?? '';
   const showTracksChrome = isTracksBrowsePath(location.pathname);
   const showAdvancedPanel = isAdvancedSearchPanelPath(location.pathname);
+  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
+  const libraryBrowseScopeVersion = useAuthStore(s => s.libraryBrowseScopeVersion);
+  const serverId = useAuthStore(s => s.activeServerId);
+  const browseScope = useMemo(() => {
+    void libraryBrowseScopeVersion;
+    void serverId;
+    return getLibraryBrowseScope();
+  }, [libraryBrowseScopeVersion, serverId]);
+  const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(browseScope.anchorServerId));
+  const offlineBrowseActive = useOfflineBrowseContext().active;
+  const librarySyncRevision = useLibraryScopeSyncRevision(browseScope.serverIds);
   const restoreStash = peekAdvancedSearchRestoreStash(navigationType, location.state);
+  const restoreContextMatches = restoreStash != null
+    && restoreStash.browseScopeFingerprint === browseScope.fingerprint
+    && restoreStash.librarySyncRevision === librarySyncRevision;
+  const restoreContextMismatch = restoreStash != null && !restoreContextMatches;
   const hadRestoreOnMountRef = useRef(restoreStash != null);
   const restoredFromStashRef = useRef(restoreStash != null);
+  const restoreContextMismatchRef = useRef(restoreContextMismatch);
 
   const [query, setQuery] = useState(() => restoreStash?.query ?? qFromUrl);
   const [genre, setGenre] = useState(() => restoreStash?.genre ?? '');
@@ -82,44 +115,59 @@ export default function SearchBrowsePage() {
   const [resultType, setResultType] = useState<ResultType>(() => restoreStash?.resultType ?? 'all');
   const [starredOnly, setStarredOnly] = useState(() => restoreStash?.starredOnly ?? false);
   const [genres, setGenres] = useState<SubsonicGenre[]>([]);
-  const [results, setResults] = useState<Results | null>(() => restoreStash?.results ?? null);
+  const [results, setResults] = useState<Results | null>(
+    () => restoreContextMatches ? restoreStash.results : null,
+  );
   const starredOverrides = usePlayerStore(s => s.starredOverrides);
   const filteredResults = useMemo<Results | null>(() => {
     if (!results) return null;
     if (!starredOnly) return results;
-    const isFav = (id: string, base: boolean | string | undefined) =>
-      id in starredOverrides ? !!starredOverrides[id] : !!base;
-    return {
-      artists: results.artists.filter(a => isFav(a.id, a.starred)),
-      albums: results.albums.filter(a => isFav(a.id, a.starred)),
-      songs: results.songs.filter(s => isFav(s.id, s.starred)),
-    };
+    return filterStarredSearchResults(results, starredOverrides);
   }, [results, starredOnly, starredOverrides]);
   const [loading, setLoading] = useState(false);
-  const [hasSearched, setHasSearched] = useState(() => restoreStash?.hasSearched ?? false);
-  const [genreNote, setGenreNote] = useState(() => restoreStash?.genreNote ?? false);
+  const [hasSearched, setHasSearched] = useState(
+    () => restoreContextMatches ? restoreStash.hasSearched : false,
+  );
+  const [genreNote, setGenreNote] = useState(
+    () => restoreContextMatches ? restoreStash.genreNote : false,
+  );
   // True while the current results came from the local index (drives the
   // pagination branch — local pages every result type, network only free-text).
-  const [localMode, setLocalMode] = useState(() => restoreStash?.localMode ?? false);
+  const [localMode, setLocalMode] = useState(
+    () => restoreContextMatches ? restoreStash.localMode : false,
+  );
   const [basicSearchMode, setBasicSearchMode] = useState(
     () => restoreStash?.basicSearchMode ?? (!showAdvancedPanel && !showTracksChrome),
   );
-  const musicLibraryFilterVersion = useAuthStore(s => s.musicLibraryFilterVersion);
-  const serverId = useAuthStore(s => s.activeServerId);
-  const indexEnabled = useLibraryIndexStore(s => s.isIndexEnabled(serverId));
-  const offlineBrowseActive = useOfflineBrowseContext().active;
+  const searchedSyncRevisionRef = useRef(librarySyncRevision);
+  const searchedBrowseScopeVersionRef = useRef(libraryBrowseScopeVersion);
   const [activeSearch, setActiveSearch] = useState<SearchOpts | null>(() => restoreStash?.activeSearch ?? null);
-  const [songsServerOffset, setSongsServerOffset] = useState(() => restoreStash?.songsServerOffset ?? 0);
-  const [songsHasMore, setSongsHasMore] = useState(() => restoreStash?.songsHasMore ?? false);
+  const [songsServerOffset, setSongsServerOffset] = useState(
+    () => restoreContextMatches ? restoreStash.songsServerOffset : 0,
+  );
+  const [songsHasMore, setSongsHasMore] = useState(
+    () => restoreContextMatches ? restoreStash.songsHasMore : false,
+  );
   const [loadingMoreSongs, setLoadingMoreSongs] = useState(false);
+  const [resultProvenance, setResultProvenance] = useState({
+    browseScopeFingerprint: restoreContextMatches
+      ? restoreStash.browseScopeFingerprint
+      : browseScope.fingerprint,
+    librarySyncRevision: restoreContextMatches
+      ? restoreStash.librarySyncRevision
+      : librarySyncRevision,
+  });
 
   const songBrowseInitialRestore: SongBrowseListRestore | null =
-    restoreStash && showTracksChrome
+    restoreStash && restoreContextMatches && showTracksChrome
       ? {
+          browseScopeFingerprint: restoreStash.browseScopeFingerprint,
+          librarySyncRevision: restoreStash.librarySyncRevision,
           query: restoreStash.query,
           songs: restoreStash.results?.songs ?? [],
           offset: restoreStash.songsServerOffset,
           hasMore: restoreStash.songsHasMore,
+          browseCursor: restoreStash.songsBrowseCursor,
           localSearchMode: restoreStash.localMode,
           browseUnsupported: restoreStash.tracksBrowseUnsupported ?? false,
           hasSearched: restoreStash.hasSearched,
@@ -146,24 +194,76 @@ export default function SearchBrowsePage() {
     searchQuery: tracksSearchQuery,
     initialRestore: songBrowseInitialRestore,
   });
+  const trackListPaintedCountRef = useRef(0);
+
+  useLayoutEffect(() => {
+    if (!showTracksChrome) return;
+    beginTrackBrowseTrace({
+      serverId,
+      indexEnabled,
+      libraryScopeCount: getLibraryBrowseScope().pairs.length,
+      offlineBrowseActive,
+    });
+    return () => emitTrackBrowseDebug('page_unmount');
+  }, [showTracksChrome, serverId, indexEnabled, offlineBrowseActive, musicLibraryFilterVersion, libraryBrowseScopeVersion]);
+
+  useLayoutEffect(() => {
+    if (!showTracksChrome) return;
+    if (songBrowse.songs.length === 0) {
+      trackListPaintedCountRef.current = 0;
+      return;
+    }
+    if (songBrowse.loading) return;
+    const previousCount = trackListPaintedCountRef.current;
+    emitTrackBrowseDebug(previousCount === 0 ? 'list_first_paint' : 'list_expanded', {
+      songCount: songBrowse.songs.length,
+      previousCount,
+      searchActive: tracksSearchActive,
+    });
+    trackListPaintedCountRef.current = songBrowse.songs.length;
+  }, [showTracksChrome, songBrowse.songs.length, songBrowse.loading, tracksSearchActive]);
+
+  const copyTrackBrowseDiagnostics = async () => {
+    const text = formatTrackBrowseTraceReport({
+      route: '/tracks',
+      serverId,
+      indexEnabled,
+      libraryScopeCount: getLibraryBrowseScope().pairs.length,
+      offlineBrowseActive,
+      searchActive: tracksSearchActive,
+      loading: songBrowse.loading,
+      hasMore: songBrowse.hasMore,
+      localSearchMode: songBrowse.localSearchMode,
+      songCount: songBrowse.songs.length,
+      offset: songBrowse.offset,
+      cursor: songBrowse.browseCursor != null,
+      traceEntryCount: trackTraceEntries.length,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access may be unavailable in an embedded webview permission state.
+    }
+  };
 
   const restoringSession =
     shouldRestoreAdvancedSearchSession(navigationType, location.state) || restoreStash != null;
-  const leaveSnapshotRef = useRef<AdvancedSearchLeaveSnapshot | null>(
-    restoringSession ? resolveAdvancedSearchLeaveSnapshot(restoreStash) : null,
+  const initialLeaveSnapshot = restoringSession
+    ? resolveAdvancedSearchLeaveSnapshot(restoreStash)
+    : null;
+  const leaveSnapshotRef = useRef<AdvancedSearchLeaveSnapshot | null>(initialLeaveSnapshot);
+  const scrollTopRestoreTargetRef = useRef(
+    restoreContextMismatch ? 0 : (initialLeaveSnapshot?.scrollTop ?? 0),
   );
-  // React Compiler refs rule: ref read imperatively outside reactive rendering; not used to compute the render output.
-  // eslint-disable-next-line react-hooks/refs
-  const scrollTopRestoreTargetRef = useRef(leaveSnapshotRef.current?.scrollTop ?? 0);
   const tracksSearchRestorePendingRef = useRef(
     !!(songBrowseInitialRestore?.query.trim()),
   );
-  // React Compiler refs rule: ref read imperatively outside reactive rendering; not used to compute the render output.
-  // eslint-disable-next-line react-hooks/refs
-  const albumRowScrollLeftRestoreRef = useRef(leaveSnapshotRef.current?.albumRowScrollLeft ?? 0);
-  // React Compiler refs rule: ref read imperatively outside reactive rendering; not used to compute the render output.
-  // eslint-disable-next-line react-hooks/refs
-  const artistRowScrollLeftRestoreRef = useRef(leaveSnapshotRef.current?.artistRowScrollLeft ?? 0);
+  const albumRowScrollLeftRestoreRef = useRef(
+    restoreContextMismatch ? 0 : (initialLeaveSnapshot?.albumRowScrollLeft ?? 0),
+  );
+  const artistRowScrollLeftRestoreRef = useRef(
+    restoreContextMismatch ? 0 : (initialLeaveSnapshot?.artistRowScrollLeft ?? 0),
+  );
   const mainScrollTopRef = useRef(0);
   const albumRowScrollLeftRef = useRef(0);
   const artistRowScrollLeftRef = useRef(0);
@@ -190,6 +290,9 @@ export default function SearchBrowsePage() {
     tracksSearchActive,
     leaveRestorePendingWithQuery: isLeaveRestorePending
       && !!(restoreStash?.query.trim() || songBrowseInitialRestore?.query.trim()),
+    activeServerOwnsBrowseScope: !browseScope.multiServer
+      && browseScope.anchorServerId != null
+      && browseScope.anchorServerId === serverId,
   });
 
   const handleTracksChromeLayoutReady = useCallback(() => {
@@ -211,6 +314,8 @@ export default function SearchBrowsePage() {
   }, []);
 
   const sessionRef = useRef<AdvancedSearchSessionStash>({
+    browseScopeFingerprint: '',
+    librarySyncRevision: 0,
     query: '',
     genre: '',
     yearFrom: '',
@@ -227,6 +332,7 @@ export default function SearchBrowsePage() {
     localMode: false,
     songsServerOffset: 0,
     songsHasMore: false,
+    songsBrowseCursor: null,
     genreNote: false,
     basicSearchMode: false,
     tracksBrowseMode: false,
@@ -235,6 +341,12 @@ export default function SearchBrowsePage() {
   // React Compiler refs rule: ref kept in sync with the latest value for use in effects/handlers/cleanup; not render data.
   // eslint-disable-next-line react-hooks/refs
   sessionRef.current = {
+    browseScopeFingerprint: showTracksChrome
+      ? songBrowse.resultBrowseScopeFingerprint
+      : resultProvenance.browseScopeFingerprint,
+    librarySyncRevision: showTracksChrome
+      ? songBrowse.resultLibrarySyncRevision
+      : resultProvenance.librarySyncRevision,
     query: showTracksChrome ? liveSearchQuery : query,
     genre,
     yearFrom,
@@ -253,6 +365,7 @@ export default function SearchBrowsePage() {
     localMode: showTracksChrome ? songBrowse.localSearchMode : localMode,
     songsServerOffset: showTracksChrome ? songBrowse.offset : songsServerOffset,
     songsHasMore: showTracksChrome ? songBrowse.hasMore : songsHasMore,
+    songsBrowseCursor: showTracksChrome ? songBrowse.browseCursor : null,
     genreNote,
     basicSearchMode: showTracksChrome ? false : basicSearchMode,
     tracksBrowseMode: showTracksChrome,
@@ -286,6 +399,7 @@ export default function SearchBrowsePage() {
   const { runBasicSearch, runSearch, loadMoreSongs } = useAdvancedSearchRunner({
     serverId,
     indexEnabled,
+    librarySyncRevision,
     loadingMoreSongs,
     songsHasMore,
     activeSearch,
@@ -303,7 +417,30 @@ export default function SearchBrowsePage() {
     setLocalMode,
     setResults,
     setLoadingMoreSongs,
+    onResultsCommitted: (browseScopeFingerprint, committedSyncRevision) => {
+      setResultProvenance({
+        browseScopeFingerprint,
+        librarySyncRevision: committedSyncRevision,
+      });
+    },
   });
+
+  useEffect(() => {
+    const syncChanged = searchedSyncRevisionRef.current !== librarySyncRevision;
+    const scopeChanged = searchedBrowseScopeVersionRef.current !== libraryBrowseScopeVersion;
+    if (!syncChanged && !scopeChanged) return;
+    if (isLeaveRestorePending) return;
+    searchedSyncRevisionRef.current = librarySyncRevision;
+    searchedBrowseScopeVersionRef.current = libraryBrowseScopeVersion;
+    if (showTracksChrome || !activeSearch) return;
+    if (basicSearchMode) {
+      void runBasicSearch(activeSearch.query);
+    } else {
+      void runSearch(activeSearch);
+    }
+    // Search runners intentionally use the latest render state when the sync revision changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [librarySyncRevision, libraryBrowseScopeVersion, isLeaveRestorePending]);
 
   useEffect(() => {
     return () => {
@@ -331,8 +468,25 @@ export default function SearchBrowsePage() {
       restoredFromStashRef.current = true;
       const stash = useAdvancedSearchSessionStore.getState().peekReturnStash();
       if (stash) {
+        const contextMatches = stash.browseScopeFingerprint === browseScope.fingerprint
+          && stash.librarySyncRevision === librarySyncRevision;
+        restoreContextMismatchRef.current = !contextMatches;
+        if (!contextMatches) {
+          scrollTopRestoreTargetRef.current = 0;
+          albumRowScrollLeftRestoreRef.current = 0;
+          artistRowScrollLeftRestoreRef.current = 0;
+        }
         // React Compiler set-state-in-effect rule: local state synced with store/prop inputs when the effect’s dependencies change.
         // eslint-disable-next-line react-hooks/set-state-in-effect
+        setResultProvenance(contextMatches
+          ? {
+              browseScopeFingerprint: stash.browseScopeFingerprint,
+              librarySyncRevision: stash.librarySyncRevision,
+            }
+          : {
+              browseScopeFingerprint: browseScope.fingerprint,
+              librarySyncRevision,
+            });
         setQuery(stash.query);
         if (showTracksChrome) {
           const store = useLiveSearchScopeStore.getState();
@@ -348,13 +502,13 @@ export default function SearchBrowsePage() {
         setLosslessOnly(stash.losslessOnly);
         setResultType(stash.resultType);
         setStarredOnly(stash.starredOnly);
-        setResults(stash.results);
-        setHasSearched(stash.hasSearched);
+        setResults(contextMatches ? stash.results : null);
+        setHasSearched(contextMatches ? stash.hasSearched : false);
         setActiveSearch(stash.activeSearch);
-        setLocalMode(stash.localMode);
-        setSongsServerOffset(stash.songsServerOffset);
-        setSongsHasMore(stash.songsHasMore);
-        setGenreNote(stash.genreNote);
+        setLocalMode(contextMatches ? stash.localMode : false);
+        setSongsServerOffset(contextMatches ? stash.songsServerOffset : 0);
+        setSongsHasMore(contextMatches ? stash.songsHasMore : false);
+        setGenreNote(contextMatches ? stash.genreNote : false);
         setBasicSearchMode(stash.basicSearchMode);
       }
       if (!leaveSnapshotRef.current) {
@@ -366,6 +520,20 @@ export default function SearchBrowsePage() {
     useAdvancedSearchSessionStore.getState().clearReturnStash();
     // showTracksChrome is read inside the restore branch but must not retrigger
     // this navigation-driven stash restore; it is keyed on navigation only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigationType, location.state]);
+
+  useEffect(() => {
+    if (!restoreContextMismatchRef.current || showTracksChrome) return;
+    restoreContextMismatchRef.current = false;
+    if (activeSearch) {
+      if (basicSearchMode) void runBasicSearch(activeSearch.query);
+      else void runSearch(activeSearch);
+      return;
+    }
+    if (query.trim()) void runBasicSearch(query);
+    // Restore mismatch is a one-shot mount/navigation repair; the runners are intentionally
+    // read from the render that observed the restored form state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigationType, location.state]);
 
@@ -431,10 +599,31 @@ export default function SearchBrowsePage() {
   }, [isLeaveRestorePending, location.pathname, location.search, location.hash, location.state, navigate]);
 
   useEffect(() => {
-    getGenres().then(data =>
-      setGenres(data.sort((a, b) => a.value.localeCompare(b.value)))
-    ).catch(() => {});
-  }, []);
+    let cancelled = false;
+    const serverIds = browseScope.serverIds;
+    if (serverIds.length === 0) {
+      void Promise.resolve().then(() => {
+        if (!cancelled) setGenres([]);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    void Promise.allSettled(serverIds.map(getGenresForServer)).then(results => {
+      if (cancelled) return;
+      const merged = new Map<string, SubsonicGenre>();
+      for (const result of results) {
+        if (result.status !== 'fulfilled') continue;
+        for (const genreItem of result.value) {
+          if (!merged.has(genreItem.value)) merged.set(genreItem.value, genreItem);
+        }
+      }
+      setGenres([...merged.values()].sort((a, b) => a.value.localeCompare(b.value)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [browseScope]);
 
   useEffect(() => {
     if (hadRestoreOnMountRef.current) return;
@@ -500,6 +689,17 @@ export default function SearchBrowsePage() {
       <div className={showTracksChrome ? 'tracks-hub-stack' : undefined}>
       {showTracksChrome ? (
         <>
+          {tracksBrowseDiagnosticsEnabled && (
+            <div className="mainstage-diagnostic-copy-all">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void copyTrackBrowseDiagnostics()}
+              >
+                {t('tracks.copyDiagnostics')}
+              </button>
+            </div>
+          )}
           <TracksPageChrome
             hideDiscoveryChrome={tracksDiscoveryHidden}
             onLayoutReady={

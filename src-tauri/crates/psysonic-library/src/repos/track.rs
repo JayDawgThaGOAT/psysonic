@@ -101,7 +101,8 @@ impl<'a> TrackRepository<'a> {
     /// generation so IS-7 can soft-delete stale rows after a successful
     /// full resync.
     pub fn upsert_batch_initial_ingest(&self, rows: &[TrackRow]) -> Result<(), String> {
-        self.upsert_batch_initial_ingest_timed(rows, None).map(|_| ())
+        self.upsert_batch_initial_ingest_timed(rows, None)
+            .map(|_| ())
     }
 
     pub fn upsert_batch_initial_ingest_timed(
@@ -116,139 +117,255 @@ impl<'a> TrackRepository<'a> {
             Some(_) => UPSERT_INITIAL_RESYNC_SQL,
             None => UPSERT_SQL,
         };
-        let (_, timing) = self.store.with_conn_mut_timed("track.upsert_initial_ingest", |conn| {
-            let tx = conn.transaction()?;
-            let mut upsert = tx.prepare_cached(sql)?;
-            for r in rows {
-                if let Some(gen) = resync_gen {
-                    upsert.execute(params![
-                        r.server_id,
-                        r.id,
-                        r.title,
-                        r.title_sort,
-                        r.artist,
-                        r.artist_id,
-                        r.album,
-                        r.album_id,
-                        r.album_artist,
-                        r.duration_sec,
-                        r.track_number,
-                        r.disc_number,
-                        r.year,
-                        r.genre,
-                        r.suffix,
-                        r.bit_rate,
-                        r.size_bytes,
-                        r.cover_art_id,
-                        r.starred_at,
-                        r.user_rating,
-                        r.play_count,
-                        r.played_at,
-                        r.server_path,
-                        r.library_id,
-                        r.isrc,
-                        r.mbid_recording,
-                        r.bpm,
-                        r.replay_gain_track_db,
-                        r.replay_gain_album_db,
-                        r.replay_gain_peak,
-                        r.content_hash,
-                        r.server_updated_at,
-                        r.server_created_at,
-                        if r.deleted { 1_i64 } else { 0 },
-                        r.synced_at,
-                        r.raw_json,
-                        gen,
-                    ])?;
-                } else {
-                    upsert.execute(params![
-                        r.server_id,
-                        r.id,
-                        r.title,
-                        r.title_sort,
-                        r.artist,
-                        r.artist_id,
-                        r.album,
-                        r.album_id,
-                        r.album_artist,
-                        r.duration_sec,
-                        r.track_number,
-                        r.disc_number,
-                        r.year,
-                        r.genre,
-                        r.suffix,
-                        r.bit_rate,
-                        r.size_bytes,
-                        r.cover_art_id,
-                        r.starred_at,
-                        r.user_rating,
-                        r.play_count,
-                        r.played_at,
-                        r.server_path,
-                        r.library_id,
-                        r.isrc,
-                        r.mbid_recording,
-                        r.bpm,
-                        r.replay_gain_track_db,
-                        r.replay_gain_album_db,
-                        r.replay_gain_peak,
-                        r.content_hash,
-                        r.server_updated_at,
-                        r.server_created_at,
-                        if r.deleted { 1_i64 } else { 0 },
-                        r.synced_at,
-                        r.raw_json,
-                    ])?;
-                }
-                sync_track_genre_row(&tx, r)?;
-            }
-            drop(upsert);
-            tx.commit()?;
-            Ok(())
-        })?;
+        let (_, timing) =
+            self.store
+                .with_conn_mut_timed("track.upsert_initial_ingest", |conn| {
+                    let tx = conn.transaction()?;
+                    let affected_album_scopes =
+                        crate::browse_projection::collect_affected_album_scopes(&tx, rows)?;
+                    let mut upsert = tx.prepare_cached(sql)?;
+                    for r in rows {
+                        if let Some(gen) = resync_gen {
+                            upsert.execute(params![
+                                r.server_id,
+                                r.id,
+                                r.title,
+                                r.title_sort,
+                                r.artist,
+                                r.artist_id,
+                                r.album,
+                                r.album_id,
+                                r.album_artist,
+                                r.duration_sec,
+                                r.track_number,
+                                r.disc_number,
+                                r.year,
+                                r.genre,
+                                r.suffix,
+                                r.bit_rate,
+                                r.size_bytes,
+                                r.cover_art_id,
+                                r.starred_at,
+                                r.user_rating,
+                                r.play_count,
+                                r.played_at,
+                                r.server_path,
+                                r.library_id,
+                                r.isrc,
+                                r.mbid_recording,
+                                r.bpm,
+                                r.replay_gain_track_db,
+                                r.replay_gain_album_db,
+                                r.replay_gain_peak,
+                                r.content_hash,
+                                r.server_updated_at,
+                                r.server_created_at,
+                                if r.deleted { 1_i64 } else { 0 },
+                                r.synced_at,
+                                r.raw_json,
+                                gen,
+                            ])?;
+                        } else {
+                            upsert.execute(params![
+                                r.server_id,
+                                r.id,
+                                r.title,
+                                r.title_sort,
+                                r.artist,
+                                r.artist_id,
+                                r.album,
+                                r.album_id,
+                                r.album_artist,
+                                r.duration_sec,
+                                r.track_number,
+                                r.disc_number,
+                                r.year,
+                                r.genre,
+                                r.suffix,
+                                r.bit_rate,
+                                r.size_bytes,
+                                r.cover_art_id,
+                                r.starred_at,
+                                r.user_rating,
+                                r.play_count,
+                                r.played_at,
+                                r.server_path,
+                                r.library_id,
+                                r.isrc,
+                                r.mbid_recording,
+                                r.bpm,
+                                r.replay_gain_track_db,
+                                r.replay_gain_album_db,
+                                r.replay_gain_peak,
+                                r.content_hash,
+                                r.server_updated_at,
+                                r.server_created_at,
+                                if r.deleted { 1_i64 } else { 0 },
+                                r.synced_at,
+                                r.raw_json,
+                            ])?;
+                        }
+                        sync_track_genre_row(&tx, r)?;
+                    }
+                    drop(upsert);
+                    crate::identity::mark_cluster_keys_dirty(
+                        &tx,
+                        rows.iter().map(|row| row.server_id.as_str()),
+                    )?;
+                    crate::browse_projection::refresh_album_scopes(&tx, affected_album_scopes)?;
+                    tx.commit()?;
+                    Ok(())
+                })?;
         Ok(timing)
     }
 
-    /// Next generation stamp for a full-resync orphan sweep on this server.
-    pub fn next_resync_gen(&self, server_id: &str) -> Result<i64, String> {
+    /// Next generation stamp for a full-resync orphan sweep. Empty scope is
+    /// server-wide; a non-empty scope is isolated to that library.
+    pub fn next_resync_gen(&self, server_id: &str, library_scope: &str) -> Result<i64, String> {
         self.store.with_conn("track.next_resync_gen", |c| {
-            c.query_row(
-                "SELECT COALESCE(MAX(resync_gen), 0) + 1 FROM track WHERE server_id = ?1",
-                params![server_id],
-                |r| r.get(0),
-            )
+            if library_scope.is_empty() {
+                c.query_row(
+                    "SELECT COALESCE(MAX(resync_gen), 0) + 1 FROM track WHERE server_id = ?1",
+                    params![server_id],
+                    |r| r.get(0),
+                )
+            } else {
+                c.query_row(
+                    "SELECT COALESCE(MAX(resync_gen), 0) + 1 FROM track \
+                     WHERE server_id = ?1 AND library_id = ?2",
+                    params![server_id, library_scope],
+                    |r| r.get(0),
+                )
+            }
         })
     }
 
     /// IS-7 — soft-delete live rows not re-stamped during the active resync.
-    pub fn sweep_resync_orphans(&self, server_id: &str, resync_gen: i64) -> Result<u32, String> {
+    pub fn sweep_resync_orphans(
+        &self,
+        server_id: &str,
+        library_scope: &str,
+        resync_gen: i64,
+    ) -> Result<u32, String> {
         let now = now_unix_ms();
-        let changed = self.store.with_conn_mut("track.sweep_resync_orphans", |c| {
-            c.execute(
-                "DELETE FROM track_genre \
-                 WHERE server_id = ?1 AND track_id IN ( \
-                   SELECT id FROM track \
-                   WHERE server_id = ?1 AND deleted = 0 AND resync_gen != ?2 \
-                 )",
-                params![server_id, resync_gen],
-            )?;
-            c.execute(
-                "UPDATE track SET deleted = 1, synced_at = ?3 \
-                 WHERE server_id = ?1 AND deleted = 0 AND resync_gen != ?2",
-                params![server_id, resync_gen, now],
-            )
-        })?;
+        let changed = self
+            .store
+            .with_conn_mut("track.sweep_resync_orphans", |c| {
+                let tx = c.transaction()?;
+                let changed = if library_scope.is_empty() {
+                    tx.execute(
+                        "DELETE FROM track_genre \
+                     WHERE server_id = ?1 AND track_id IN ( \
+                       SELECT id FROM track \
+                       WHERE server_id = ?1 AND deleted = 0 \
+                         AND COALESCE(resync_gen, 0) != ?2 \
+                     )",
+                        params![server_id, resync_gen],
+                    )?;
+                    tx.execute(
+                        "UPDATE track SET deleted = 1, synced_at = ?3 \
+                     WHERE server_id = ?1 AND deleted = 0 \
+                       AND COALESCE(resync_gen, 0) != ?2",
+                        params![server_id, resync_gen, now],
+                    )?
+                } else {
+                    tx.execute(
+                        "DELETE FROM track_genre \
+                     WHERE server_id = ?1 AND track_id IN ( \
+                       SELECT id FROM track \
+                       WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0 \
+                         AND COALESCE(resync_gen, 0) != ?3 \
+                     )",
+                        params![server_id, library_scope, resync_gen],
+                    )?;
+                    tx.execute(
+                        "UPDATE track SET deleted = 1, synced_at = ?4 \
+                     WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0 \
+                       AND COALESCE(resync_gen, 0) != ?3",
+                        params![server_id, library_scope, resync_gen, now],
+                    )?
+                };
+                if changed > 0 {
+                    crate::browse_projection::rebuild_scope(&tx, server_id, library_scope)?;
+                    crate::identity::prune_cluster_keys_for_scope(&tx, server_id, library_scope)?;
+                    crate::identity::mark_cluster_keys_dirty(&tx, [server_id])?;
+                }
+                tx.commit()?;
+                Ok(changed)
+            })?;
         Ok(changed as u32)
+    }
+
+    /// Apply one tombstone probe batch atomically, then refresh derived state
+    /// once for the whole batch instead of rebuilding per track.
+    pub fn apply_tombstone_results(
+        &self,
+        server_id: &str,
+        library_scope: &str,
+        alive_ids: &[String],
+        deleted_ids: &[String],
+    ) -> Result<(), String> {
+        if alive_ids.is_empty() && deleted_ids.is_empty() {
+            return Ok(());
+        }
+        let now = now_unix_ms();
+        self.store
+            .with_conn_mut("track.apply_tombstone_results", |conn| {
+                let tx = conn.transaction()?;
+                let affected = crate::browse_projection::collect_album_scopes_for_track_ids(
+                    &tx,
+                    server_id,
+                    deleted_ids,
+                )?;
+                let alive_sql = if library_scope.is_empty() {
+                    "UPDATE track SET synced_at = ?3 \
+                 WHERE server_id = ?1 AND id = ?2 AND deleted = 0"
+                } else {
+                    "UPDATE track SET synced_at = ?3 \
+                 WHERE server_id = ?1 AND id = ?2 AND library_id = ?4 AND deleted = 0"
+                };
+                let deleted_sql = if library_scope.is_empty() {
+                    "UPDATE track SET deleted = 1, synced_at = ?3 \
+                 WHERE server_id = ?1 AND id = ?2 AND deleted = 0"
+                } else {
+                    "UPDATE track SET deleted = 1, synced_at = ?3 \
+                 WHERE server_id = ?1 AND id = ?2 AND library_id = ?4 AND deleted = 0"
+                };
+                for track_id in alive_ids {
+                    if library_scope.is_empty() {
+                        tx.execute(alive_sql, params![server_id, track_id, now])?;
+                    } else {
+                        tx.execute(alive_sql, params![server_id, track_id, now, library_scope])?;
+                    }
+                }
+                for track_id in deleted_ids {
+                    if library_scope.is_empty() {
+                        tx.execute(deleted_sql, params![server_id, track_id, now])?;
+                    } else {
+                        tx.execute(
+                            deleted_sql,
+                            params![server_id, track_id, now, library_scope],
+                        )?;
+                    }
+                    tx.execute(
+                        "DELETE FROM track_genre WHERE server_id = ?1 AND track_id = ?2",
+                        params![server_id, track_id],
+                    )?;
+                }
+                crate::identity::record_tracks(
+                    &tx,
+                    deleted_ids.iter().map(|track_id| (server_id, track_id.as_str())),
+                )?;
+                crate::identity::record_album_scopes(&tx, &affected)?;
+                crate::browse_projection::refresh_album_scopes(&tx, affected)?;
+                tx.commit()
+            })
     }
 
     /// SELECT a single track by `(server_id, id)`. Returns `None`
     /// when missing or deleted (`deleted = 1`). Used by
     /// `library_get_track` and the offline-path command.
-    pub fn find_one(
-        &self,
-        server_id: &str,
-        track_id: &str,
-    ) -> Result<Option<TrackRow>, String> {
+    pub fn find_one(&self, server_id: &str, track_id: &str) -> Result<Option<TrackRow>, String> {
         self.store.with_read_conn(|conn| {
             let mut stmt = conn.prepare(SELECT_TRACK_BY_ID)?;
             stmt.query_row(params![server_id, track_id], row_to_track_row)
@@ -272,10 +389,7 @@ impl<'a> TrackRepository<'a> {
     /// preserve their order in the result; unknown / deleted refs
     /// are silently dropped (frontend reads `tracks.length` against
     /// `refs.length` to detect partial responses).
-    pub fn find_batch(
-        &self,
-        refs: &[(String, String)],
-    ) -> Result<Vec<TrackRow>, String> {
+    pub fn find_batch(&self, refs: &[(String, String)]) -> Result<Vec<TrackRow>, String> {
         if refs.is_empty() {
             return Ok(Vec::new());
         }
@@ -296,11 +410,7 @@ impl<'a> TrackRepository<'a> {
 
     /// SELECT every non-deleted track on this album, ordered by
     /// `disc_number ASC, track_number ASC` for stable display.
-    pub fn find_by_album(
-        &self,
-        server_id: &str,
-        album_id: &str,
-    ) -> Result<Vec<TrackRow>, String> {
+    pub fn find_by_album(&self, server_id: &str, album_id: &str) -> Result<Vec<TrackRow>, String> {
         self.store.with_read_conn(|conn| {
             let mut stmt = conn.prepare(SELECT_TRACKS_BY_ALBUM)?;
             let rows: rusqlite::Result<Vec<TrackRow>> = stmt
@@ -419,29 +529,77 @@ impl<'a> TrackRepository<'a> {
 
     /// Count non-deleted tracks for a server (analysis progress baseline).
     pub fn count_live_tracks(&self, server_id: &str) -> Result<i64, String> {
-        self.store.with_read_conn(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM track WHERE server_id = ?1 AND deleted = 0",
-                params![server_id],
-                |row| row.get(0),
-            )
-        })
-        .map_err(|e| e.to_string())
+        self.store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM track WHERE server_id = ?1 AND deleted = 0",
+                    params![server_id],
+                    |row| row.get(0),
+                )
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn count_live_tracks_in_scope(
+        &self,
+        server_id: &str,
+        library_scope: &str,
+    ) -> Result<i64, String> {
+        if library_scope.is_empty() {
+            return self.count_live_tracks(server_id);
+        }
+        self.store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM track \
+                     WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0",
+                    params![server_id, library_scope],
+                    |row| row.get(0),
+                )
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn has_live_tracks_in_scope(
+        &self,
+        server_id: &str,
+        library_scope: &str,
+    ) -> Result<bool, String> {
+        self.store
+            .with_read_conn(|conn| {
+                if library_scope.is_empty() {
+                    conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM track \
+                         WHERE server_id = ?1 AND deleted = 0 LIMIT 1)",
+                        params![server_id],
+                        |row| row.get(0),
+                    )
+                } else {
+                    conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM track \
+                         WHERE server_id = ?1 AND library_id = ?2 AND deleted = 0 LIMIT 1)",
+                        params![server_id, library_scope],
+                        |row| row.get(0),
+                    )
+                }
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Live tracks with no `library_id` hot column (multi-library scope gap).
     pub fn count_untagged_tracks(&self, server_id: &str) -> Result<u64, String> {
-        self.store.with_read_conn(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM track \
+        self.store
+            .with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM track \
                  WHERE server_id = ?1 AND deleted = 0 \
                    AND (library_id IS NULL OR library_id = '')",
-                params![server_id],
-                |row| row.get::<_, i64>(0),
-            )
-        })
-        .map(|n| n.max(0) as u64)
-        .map_err(|e| e.to_string())
+                    params![server_id],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .map(|n| n.max(0) as u64)
+            .map_err(|e| e.to_string())
     }
 
     /// Tag empty `library_id` rows by album membership. Only fills rows
@@ -457,32 +615,72 @@ impl<'a> TrackRepository<'a> {
         }
         const CHUNK: usize = 400;
         let mut total = 0u64;
-        self.store.with_conn_mut("track.tag_library_by_album_ids", |conn| {
-            let tx = conn.transaction()?;
-            for chunk in album_ids.chunks(CHUNK) {
-                let placeholders = (0..chunk.len())
-                    .map(|_| "?")
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let sql = format!(
-                    "UPDATE track SET library_id = ?1 \
+        self.store
+            .with_conn_mut("track.tag_library_by_album_ids", |conn| {
+                let tx = conn.transaction()?;
+                for chunk in album_ids.chunks(CHUNK) {
+                    let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+                    let changed_album_sql = format!(
+                        "SELECT DISTINCT album_id FROM track \
+                         WHERE server_id = ? AND deleted = 0 \
+                           AND album_id IN ({placeholders}) \
+                           AND (library_id IS NULL OR library_id = '')"
+                    );
+                    let mut changed_params: Vec<rusqlite::types::Value> =
+                        vec![rusqlite::types::Value::Text(server_id.to_string())];
+                    changed_params.extend(chunk.iter().cloned().map(Into::into));
+                    let changed_album_ids = {
+                        let mut statement = tx.prepare(&changed_album_sql)?;
+                        let rows = statement
+                            .query_map(params_from_iter(changed_params.iter()), |row| row.get(0))?
+                            .collect::<rusqlite::Result<Vec<String>>>()?;
+                        rows
+                    };
+                    if changed_album_ids.is_empty() {
+                        continue;
+                    }
+                    let changed_placeholders = (0..changed_album_ids.len())
+                        .map(|_| "?")
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let sql = format!(
+                        "UPDATE track SET library_id = ?1 \
                      WHERE server_id = ?2 AND deleted = 0 \
-                       AND album_id IN ({placeholders}) \
+                       AND album_id IN ({changed_placeholders}) \
                        AND (library_id IS NULL OR library_id = '')"
-                );
-                let mut params: Vec<rusqlite::types::Value> = vec![
-                    rusqlite::types::Value::Text(library_id.to_string()),
-                    rusqlite::types::Value::Text(server_id.to_string()),
-                ];
-                for id in chunk {
-                    params.push(id.clone().into());
+                    );
+                    let mut params: Vec<rusqlite::types::Value> = vec![
+                        rusqlite::types::Value::Text(library_id.to_string()),
+                        rusqlite::types::Value::Text(server_id.to_string()),
+                    ];
+                    params.extend(changed_album_ids.iter().cloned().map(Into::into));
+                    let n = tx.execute(&sql, params_from_iter(params.iter()))?;
+                    total += n as u64;
+                    tx.execute(
+                        &format!(
+                            "UPDATE track_genre SET library_id = ?1 \
+                         WHERE server_id = ?2 AND track_id IN ( \
+                            SELECT id FROM track WHERE server_id = ?2 \
+                              AND album_id IN ({changed_placeholders}) AND library_id = ?1 \
+                         ) AND COALESCE(library_id, '') != ?1"
+                        ),
+                        params_from_iter(params.iter()),
+                    )?;
+                    crate::identity::refresh_library_ids_for_albums(
+                        &tx,
+                        server_id,
+                        &changed_album_ids,
+                    )?;
+                    crate::browse_projection::refresh_library_tagged_albums(
+                        &tx,
+                        server_id,
+                        library_id,
+                        &changed_album_ids,
+                    )?;
                 }
-                let n = tx.execute(&sql, params_from_iter(params.iter()))?;
-                total += n as u64;
-            }
-            tx.commit()?;
-            Ok(total)
-        })
+                tx.commit()?;
+                Ok(total)
+            })
     }
 
     /// Batch upsert with optional §6.9 id-remap detection. When
@@ -502,108 +700,138 @@ impl<'a> TrackRepository<'a> {
         if rows.is_empty() {
             return Ok(RemapStats::default());
         }
-        self.store.with_conn_mut("track.upsert_batch_remap", |conn| {
-            let tx = conn.transaction()?;
-            let mut remapped: Vec<RemapEntry> = Vec::new();
-            let mut upsert = tx.prepare_cached(UPSERT_SQL)?;
-            let mut remap_lookup = if unstable_track_ids {
-                Some((
-                    tx.prepare_cached(REMAP_LOOKUP_BY_HASH_SQL)?,
-                    tx.prepare_cached(REMAP_LOOKUP_BY_PATH_SQL)?,
-                ))
-            } else {
-                None
-            };
+        self.store
+            .with_conn_mut("track.upsert_batch_remap", |conn| {
+                let tx = conn.transaction()?;
+                let mut affected_album_scopes =
+                    crate::browse_projection::collect_affected_album_scopes(&tx, rows)?;
+                let mut remapped: Vec<RemapEntry> = Vec::new();
+                let mut upsert = tx.prepare_cached(UPSERT_SQL)?;
+                let mut remap_lookup = if unstable_track_ids {
+                    Some((
+                        tx.prepare_cached(REMAP_LOOKUP_BY_HASH_SQL)?,
+                        tx.prepare_cached(REMAP_LOOKUP_BY_PATH_SQL)?,
+                    ))
+                } else {
+                    None
+                };
 
-            for r in rows {
-                // Spec §6.9: detect collision BEFORE the upsert so the
-                // old id is known. The upsert itself comes next; only
-                // then do we retarget children to the new id, since
-                // child tables FK→track(server_id, id) and would refuse
-                // an UPDATE pointing at an id that doesn't exist yet.
-                let detected_old: Option<String> =
-                    if let Some((ref mut by_hash, ref mut by_path)) = remap_lookup {
-                        detect_remap_target_cached(by_hash, by_path, r)?
-                    } else {
-                        None
-                    };
+                for r in rows {
+                    // Spec §6.9: detect collision BEFORE the upsert so the
+                    // old id is known. The upsert itself comes next; only
+                    // then do we retarget children to the new id, since
+                    // child tables FK→track(server_id, id) and would refuse
+                    // an UPDATE pointing at an id that doesn't exist yet.
+                    let detected_old: Option<String> =
+                        if let Some((ref mut by_hash, ref mut by_path)) = remap_lookup {
+                            detect_remap_target_cached(by_hash, by_path, r)?
+                        } else {
+                            None
+                        };
 
-                upsert.execute(params![
-                    r.server_id,
-                    r.id,
-                    r.title,
-                    r.title_sort,
-                    r.artist,
-                    r.artist_id,
-                    r.album,
-                    r.album_id,
-                    r.album_artist,
-                    r.duration_sec,
-                    r.track_number,
-                    r.disc_number,
-                    r.year,
-                    r.genre,
-                    r.suffix,
-                    r.bit_rate,
-                    r.size_bytes,
-                    r.cover_art_id,
-                    r.starred_at,
-                    r.user_rating,
-                    r.play_count,
-                    r.played_at,
-                    r.server_path,
-                    r.library_id,
-                    r.isrc,
-                    r.mbid_recording,
-                    r.bpm,
-                    r.replay_gain_track_db,
-                    r.replay_gain_album_db,
-                    r.replay_gain_peak,
-                    r.content_hash,
-                    r.server_updated_at,
-                    r.server_created_at,
-                    if r.deleted { 1_i64 } else { 0 },
-                    r.synced_at,
-                    r.raw_json,
-                ])?;
-                sync_track_genre_row(&tx, r)?;
+                    upsert.execute(params![
+                        r.server_id,
+                        r.id,
+                        r.title,
+                        r.title_sort,
+                        r.artist,
+                        r.artist_id,
+                        r.album,
+                        r.album_id,
+                        r.album_artist,
+                        r.duration_sec,
+                        r.track_number,
+                        r.disc_number,
+                        r.year,
+                        r.genre,
+                        r.suffix,
+                        r.bit_rate,
+                        r.size_bytes,
+                        r.cover_art_id,
+                        r.starred_at,
+                        r.user_rating,
+                        r.play_count,
+                        r.played_at,
+                        r.server_path,
+                        r.library_id,
+                        r.isrc,
+                        r.mbid_recording,
+                        r.bpm,
+                        r.replay_gain_track_db,
+                        r.replay_gain_album_db,
+                        r.replay_gain_peak,
+                        r.content_hash,
+                        r.server_updated_at,
+                        r.server_created_at,
+                        if r.deleted { 1_i64 } else { 0 },
+                        r.synced_at,
+                        r.raw_json,
+                    ])?;
+                    sync_track_genre_row(&tx, r)?;
 
-                if let Some(old_id) = detected_old {
-                    remap_existing_to_new(
+                    if let Some(old_id) = detected_old {
+                        affected_album_scopes.extend(
+                            crate::browse_projection::collect_album_scopes_for_track_ids(
+                                &tx,
+                                &r.server_id,
+                                std::slice::from_ref(&old_id),
+                            )?,
+                        );
+                        remap_existing_to_new(
+                            &tx,
+                            &r.server_id,
+                            &old_id,
+                            &r.id,
+                            r.content_hash.as_deref(),
+                            r.server_path.as_deref(),
+                            r.synced_at,
+                        )?;
+                        remapped.push(RemapEntry {
+                            server_id: r.server_id.clone(),
+                            old_id,
+                            new_id: r.id.clone(),
+                        });
+                    }
+
+                    // H2 (§5.5A): link this track to its canonical id by its
+                    // strong key (ISRC, else MBID recording). Inline + O(1);
+                    // a no-op for tracks that carry neither.
+                    crate::canonical::link_track(
                         &tx,
                         &r.server_id,
-                        &old_id,
                         &r.id,
-                        r.content_hash.as_deref(),
-                        r.server_path.as_deref(),
+                        r.isrc.as_deref(),
+                        r.mbid_recording.as_deref(),
                         r.synced_at,
                     )?;
-                    remapped.push(RemapEntry {
-                        server_id: r.server_id.clone(),
-                        old_id,
-                        new_id: r.id.clone(),
-                    });
                 }
 
-                // H2 (§5.5A): link this track to its canonical id by its
-                // strong key (ISRC, else MBID recording). Inline + O(1);
-                // a no-op for tracks that carry neither.
-                crate::canonical::link_track(
+                drop(upsert);
+                drop(remap_lookup);
+                crate::identity::record_tracks(
                     &tx,
-                    &r.server_id,
-                    &r.id,
-                    r.isrc.as_deref(),
-                    r.mbid_recording.as_deref(),
-                    r.synced_at,
+                    rows.iter()
+                        .filter(|row| {
+                            row.deleted
+                                || row
+                                    .album_id
+                                    .as_deref()
+                                    .is_none_or(|album_id| album_id.trim().is_empty())
+                        })
+                        .map(|row| (row.server_id.as_str(), row.id.as_str())),
                 )?;
-            }
+                crate::identity::record_tracks(
+                    &tx,
+                    remapped
+                        .iter()
+                        .map(|entry| (entry.server_id.as_str(), entry.old_id.as_str())),
+                )?;
+                crate::identity::record_album_scopes(&tx, &affected_album_scopes)?;
+                crate::browse_projection::refresh_album_scopes(&tx, affected_album_scopes)?;
 
-            drop(upsert);
-            drop(remap_lookup);
-
-            tx.commit()?;
-            Ok(RemapStats { remapped })
-        })
+                tx.commit()?;
+                Ok(RemapStats { remapped })
+            })
     }
 }
 
@@ -717,7 +945,14 @@ fn remap_existing_to_new(
            content_hash = excluded.content_hash, \
            server_path = excluded.server_path, \
            remapped_at = excluded.remapped_at",
-        params![server_id, old_id, new_id, content_hash, server_path, remapped_at],
+        params![
+            server_id,
+            old_id,
+            new_id,
+            content_hash,
+            server_path,
+            remapped_at
+        ],
     )?;
     tx.execute(
         "DELETE FROM track WHERE server_id = ?1 AND id = ?2",
@@ -981,7 +1216,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(repo.sweep_resync_orphans("s1", 2).unwrap(), 1);
+        assert_eq!(repo.sweep_resync_orphans("s1", "", 2).unwrap(), 1);
 
         let live: i64 = store
             .with_conn("misc", |c| {
@@ -996,14 +1231,97 @@ mod tests {
 
         let orphan_deleted: i64 = store
             .with_conn("misc", |c| {
-                c.query_row(
-                    "SELECT deleted FROM track WHERE id = 'orphan'",
-                    [],
-                    |r| r.get(0),
-                )
+                c.query_row("SELECT deleted FROM track WHERE id = 'orphan'", [], |r| {
+                    r.get(0)
+                })
             })
             .unwrap();
         assert_eq!(orphan_deleted, 1);
+    }
+
+    #[test]
+    fn resync_sweep_with_no_orphans_does_not_rewrite_derived_state() {
+        let store = LibraryStore::open_in_memory();
+        let repo = TrackRepository::new(&store);
+        repo.upsert_batch_initial_ingest_timed(&[row("s1", "seen", "Seen")], Some(2))
+            .unwrap();
+        let before = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+
+        assert_eq!(repo.sweep_resync_orphans("s1", "", 2).unwrap(), 0);
+
+        let after = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn scoped_resync_sweep_preserves_other_library_and_refreshes_derived_rows() {
+        let store = LibraryStore::open_in_memory();
+        let repo = TrackRepository::new(&store);
+        let mut lib_a = row("s1", "a-stale", "A stale");
+        lib_a.library_id = Some("lib-a".into());
+        lib_a.album_id = Some("album-a".into());
+        let mut lib_b = row("s1", "b-keep", "B keep");
+        lib_b.library_id = Some("lib-b".into());
+        lib_b.album_id = Some("album-b".into());
+        repo.upsert_batch_initial_ingest_timed(&[lib_a, lib_b], Some(1))
+            .unwrap();
+        crate::identity::rebuild_cluster_keys(&store, None).unwrap();
+
+        assert_eq!(repo.sweep_resync_orphans("s1", "lib-a", 2).unwrap(), 1);
+
+        let (a_deleted, b_deleted, projection_a, projection_b, identity_a, identity_b): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = store
+            .with_read_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT deleted FROM track WHERE id = 'a-stale'", [], |r| {
+                        r.get(0)
+                    })?,
+                    conn.query_row("SELECT deleted FROM track WHERE id = 'b-keep'", [], |r| {
+                        r.get(0)
+                    })?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM album_browse_projection \
+                         WHERE server_id = 's1' AND library_id = 'lib-a'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM album_browse_projection \
+                         WHERE server_id = 's1' AND library_id = 'lib-b'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM cluster.track_cluster_key \
+                         WHERE server_id = 's1' AND track_id = 'a-stale'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM cluster.track_cluster_key \
+                         WHERE server_id = 's1' AND track_id = 'b-keep'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(a_deleted, 1);
+        assert_eq!(b_deleted, 0);
+        assert_eq!(projection_a, 0);
+        assert_eq!(projection_b, 1);
+        assert_eq!(identity_a, 0);
+        assert_eq!(identity_b, 1);
     }
 
     #[test]
@@ -1109,6 +1427,7 @@ mod tests {
         other_album.album_id = Some("al2".into());
         other_album.library_id = None;
         repo.upsert_batch(&[tagged, empty, other_album]).unwrap();
+        crate::identity::rebuild_cluster_keys(&store, None).unwrap();
 
         let n = repo
             .tag_library_by_album_ids("s1", "1", &["al1".into(), "al2".into()])
@@ -1129,6 +1448,68 @@ mod tests {
         assert_eq!(read("t1").as_deref(), Some("9"));
         assert_eq!(read("t2").as_deref(), Some("1"));
         assert_eq!(read("t3").as_deref(), Some("1"));
+
+        let (empty_projection, tagged_projection, identity_tagged, genre_tagged): (
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = store
+            .with_read_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM album_browse_projection WHERE library_id = ''",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM album_browse_projection WHERE library_id = '1'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM cluster.track_cluster_key \
+                         WHERE track_id IN ('t2', 't3') AND library_id = '1'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM track_genre \
+                         WHERE track_id IN ('t2', 't3') AND library_id = '1'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(empty_projection, 0);
+        assert_eq!(tagged_projection, 2);
+        assert_eq!(identity_tagged, 2);
+        assert_eq!(genre_tagged, 2);
+    }
+
+    #[test]
+    fn tag_library_by_album_ids_with_no_empty_rows_is_write_free() {
+        let store = LibraryStore::open_in_memory();
+        let repo = TrackRepository::new(&store);
+        let mut tagged = row("s1", "t1", "First");
+        tagged.library_id = Some("1".into());
+        tagged.album_id = Some("al1".into());
+        repo.upsert_batch(&[tagged]).unwrap();
+        crate::identity::rebuild_cluster_keys(&store, None).unwrap();
+        let before = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+
+        let changed = repo
+            .tag_library_by_album_ids("s1", "1", &["al1".into()])
+            .unwrap();
+
+        let after = store
+            .with_conn("test.total_changes", |conn| Ok(conn.total_changes()))
+            .unwrap();
+        assert_eq!(changed, 0);
+        assert_eq!(after, before);
     }
 
     #[test]
@@ -1153,7 +1534,9 @@ mod tests {
         repo.upsert_batch(&[row("s1", "t1", "First"), row("s1", "t2", "Second")])
             .unwrap();
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 2);
     }
@@ -1183,7 +1566,9 @@ mod tests {
         assert_eq!(starred, Some(1_700_000_999));
 
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 1, "upsert must not duplicate the row");
     }
@@ -1204,7 +1589,9 @@ mod tests {
         repo.upsert_batch(&[row("s1", "t1", "From S1"), row("s2", "t1", "From S2")])
             .unwrap();
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 2);
     }
@@ -1213,7 +1600,8 @@ mod tests {
     fn upsert_populates_fts_via_trigger() {
         let store = LibraryStore::open_in_memory();
         let repo = TrackRepository::new(&store);
-        repo.upsert_batch(&[row("s1", "t1", "Aurora Boreal")]).unwrap();
+        repo.upsert_batch(&[row("s1", "t1", "Aurora Boreal")])
+            .unwrap();
         let fts_hit: i64 = store
             .with_conn("misc", |c| {
                 c.query_row(
@@ -1231,7 +1619,8 @@ mod tests {
         let store = LibraryStore::open_in_memory();
         let repo = TrackRepository::new(&store);
         repo.upsert_batch(&[row("s1", "t1", "Old Title")]).unwrap();
-        repo.upsert_batch(&[row("s1", "t1", "Brand New Title")]).unwrap();
+        repo.upsert_batch(&[row("s1", "t1", "Brand New Title")])
+            .unwrap();
 
         let old_hit: i64 = store
             .with_conn("misc", |c| {
@@ -1264,9 +1653,7 @@ mod tests {
                 let mut r = row("s1", &format!("t{i:04}"), &format!("Track {i:04}"));
                 r.server_path = Some(format!("/music/track{i:04}.flac"));
                 r.isrc = Some(format!("USRC{i:06}"));
-                r.raw_json = format!(r#"{{"id":"t{i:04}","payload":"#)
-                    + &"x".repeat(512)
-                    + r#""}"#;
+                r.raw_json = format!(r#"{{"id":"t{i:04}","payload":"#) + &"x".repeat(512) + r#""}"#;
                 r
             })
             .collect();
@@ -1297,7 +1684,9 @@ mod tests {
         let elapsed = start.elapsed();
 
         let stored: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(stored, 500);
 
@@ -1312,8 +1701,16 @@ mod tests {
 
     fn row_with_id_hash(server: &str, id: &str, hash: &str, path: &str) -> TrackRow {
         let mut r = row(server, id, "Title");
-        r.content_hash = if hash.is_empty() { None } else { Some(hash.into()) };
-        r.server_path = if path.is_empty() { None } else { Some(path.into()) };
+        r.content_hash = if hash.is_empty() {
+            None
+        } else {
+            Some(hash.into())
+        };
+        r.server_path = if path.is_empty() {
+            None
+        } else {
+            Some(path.into())
+        };
         r
     }
 
@@ -1326,18 +1723,19 @@ mod tests {
 
         // Generic Subsonic path: caller passes `unstable_track_ids = false`.
         let stats = repo
-            .upsert_batch_with_remap(
-                &[row_with_id_hash("s1", "tr_new", "deadbeef", "")],
-                false,
-            )
+            .upsert_batch_with_remap(&[row_with_id_hash("s1", "tr_new", "deadbeef", "")], false)
             .unwrap();
         assert!(stats.remapped.is_empty());
 
         let track_count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         let hist_count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track_id_history", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track_id_history", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(track_count, 2, "both ids coexist when remap is off");
         assert_eq!(hist_count, 0);
@@ -1427,10 +1825,7 @@ mod tests {
             .unwrap();
         // Server only ships server_path on the new row — no hash yet.
         let stats = repo
-            .upsert_batch_with_remap(
-                &[row_with_id_hash("s1", "tr_new", "", "/path/y.mp3")],
-                true,
-            )
+            .upsert_batch_with_remap(&[row_with_id_hash("s1", "tr_new", "", "/path/y.mp3")], true)
             .unwrap();
         assert_eq!(stats.remapped.len(), 1, "path-based remap must trigger");
     }
@@ -1441,13 +1836,16 @@ mod tests {
         // remaps across unrelated rows that happen to lack hash + path.
         let store = LibraryStore::open_in_memory();
         let repo = TrackRepository::new(&store);
-        repo.upsert_batch(&[row_with_id_hash("s1", "tr_old", "", "")]).unwrap();
+        repo.upsert_batch(&[row_with_id_hash("s1", "tr_old", "", "")])
+            .unwrap();
         let stats = repo
             .upsert_batch_with_remap(&[row_with_id_hash("s1", "tr_new", "", "")], true)
             .unwrap();
         assert!(stats.remapped.is_empty());
         let count: i64 = store
-            .with_conn("misc", |c| c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0)))
+            .with_conn("misc", |c| {
+                c.query_row("SELECT COUNT(*) FROM track", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 2, "both rows kept; identity-less rows can't shadow");
     }
@@ -1500,7 +1898,8 @@ mod tests {
         // remap (SELECT excludes id = T.id).
         let store = LibraryStore::open_in_memory();
         let repo = TrackRepository::new(&store);
-        repo.upsert_batch(&[row_with_id_hash("s1", "tr_1", "h", "/p")]).unwrap();
+        repo.upsert_batch(&[row_with_id_hash("s1", "tr_1", "h", "/p")])
+            .unwrap();
         let stats = repo
             .upsert_batch_with_remap(&[row_with_id_hash("s1", "tr_1", "h", "/p")], true)
             .unwrap();
@@ -1558,7 +1957,9 @@ mod tests {
             .unwrap();
         let count: i64 = store
             .with_conn("misc", |c| {
-                c.query_row("SELECT COUNT(*) FROM track_canonical_link", [], |r| r.get(0))
+                c.query_row("SELECT COUNT(*) FROM track_canonical_link", [], |r| {
+                    r.get(0)
+                })
             })
             .unwrap();
         assert_eq!(count, 0);
@@ -1585,7 +1986,8 @@ mod tests {
         let repo = TrackRepository::new(&store);
         let mut needs = row("s1", "needs", "Needs");
         needs.content_hash = None;
-        repo.upsert_batch(&[needs, row("s1", "done", "Done")]).unwrap();
+        repo.upsert_batch(&[needs, row("s1", "done", "Done")])
+            .unwrap();
         store
             .with_conn_mut("misc", |c| {
                 c.execute(

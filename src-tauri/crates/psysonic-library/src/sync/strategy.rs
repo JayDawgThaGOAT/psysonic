@@ -61,7 +61,16 @@ impl IngestStrategy {
         flags: CapabilityFlags,
         server_track_count: Option<i64>,
         n1_bulk_unreliable: bool,
+        scoped: bool,
     ) -> Self {
+        // Navidrome's native `/api/song` endpoint is server-wide. Using it for
+        // a music-folder sync would ingest and tag tracks from every library.
+        if scoped {
+            if flags.contains(CapabilityFlags::SUBSONIC_SEARCH3_BULK) {
+                return Self::S1;
+            }
+            return Self::S2;
+        }
         let is_large = server_track_count
             .map(|c| c > LARGE_LIBRARY_THRESHOLD)
             .unwrap_or(false);
@@ -146,14 +155,16 @@ mod tests {
     #[test]
     fn initial_strategy_small_library_keeps_cheapest_n1() {
         // Below threshold, not flagged unreliable → unchanged N1-first chain.
-        let s = IngestStrategy::select_initial_strategy(navidrome_full(), Some(1_000), false);
+        let s =
+            IngestStrategy::select_initial_strategy(navidrome_full(), Some(1_000), false, false);
         assert_eq!(s, IngestStrategy::N1);
     }
 
     #[test]
     fn initial_strategy_large_library_avoids_n1_for_s1() {
         // Over threshold → S1 even though N1 is advertised (deep-offset wall).
-        let s = IngestStrategy::select_initial_strategy(navidrome_full(), Some(170_000), false);
+        let s =
+            IngestStrategy::select_initial_strategy(navidrome_full(), Some(170_000), false, false);
         assert_eq!(s, IngestStrategy::S1);
     }
 
@@ -162,9 +173,9 @@ mod tests {
         // Learned `n1_bulk_unreliable` forces the non-N1 path even when the
         // count is small/unknown (covers R7-15 "unknown → large if N1 failed").
         let small =
-            IngestStrategy::select_initial_strategy(navidrome_full(), Some(500), true);
+            IngestStrategy::select_initial_strategy(navidrome_full(), Some(500), true, false);
         assert_eq!(small, IngestStrategy::S1);
-        let unknown = IngestStrategy::select_initial_strategy(navidrome_full(), None, true);
+        let unknown = IngestStrategy::select_initial_strategy(navidrome_full(), None, true, false);
         assert_eq!(unknown, IngestStrategy::S1);
     }
 
@@ -172,7 +183,7 @@ mod tests {
     fn initial_strategy_large_without_search3_falls_back_to_s2() {
         // Avoid-N1 path but no search3 bulk → universal album crawl, not N1.
         let flags = CapabilityFlags::new(CapabilityFlags::NAVIDROME_NATIVE_BULK);
-        let s = IngestStrategy::select_initial_strategy(flags, Some(170_000), false);
+        let s = IngestStrategy::select_initial_strategy(flags, Some(170_000), false, false);
         assert_eq!(s, IngestStrategy::S2);
     }
 
@@ -180,7 +191,7 @@ mod tests {
     fn initial_strategy_unknown_count_uses_cheapest_when_not_flagged() {
         // First run, no count yet, N1 never failed → try cheapest (N1); the
         // mid-run N1→S1 fallback (R7-15 Q5) handles the wall if hit.
-        let s = IngestStrategy::select_initial_strategy(navidrome_full(), None, false);
+        let s = IngestStrategy::select_initial_strategy(navidrome_full(), None, false, false);
         assert_eq!(s, IngestStrategy::N1);
     }
 
@@ -191,14 +202,33 @@ mod tests {
             navidrome_full(),
             Some(LARGE_LIBRARY_THRESHOLD),
             false,
+            false,
         );
         assert_eq!(at, IngestStrategy::N1);
         let over = IngestStrategy::select_initial_strategy(
             navidrome_full(),
             Some(LARGE_LIBRARY_THRESHOLD + 1),
             false,
+            false,
         );
         assert_eq!(over, IngestStrategy::S1);
+    }
+
+    #[test]
+    fn scoped_initial_strategy_never_uses_server_wide_n1() {
+        assert_eq!(
+            IngestStrategy::select_initial_strategy(navidrome_full(), Some(10), false, true),
+            IngestStrategy::S1
+        );
+        assert_eq!(
+            IngestStrategy::select_initial_strategy(
+                CapabilityFlags::new(CapabilityFlags::NAVIDROME_NATIVE_BULK),
+                Some(10),
+                false,
+                true,
+            ),
+            IngestStrategy::S2
+        );
     }
 
     #[test]

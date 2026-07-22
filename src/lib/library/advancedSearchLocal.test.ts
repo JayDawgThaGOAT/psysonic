@@ -2,11 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { onInvoke } from '@/test/mocks/tauri';
 import { useAuthStore } from '@/store/authStore';
 import { useLibraryIndexStore } from '@/store/libraryIndexStore';
+import { resetAuthStore } from '@/test/helpers/storeReset';
 import {
   albumToAlbum,
   resolveTrackCoverArtId,
   runLocalAdvancedSearch,
   runLocalSongBrowse,
+  runLocalSongScopeBrowse,
   runNetworkAdvancedYearAlbums,
   trackToSong,
   tryRunLocalAdvancedSearch,
@@ -36,8 +38,18 @@ const ready = () =>
     syncedAt: 0,
   }));
 
+function seedSingleServerScope() {
+  useAuthStore.setState({
+    activeServerId: 's1',
+    servers: [{ id: 's1', name: 'S1', url: 'https://s1', username: 'u', password: 'p' }],
+    libraryBrowseServerIds: [],
+  });
+}
+
 describe('runLocalAdvancedSearch', () => {
   beforeEach(() => {
+    resetAuthStore();
+    seedSingleServerScope();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
@@ -102,6 +114,38 @@ describe('runLocalAdvancedSearch', () => {
         ],
       },
     });
+  });
+
+  it('declines multi-server local search when any selected index is not ready', async () => {
+    useAuthStore.setState({
+      servers: [
+        { id: 'a', name: 'A', url: 'https://a.test', username: 'u', password: 'p' },
+        { id: 'b', name: 'B', url: 'https://b.test', username: 'u', password: 'p' },
+      ],
+      activeServerId: 'a',
+      libraryBrowseServerIds: ['a', 'b'],
+      musicFoldersByServer: {
+        a: [{ id: 'lib-a', name: 'A' }],
+        b: [{ id: 'lib-b', name: 'B' }],
+      },
+      libraryBrowseSelectionByServer: {},
+    });
+    onInvoke('library_get_status', args => {
+      const serverId = (args as { serverId: string }).serverId;
+      return {
+        serverId,
+        libraryScope: '',
+        syncPhase: serverId === 'b.test' ? 'initial_sync' : 'ready',
+      };
+    });
+    let searchCalls = 0;
+    onInvoke('library_advanced_search', () => {
+      searchCalls += 1;
+      return { artists: [], albums: [], tracks: [], totals: { artists: 0, albums: 0, tracks: 0 }, source: 'local' };
+    });
+
+    await expect(runLocalAdvancedSearch('a', opts({ query: 'x' }), 100)).resolves.toBeNull();
+    expect(searchCalls).toBe(0);
   });
 
   it('passes lossless is_true filter to library_advanced_search', async () => {
@@ -276,6 +320,8 @@ describe('runLocalAdvancedSearch', () => {
 
 describe('runLocalSongBrowse', () => {
   beforeEach(() => {
+    resetAuthStore();
+    seedSingleServerScope();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
@@ -325,14 +371,41 @@ describe('runLocalSongBrowse', () => {
     });
     expect(await runLocalSongBrowse('s1', 0, 50)).toBeNull();
   });
+
+  it('uses the scoped cursor reader for an ordinary selected-library browse', async () => {
+    useAuthStore.setState({
+      servers: [{ id: 's1', name: 'Server', url: '', username: '', password: '' }],
+      libraryBrowseServerIds: ['s1'],
+      musicFoldersByServer: { s1: [{ id: 'lib1', name: 'Library' }] },
+      libraryBrowseSelectionByServer: {},
+    });
+    ready();
+    let captured: unknown;
+    onInvoke('library_scope_browse', args => {
+      captured = args;
+      return {
+        albums: [], artists: [],
+        tracks: [{ serverId: 's1', id: 't1', title: 'Song', album: 'Album', durationSec: 100, syncedAt: 1, rawJson: {} }],
+        hasMore: true, nextCursor: 'next', source: 'local',
+      };
+    });
+    const page = await runLocalSongScopeBrowse('s1', 50);
+    expect(page?.songs).toHaveLength(1);
+    expect(page?.nextCursor).toBe('next');
+    expect(captured).toEqual(expect.objectContaining({
+      request: expect.objectContaining({ entity: 'track', limit: 50 }),
+    }));
+  });
 });
 
 describe('tryRunLocalAdvancedSearch', () => {
   beforeEach(() => {
+    resetAuthStore();
+    seedSingleServerScope();
     useLibraryIndexStore.setState({ masterEnabled: true });
   });
 
-  it('retries without the ready gate when sync is still in progress', async () => {
+  it('does not bypass readiness while sync is still in progress', async () => {
     onInvoke('library_get_status', () => ({
       serverId: 's1',
       libraryScope: '',
@@ -356,8 +429,8 @@ describe('tryRunLocalAdvancedSearch', () => {
       };
     });
     const res = await tryRunLocalAdvancedSearch('s1', opts({ yearFrom: '2020' }), 100);
-    expect(res).not.toBeNull();
-    expect(searchCalls).toBe(1);
+    expect(res).toBeNull();
+    expect(searchCalls).toBe(0);
   });
 });
 
@@ -379,6 +452,7 @@ describe('runNetworkAdvancedYearAlbums', () => {
       expect.objectContaining({ year: { to: 1990 } }),
       0,
       100,
+      undefined,
     );
     spy.mockRestore();
   });
@@ -422,5 +496,14 @@ describe('albumToAlbum', () => {
     });
     expect(album.year).toBe(1999);
     expect(album.genre).toBe('Rock');
+  });
+
+  it('maps a local catalog creation timestamp to the album created date', () => {
+    const album = albumToAlbum({
+      serverId: 's1', id: 'al1', name: 'Album', artist: 'Artist', artistId: 'ar1',
+      songCount: 1, durationSec: 100, year: null, genre: null, coverArtId: null,
+      starredAt: null, syncedAt: 0, rawJson: { createdMs: 1_700_000_000_000 },
+    });
+    expect(album.created).toBe('2023-11-14T22:13:20.000Z');
   });
 });

@@ -3,6 +3,7 @@ import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { resetAllStores } from '@/test/helpers/storeReset';
 import { makeTracks, seedQueue } from '@/test/helpers/factories';
 import { getTimelineSessionHistorySnapshot } from '@/features/playback/store/timelineSessionHistory';
+import { getCachedTrack } from '@/features/playback/store/queueTrackResolver';
 import { onInvoke, registerDefaultCoverInvokeHandlers } from '@/test/mocks/tauri';
 import { useAuthStore } from '@/store/authStore';
 
@@ -32,5 +33,20 @@ describe('timeline history on queue replace', () => {
     });
     const history = getTimelineSessionHistorySnapshot();
     expect(history.some(h => h.trackId === first[0]!.id)).toBe(true);
+  });
+
+  it('seeds an explicit replacement queue with its supplied duration', async () => {
+    const folderTrack = {
+      id: 'folder-track', title: 'Folder track', artist: 'Artist', album: 'Album', albumId: 'album',
+      duration: 60, serverId: 'x.test',
+    };
+
+    usePlayerStore.getState().playTrack(folderTrack, [folderTrack], true, true);
+
+    await vi.waitFor(() => {
+      const ref = usePlayerStore.getState().queueItems[0];
+      expect(ref).toEqual({ serverId: 'x.test', trackId: 'folder-track' });
+      expect(getCachedTrack(ref!)).toEqual(expect.objectContaining({ duration: 60 }));
+    });
   });
 });

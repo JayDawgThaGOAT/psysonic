@@ -9,6 +9,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 
 
+## [1.51.0]
+
+## Added
+
+### True simultaneous multi-server support — use every server as one music library
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Select music folders from several configured servers in the same priority-ordered library scope. Psysonic browses them simultaneously without making you switch the active server before every search, album, artist or playback action.
+* **Home, Albums, Artists, Composers, Genres, Favourites, Playlists, Folder Browser, Search, Most Played, Statistics, album details and artist details** aggregate the selected servers into one catalogue. Shared music is de-duplicated by scope priority instead of appearing once per server.
+* De-duplication no longer discards physical ownership: each logical track, album and artist retains every concrete server source. Psysonic can therefore show one clean catalogue while still knowing exactly which server must handle playback, artwork, metadata and mutations.
+
+### Mixed-server playback — one queue can play tracks from different servers
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* A single queue can contain tracks owned by different servers. Each item resolves its stream, cover, lyrics, ReplayGain data and analysis against its own server instead of whichever server is currently active.
+* Server play queues are pulled, updated and reconciled per owner, so mixed queues survive restart without one server replacing another server's tracks. Gapless, crossfade, infinite queue, shuffle, history and queue restore keep the same ownership.
+* When one copy cannot play, a new source chooser can offer equivalent copies from the selected servers rather than failing the whole action. Album, artist and track source controls also let you choose a specific physical copy when that distinction matters.
+
+### Server-aware destinations and actions
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Playlist creation, smart-playlist editing, radio actions and other destination-sensitive flows select the target server explicitly instead of silently using the active server.
+* Context menus, ratings, favourites, sharing, offline pins, device sync and Orbit carry the item's owner through the complete action. Creating an Orbit session from a multi-server scope now asks which server should host it, temporarily keeps only that server in the library scope and shared queue, then restores the previous scope when the session ends.
+* Sharing a mixed-server queue opens a compact server picker directly below the share button; choosing a server copies its tracks immediately, while single-server queues still copy without an extra prompt. Unavailable servers are marked with an explanatory warning.
+
+## Changed
+
+### Library index — designed for several live servers at once
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* The local SQLite library now keeps server ownership, music-folder scope and cross-server identity as separate indexed concepts. Scoped browse projections power combined catalogues without scanning or merging every server response in the UI.
+* Home feeds, text search, genre counts, details, Most Played and Statistics use indexed multi-server reads when local data is ready, while retaining network fallbacks for a server that has not completed its index yet.
+* Identity matching and browse projections update incrementally after each server sync. A durable invalidation journal resumes unfinished work after restart instead of forcing repeated full-catalogue rebuilds on startup.
+
+### Sync and reachability — one unavailable server no longer blocks the others
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Psysonic tracks readiness, sync progress and reachability independently for every configured server. Available servers remain browsable while another selected server is offline, still indexing or recovering from an interrupted sync.
+* Full and delta sync preserve source ownership through remaps, deletions and tombstones; no-op syncs avoid unnecessary catalogue refreshes, and stale multi-server state is repaired automatically.
+* Scope indicators retain the total server count when one is unavailable, while the Library picker reports selected music libraries instead of server profiles.
+
+## Fixed
+
+### Cross-server ownership — IDs no longer collide or drift to the active server
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Album and artist navigation, covers, lyrics, ratings, favourites, playlists, radio, sharing, offline browse, device sync and context-menu actions no longer jump to the wrong server when two servers reuse the same entity ID.
+* Orbit host/guest state, queue suggestions and cleanup stay bound to the session server; switching the visible library or active server cannot redirect an existing session.
+* Composer, genre, favourite, playlist and folder views preserve the selected multi-server scope through filtering, sorting, selection and playback instead of collapsing back to a single server.
+
+### Startup — keep the loading splash until initial content is ready
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Cold starts no longer reveal a blank or partially committed app shell between the splash and the first route content; the handoff is atomic after the initial screen is ready.
+
+### Live indicator — preserve the pulse without high idle CPU
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* The header Live icon keeps its pulsing state while listeners are present, but confines the animation to an isolated 10 FPS layer and pauses it while the window is unfocused or reduced motion is requested.
+
+### Library startup — recover interrupted large syncs without a CPU spin
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* Large fresh libraries now refresh SQLite's query-planner statistics after bulk indexing. Restarting after an interrupted multi-server sync no longer enters a minutes-long single-core identity rebuild, and existing affected databases repair their stale statistics automatically.
+
+### New Releases — remove duplicate albums from the freshness overlay
+
+**By [@cucadmuh](https://github.com/cucadmuh), PR [#1326](https://github.com/Psychotoxical/psysonic/pull/1326)**
+
+* The first New Releases page now keeps the local catalogue's logical album de-duplication when fresh network results arrive, including alternate physical copies on one server and matching copies across several servers.
+
+
 ## [1.50.0]
 
 ## Added

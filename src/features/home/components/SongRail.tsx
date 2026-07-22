@@ -90,7 +90,10 @@ export default function SongRail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uniqueSongs, interactivityDisabled, windowArtworkByViewport, initialArtworkBudget]);
 
-  const rowArtworkResetKey = uniqueSongs[0]?.id ?? '';
+  const firstSong = uniqueSongs[0];
+  const rowArtworkResetKey = firstSong
+    ? (firstSong.serverId ? `${firstSong.serverId}:${firstSong.id}` : firstSong.id)
+    : '';
   useEffect(() => {
     // React Compiler set-state-in-effect rule: state set from a DOM/layout measurement.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -151,7 +154,7 @@ export default function SongRail({
           <div className="song-grid" ref={scrollRef} onScroll={handleScroll}>
             {uniqueSongs.map((s, idx) => (
               <SongCard
-                key={s.id}
+                key={s.serverId ? `${s.serverId}:${s.id}` : s.id}
                 song={s}
                 disableArtwork={
                   artworkDisabled ||

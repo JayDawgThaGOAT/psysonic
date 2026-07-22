@@ -22,13 +22,16 @@ function renderPicker(
   const onSelectionChange = vi.fn();
   const setLibraryDropdownOpen = vi.fn();
   const props = {
-    selectedLibraryIds: [] as string[],
-    selectionSummary: null as string | null,
+    groups: [{
+      serverId: 'server-a',
+      serverLabel: 'Home',
+      folders,
+      selectedLibraryIds: [] as string[],
+    }],
     libraryDropdownOpen: true,
     setLibraryDropdownOpen,
     dropdownRect: { top: 0, left: 0, width: 240 },
     libraryTriggerRef: createRef<HTMLButtonElement>(),
-    musicFolders: folders,
     onSelectionChange,
     ...over,
   };
@@ -41,8 +44,7 @@ function renderPicker(
 describe('SidebarLibraryPicker', () => {
   it('shows the folder name when exactly one library is selected', () => {
     renderPicker({
-      selectedLibraryIds: ['lib-b'],
-      selectionSummary: 'Jazz',
+      groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-b'] }],
       libraryDropdownOpen: false,
     });
 
@@ -51,69 +53,117 @@ describe('SidebarLibraryPicker', () => {
 
   it('shows the multi-library count summary', () => {
     renderPicker({
-      selectedLibraryIds: ['lib-a', 'lib-c'],
-      selectionSummary: '2 libraries',
+      groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-a', 'lib-c'] }],
       libraryDropdownOpen: false,
     });
 
     expect(screen.getByText('2 libraries')).toBeInTheDocument();
   });
 
+  it('shows All libraries when every server uses its complete library scope', () => {
+    renderPicker({
+      groups: [
+        { serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: [] },
+        { serverId: 'server-b', serverLabel: 'Remote', folders: [{ id: 'lib-d', name: 'Live' }], selectedLibraryIds: [] },
+      ],
+      libraryDropdownOpen: false,
+    });
+
+    expect(screen.getByText('All libraries')).toBeInTheDocument();
+    expect(screen.queryByText('2 servers')).not.toBeInTheDocument();
+  });
+
+  it('counts selected libraries across servers instead of counting servers', () => {
+    renderPicker({
+      groups: [
+        { serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: [] },
+        {
+          serverId: 'server-b',
+          serverLabel: 'Remote',
+          folders: [{ id: 'lib-d', name: 'Live' }, { id: 'lib-e', name: 'Archive' }],
+          selectedLibraryIds: ['lib-d', 'lib-e'],
+        },
+      ],
+      libraryDropdownOpen: false,
+    });
+
+    expect(screen.getByText('5 libraries')).toBeInTheDocument();
+    expect(screen.queryByText('2 servers')).not.toBeInTheDocument();
+  });
+
   it('clears the selection when All libraries is chosen', async () => {
     const user = userEvent.setup();
     const { onSelectionChange, setLibraryDropdownOpen } = renderPicker({
-      selectedLibraryIds: ['lib-a'],
+      groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-a'] }],
     });
 
-    const panel = screen.getByRole('listbox', { name: 'Library scope' });
+    const panel = screen.getByRole('dialog', { name: 'Library scope' });
     await user.click(within(panel).getByRole('button', { name: 'All libraries' }));
     await flushAnimationFrame();
 
-    expect(onSelectionChange).toHaveBeenCalledWith([]);
-    expect(setLibraryDropdownOpen).toHaveBeenCalledWith(false);
+    expect(onSelectionChange).toHaveBeenCalledWith('server-a', []);
+    expect(setLibraryDropdownOpen).not.toHaveBeenCalled();
   });
 
   it('exclusive-selects one library when its label is clicked', async () => {
     const user = userEvent.setup();
     const { onSelectionChange, setLibraryDropdownOpen } = renderPicker({
-      selectedLibraryIds: ['lib-a', 'lib-b'],
+      groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-a', 'lib-b'] }],
     });
 
-    const panel = screen.getByRole('listbox', { name: 'Library scope' });
+    const panel = screen.getByRole('dialog', { name: 'Library scope' });
     await user.click(within(panel).getByRole('button', { name: 'Classical' }));
     await flushAnimationFrame();
 
-    expect(onSelectionChange).toHaveBeenCalledWith(['lib-c']);
+    expect(onSelectionChange).toHaveBeenCalledWith('server-a', ['lib-c']);
     expect(setLibraryDropdownOpen).toHaveBeenCalledWith(false);
   });
 
   it('toggles a library on from the all-libraries state', async () => {
     const user = userEvent.setup();
-    const { onSelectionChange } = renderPicker({ selectedLibraryIds: [] });
+    const { onSelectionChange } = renderPicker();
 
-    const panel = screen.getByRole('listbox', { name: 'Library scope' });
-    await user.click(within(panel).getByRole('button', { name: 'Include Jazz' }));
+    const panel = screen.getByRole('dialog', { name: 'Library scope' });
+    await user.click(within(panel).getByRole('button', { name: 'Include Jazz · Home' }));
 
-    expect(onSelectionChange).toHaveBeenCalledWith(['lib-b']);
+    expect(onSelectionChange).toHaveBeenCalledWith('server-a', ['lib-b']);
   });
 
   it('appends a toggled-on library to the ordered selection', async () => {
     const user = userEvent.setup();
-    const { onSelectionChange } = renderPicker({ selectedLibraryIds: ['lib-a'] });
+    const { onSelectionChange } = renderPicker({
+      groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-a'] }],
+    });
 
-    const panel = screen.getByRole('listbox', { name: 'Library scope' });
-    await user.click(within(panel).getByRole('button', { name: 'Include Jazz' }));
+    const panel = screen.getByRole('dialog', { name: 'Library scope' });
+    await user.click(within(panel).getByRole('button', { name: 'Include Jazz · Home' }));
 
-    expect(onSelectionChange).toHaveBeenCalledWith(['lib-a', 'lib-b']);
+    expect(onSelectionChange).toHaveBeenCalledWith('server-a', ['lib-a', 'lib-b']);
   });
 
   it('removes a toggled-off library from the selection', async () => {
     const user = userEvent.setup();
-    const { onSelectionChange } = renderPicker({ selectedLibraryIds: ['lib-a', 'lib-b'] });
+    const { onSelectionChange } = renderPicker({
+      groups: [{ serverId: 'server-a', serverLabel: 'Home', folders, selectedLibraryIds: ['lib-a', 'lib-b'] }],
+    });
 
-    const panel = screen.getByRole('listbox', { name: 'Library scope' });
-    await user.click(within(panel).getByRole('button', { name: 'Exclude Rock' }));
+    const panel = screen.getByRole('dialog', { name: 'Library scope' });
+    await user.click(within(panel).getByRole('button', { name: 'Exclude Rock · Home' }));
 
-    expect(onSelectionChange).toHaveBeenCalledWith(['lib-b']);
+    expect(onSelectionChange).toHaveBeenCalledWith('server-a', ['lib-b']);
+  });
+
+  it('groups duplicate library names under their servers', () => {
+    renderPicker({
+      groups: [
+        { serverId: 'server-a', serverLabel: 'Home', folders: [{ id: 'a-jazz', name: 'Jazz' }], selectedLibraryIds: [] },
+        { serverId: 'server-b', serverLabel: 'Remote', folders: [{ id: 'b-jazz', name: 'Jazz' }], selectedLibraryIds: [] },
+      ],
+    });
+
+    expect(screen.getByText('Home')).toBeInTheDocument();
+    expect(screen.getByText('Remote')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Include Jazz · Home' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Include Jazz · Remote' })).toBeInTheDocument();
   });
 });

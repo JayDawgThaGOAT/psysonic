@@ -5,6 +5,7 @@ vi.mock('@/lib/api/subsonicClient', () => ({
   apiForServer: vi.fn(),
   libraryFilterParams: () => ({}),
   libraryFilterParamsForServer: () => ({}),
+  librarySelectionForServer: () => [],
 }));
 
 vi.mock('@/lib/api/subsonicLibrary', () => ({
@@ -13,12 +14,12 @@ vi.mock('@/lib/api/subsonicLibrary', () => ({
   similarSongsRequestCount: (count: number) => count,
 }));
 
-import { api } from '@/lib/api/subsonicClient';
+import { apiForServer } from '@/lib/api/subsonicClient';
 import { fetchSimilarTracksRouted } from '@/lib/api/subsonicArtists';
 import { useAuthStore } from '@/store/authStore';
 
 const SID = 'srv-router';
-const apiMock = vi.mocked(api);
+const apiForServerMock = vi.mocked(apiForServer);
 
 function seedServer(identity: Record<string, unknown>, probes: Record<string, unknown>) {
   useAuthStore.setState({
@@ -36,44 +37,44 @@ const SIMILAR_RESPONSE = { similarSongs: { song: [{ id: 'legacy-1', title: 'Lega
 
 describe('fetchSimilarTracksRouted', () => {
   beforeEach(() => {
-    apiMock.mockReset();
+    apiForServerMock.mockReset();
   });
 
   it('prefers sonicSimilarity on Navidrome 0.62 with plugin', async () => {
     seedServer({ type: 'navidrome', serverVersion: '0.62.0', openSubsonic: true }, {
       audiomusePluginProbeByServer: { [SID]: 'present' },
     });
-    apiMock.mockImplementation(async (endpoint: string) =>
+    apiForServerMock.mockImplementation(async (_serverId: string, endpoint: string) =>
       (endpoint === 'getSonicSimilarTracks.view' ? SONIC_RESPONSE : SIMILAR_RESPONSE) as never);
 
     const result = await fetchSimilarTracksRouted('seed', 10);
     expect(result.map(s => s.id)).toEqual(['sonic-1']);
-    expect(apiMock).toHaveBeenCalledWith('getSonicSimilarTracks.view', expect.anything());
-    expect(apiMock).not.toHaveBeenCalledWith('getSimilarSongs.view', expect.anything());
+    expect(apiForServerMock).toHaveBeenCalledWith(SID, 'getSonicSimilarTracks.view', expect.anything());
+    expect(apiForServerMock).not.toHaveBeenCalledWith(SID, 'getSimilarSongs.view', expect.anything());
   });
 
   it('falls back to legacy when sonic returns empty', async () => {
     seedServer({ type: 'navidrome', serverVersion: '0.62.0', openSubsonic: true }, {
       audiomusePluginProbeByServer: { [SID]: 'present' },
     });
-    apiMock.mockImplementation(async (endpoint: string) =>
+    apiForServerMock.mockImplementation(async (_serverId: string, endpoint: string) =>
       (endpoint === 'getSonicSimilarTracks.view' ? { sonicMatch: [] } : SIMILAR_RESPONSE) as never);
 
     const result = await fetchSimilarTracksRouted('seed', 10);
     expect(result.map(s => s.id)).toEqual(['legacy-1']);
-    expect(apiMock).toHaveBeenCalledWith('getSonicSimilarTracks.view', expect.anything());
-    expect(apiMock).toHaveBeenCalledWith('getSimilarSongs.view', expect.anything());
+    expect(apiForServerMock).toHaveBeenCalledWith(SID, 'getSonicSimilarTracks.view', expect.anything());
+    expect(apiForServerMock).toHaveBeenCalledWith(SID, 'getSimilarSongs.view', expect.anything());
   });
 
   it('uses legacy only on Navidrome 0.62 without plugin', async () => {
     seedServer({ type: 'navidrome', serverVersion: '0.62.0', openSubsonic: true }, {
       audiomusePluginProbeByServer: { [SID]: 'absent' },
     });
-    apiMock.mockImplementation(async () => SIMILAR_RESPONSE as never);
+    apiForServerMock.mockImplementation(async () => SIMILAR_RESPONSE as never);
 
     const result = await fetchSimilarTracksRouted('seed', 10);
     expect(result.map(s => s.id)).toEqual(['legacy-1']);
-    expect(apiMock).not.toHaveBeenCalledWith('getSonicSimilarTracks.view', expect.anything());
-    expect(apiMock).toHaveBeenCalledWith('getSimilarSongs.view', expect.anything());
+    expect(apiForServerMock).not.toHaveBeenCalledWith(SID, 'getSonicSimilarTracks.view', expect.anything());
+    expect(apiForServerMock).toHaveBeenCalledWith(SID, 'getSimilarSongs.view', expect.anything());
   });
 });

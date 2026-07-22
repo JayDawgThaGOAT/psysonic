@@ -7,6 +7,7 @@ import {
   LIMIT_MAX, YEAR_MAX, YEAR_MIN, clampYear, defaultSmartFilters,
   type SmartFilters,
 } from '@/features/playlist/utils/playlistsSmart';
+import PlaylistCreateFields from '@/features/playlist/components/PlaylistCreateFields';
 
 interface Props {
   smartFilters: SmartFilters;
@@ -16,15 +17,21 @@ interface Props {
   setGenreQuery: React.Dispatch<React.SetStateAction<string>>;
   editingSmartId: string | null;
   creatingSmartBusy: boolean;
+  genresReady: boolean;
+  createServerId: string;
+  setCreateServerId: (serverId: string) => void;
+  createServerOptions: Array<{ id: string; label: string }>;
   setCreatingSmart: React.Dispatch<React.SetStateAction<boolean>>;
   setEditingSmartId: React.Dispatch<React.SetStateAction<string | null>>;
   onSave: () => void;
+  onCancel: () => void;
 }
 
 export default function PlaylistsSmartEditor({
   smartFilters, setSmartFilters, availableGenres,
-  genreQuery, setGenreQuery, editingSmartId, creatingSmartBusy,
-  setCreatingSmart, setEditingSmartId, onSave,
+  genreQuery, setGenreQuery, editingSmartId, creatingSmartBusy, genresReady,
+  createServerId, setCreateServerId, createServerOptions,
+  setCreatingSmart, setEditingSmartId, onSave, onCancel,
 }: Props) {
   const { t } = useTranslation();
 
@@ -62,7 +69,16 @@ export default function PlaylistsSmartEditor({
         <section style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.75rem' }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: '0.65rem' }}>{t('smartPlaylists.sectionBasic')}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-            <input className="input" placeholder={t('smartPlaylists.name')} value={smartFilters.name} onChange={e => setSmartFilters(v => ({ ...v, name: e.target.value }))} />
+            <PlaylistCreateFields
+              name={smartFilters.name}
+              nameLabel={t('queue.playlistName')}
+              namePlaceholder={t('smartPlaylists.name')}
+              onNameChange={name => setSmartFilters(value => ({ ...value, name }))}
+              serverId={createServerId}
+              onServerChange={setCreateServerId}
+              serverOptions={createServerOptions}
+              showServer={!editingSmartId}
+            />
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
               <input className="input" type="number" min={1} max={LIMIT_MAX} placeholder={t('smartPlaylists.limit')} value={smartFilters.limit} onChange={e => setSmartFilters(v => ({ ...v, limit: e.target.value }))} />
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('smartPlaylists.limitHint', { max: LIMIT_MAX })}</span>
@@ -182,6 +198,7 @@ export default function PlaylistsSmartEditor({
             type="button"
             className="btn btn-surface"
             onClick={() => {
+              onCancel();
               setCreatingSmart(false);
               setEditingSmartId(null);
               setSmartFilters(defaultSmartFilters);
@@ -190,7 +207,7 @@ export default function PlaylistsSmartEditor({
           >
             {t('playlists.cancel')}
           </button>
-          <button type="button" className="btn btn-primary" onClick={onSave} disabled={creatingSmartBusy}>
+          <button type="button" className="btn btn-primary" onClick={onSave} disabled={creatingSmartBusy || !genresReady}>
             <Plus size={15} /> {editingSmartId ? t('smartPlaylists.save') : t('smartPlaylists.create')}
           </button>
         </div>

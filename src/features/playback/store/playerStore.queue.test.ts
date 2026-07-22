@@ -11,6 +11,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const orbitMocks = vi.hoisted(() => ({
+  role: null as 'host' | null,
+  allowsTrackServer: vi.fn((_serverId?: string) => true),
+  showToast: vi.fn(),
+}));
+
 // `playerStore` pulls `savePlayQueue` from `@/lib/api/subsonic`, which talks to a
 // real server. Override only what the queue path touches; everything else
 // stays as the actual module so unrelated imports don't break.
@@ -29,7 +35,15 @@ vi.mock('@/lib/api/subsonic', async () => {
 vi.mock('@/store/orbitRuntime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/store/orbitRuntime')>()),
   orbitBulkGuard: vi.fn(async () => true),
+  orbitAllowsTrackServer: orbitMocks.allowsTrackServer,
+  orbitSnapshot: () => ({
+    role: orbitMocks.role,
+    phase: orbitMocks.role ? 'active' : 'idle',
+    state: null,
+    serverId: orbitMocks.role ? 'srv-a' : null,
+  }),
 }));
+vi.mock('@/lib/dom/toast', () => ({ showToast: orbitMocks.showToast }));
 
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import {
@@ -39,12 +53,20 @@ import {
 import { onInvoke } from '@/test/mocks/tauri';
 import { resetPlayerStore } from '@/test/helpers/storeReset';
 import { makeTrack, makeTracks, seedQueue } from '@/test/helpers/factories';
+import { getCachedTrack } from '@/features/playback/store/queueTrackResolver';
+import { _resetRadioSessionStateForTest } from '@/features/playback/store/radioSessionState';
 
 beforeEach(() => {
   resetPlayerStore();
+  _resetRadioSessionStateForTest();
+  orbitMocks.role = null;
+  orbitMocks.allowsTrackServer.mockReset();
+  orbitMocks.allowsTrackServer.mockReturnValue(true);
+  orbitMocks.showToast.mockReset();
   // `clearQueue` fires `invoke('audio_stop')`; every queue mutation triggers a
   // debounced `syncQueueToServer` we don't need to advance.
   onInvoke('audio_stop', () => undefined);
+  onInvoke('audio_update_replay_gain', () => undefined);
 });
 
 afterEach(() => {
@@ -58,10 +80,30 @@ describe('enqueue', () => {
     expect(usePlayerStore.getState().queueItems.map(r => r.trackId)).toEqual(['t1']);
   });
 
+  it('keeps the supplied duration available to queue rows', () => {
+    const folderTrack = makeTrack({ id: 'folder-track', duration: 60, serverId: 'folder.example' });
+    usePlayerStore.getState().enqueue([folderTrack], true);
+
+    const ref = usePlayerStore.getState().queueItems[0];
+    expect(getCachedTrack(ref!)).toEqual(expect.objectContaining({ duration: 60 }));
+  });
+
   it('appends multiple tracks in order', () => {
     const tracks = makeTracks(3);
     usePlayerStore.getState().enqueue(tracks, true);
     expect(usePlayerStore.getState().queueItems.map(r => r.trackId)).toEqual(tracks.map(t => t.id));
+  });
+
+  it('keeps allowed Orbit-host tracks and reports rejected server owners', () => {
+    orbitMocks.role = 'host';
+    orbitMocks.allowsTrackServer.mockImplementation(serverId => serverId === 'srv-a');
+    const allowed = makeTrack({ id: 'allowed', serverId: 'srv-a' });
+    const rejected = makeTrack({ id: 'rejected', serverId: 'srv-b' });
+
+    usePlayerStore.getState().enqueue([allowed, rejected], true);
+
+    expect(usePlayerStore.getState().queueItems.map(ref => ref.trackId)).toEqual(['allowed']);
+    expect(orbitMocks.showToast).toHaveBeenCalledWith(expect.any(String), 4000, 'error');
   });
 
   it('inserts before the first upcoming auto-added separator', () => {
@@ -218,6 +260,142 @@ describe('reorderQueue', () => {
     expect(usePlayerStore.getState().queueItems.map(r => r.trackId)).toEqual([b.id, c.id, a.id]);
     expect(usePlayerStore.getState().queueIndex).toBe(0); // followed `b`
   });
+
+  it('follows the exact owner when equal raw ids exist on different servers', () => {
+    const a = makeTrack({ id: 'shared', serverId: 'srv-a' });
+    const b = makeTrack({ id: 'shared', serverId: 'srv-b' });
+    const c = makeTrack({ id: 'tail', serverId: 'srv-b' });
+    seedQueue([a, b, c], { index: 1, currentTrack: b });
+
+    usePlayerStore.getState().reorderQueue(1, 2);
+
+    const state = usePlayerStore.getState();
+    expect(state.queueIndex).toBe(2);
+    expect(state.queueItems[state.queueIndex]).toEqual(expect.objectContaining({
+      serverId: 'srv-b',
+      trackId: 'shared',
+    }));
+  });
+});
+
+describe('mixed-server queue identity', () => {
+  it('retains one server and follows its current track to the new index', () => {
+    const other = makeTrack({ id: 'other', serverId: 'srv-a' });
+    const current = makeTrack({ id: 'current', serverId: 'srv-b' });
+    const next = makeTrack({ id: 'next', serverId: 'srv-b' });
+    seedQueue([other, current, next], { index: 1, currentTrack: current });
+
+    usePlayerStore.getState().retainQueueForServer('srv-b');
+
+    const state = usePlayerStore.getState();
+    expect(state.queueItems).toEqual([
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'current' }),
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'next' }),
+    ]);
+    expect(state.queueIndex).toBe(0);
+    expect(state.currentTrack).toBe(current);
+    expect(state.queueServerId).toBe('srv-b');
+  });
+
+  it('stops and clears a current track owned by a removed server', () => {
+    const current = makeTrack({ id: 'current', serverId: 'srv-a' });
+    const retained = makeTrack({ id: 'retained', serverId: 'srv-b' });
+    seedQueue([current, retained], { index: 0, currentTrack: current });
+    usePlayerStore.setState({ isPlaying: true, currentTime: 30, progress: 0.5 });
+
+    usePlayerStore.getState().retainQueueForServer('srv-b');
+
+    const state = usePlayerStore.getState();
+    expect(state.queueItems).toEqual([
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'retained' }),
+    ]);
+    expect(state.currentTrack).toBeNull();
+    expect(state.isPlaying).toBe(false);
+    expect(state.currentTime).toBe(0);
+  });
+
+  it('prunes after the current owner, not the first equal raw id', () => {
+    const a = makeTrack({ id: 'shared', serverId: 'srv-a' });
+    const b = makeTrack({ id: 'shared', serverId: 'srv-b' });
+    const tail = makeTrack({ id: 'tail', serverId: 'srv-b' });
+    seedQueue([a, b, tail], { index: 1, currentTrack: b });
+
+    usePlayerStore.getState().pruneUpcomingToCurrent();
+
+    expect(usePlayerStore.getState().queueItems).toEqual([
+      expect.objectContaining({ serverId: 'srv-a', trackId: 'shared' }),
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'shared' }),
+    ]);
+    expect(usePlayerStore.getState().queueIndex).toBe(1);
+  });
+
+  it('keeps the current owner at the front when shuffling the whole queue', () => {
+    const a = makeTrack({ id: 'shared', serverId: 'srv-a' });
+    const b = makeTrack({ id: 'shared', serverId: 'srv-b' });
+    const tail = makeTrack({ id: 'tail', serverId: 'srv-b' });
+    seedQueue([a, b, tail], { index: 1, currentTrack: b });
+
+    usePlayerStore.getState().shuffleQueue();
+
+    expect(usePlayerStore.getState().queueItems[0]).toEqual(expect.objectContaining({
+      serverId: 'srv-b',
+      trackId: 'shared',
+    }));
+    expect(usePlayerStore.getState().queueIndex).toBe(0);
+  });
+
+  it('does not dedupe a radio track against the same raw id on another server', () => {
+    const a = makeTrack({ id: 'shared', serverId: 'srv-a' });
+    const b = makeTrack({ id: 'shared', serverId: 'srv-b', radioAdded: true });
+    seedQueue([a], { index: 0, currentTrack: a });
+
+    usePlayerStore.getState().enqueueRadio([b], 'artist');
+
+    expect(usePlayerStore.getState().queueItems).toEqual([
+      expect.objectContaining({ serverId: 'srv-a', trackId: 'shared' }),
+      expect.objectContaining({ serverId: 'srv-b', trackId: 'shared', radioAdded: true }),
+    ]);
+  });
+});
+
+describe('replaceQueueItemSource', () => {
+  it('replaces only the matching frozen slot and preserves queue flags', () => {
+    const queue = makeTracks(3, index => ({
+      id: `track-${index}`,
+      serverId: 'srv-a',
+      ...(index === 1 ? { playNextAdded: true } : {}),
+    }));
+    seedQueue(queue, { index: 1, currentTrack: queue[1] });
+    const before = usePlayerStore.getState().queueItems;
+    const expected = before[1]!;
+
+    const replaced = usePlayerStore.getState().replaceQueueItemSource(
+      1,
+      expected,
+      { serverId: 'srv-b', trackId: 'alternative', playNextAdded: true },
+    );
+
+    const after = usePlayerStore.getState().queueItems;
+    expect(replaced).toBe(true);
+    expect(after[0]).toEqual(before[0]);
+    expect(after[1]).toEqual({ serverId: 'srv-b', trackId: 'alternative', playNextAdded: true });
+    expect(after[2]).toEqual(before[2]);
+  });
+
+  it('refuses to replace a slot that no longer matches the captured ref', () => {
+    const queue = makeTracks(2);
+    seedQueue(queue, { index: 0, currentTrack: queue[0] });
+    const before = usePlayerStore.getState().queueItems;
+
+    const replaced = usePlayerStore.getState().replaceQueueItemSource(
+      0,
+      { serverId: before[0]!.serverId, trackId: 'stale-id' },
+      { serverId: 'srv-b', trackId: 'alternative' },
+    );
+
+    expect(replaced).toBe(false);
+    expect(usePlayerStore.getState().queueItems).toEqual(before);
+  });
 });
 
 describe('removeTrack', () => {
@@ -288,5 +466,22 @@ describe('undo / redo', () => {
     usePlayerStore.getState().removeTrack(1);          // edit B drops the pending redo
 
     expect(usePlayerStore.getState().redoLastQueueEdit()).toBe(false);
+  });
+
+  it('restores the current owner when equal raw ids exist on different servers', () => {
+    const a = makeTrack({ id: 'shared', serverId: 'srv-a' });
+    const b = makeTrack({ id: 'shared', serverId: 'srv-b' });
+    seedQueue([a, b], { index: 1, currentTrack: b });
+    usePlayerStore.getState().enqueue([makeTrack({ id: 'tail', serverId: 'srv-b' })], true);
+
+    expect(usePlayerStore.getState().undoLastQueueEdit()).toBe(true);
+
+    const state = usePlayerStore.getState();
+    expect(state.queueIndex).toBe(1);
+    expect(state.currentTrack?.serverId).toBe('srv-b');
+    expect(state.queueItems[state.queueIndex]).toEqual(expect.objectContaining({
+      serverId: 'srv-b',
+      trackId: 'shared',
+    }));
   });
 });

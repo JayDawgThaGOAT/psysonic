@@ -13,4 +13,5 @@ export const tracks = {
   searchPlaceholder: 'Chercher un titre par titre, artiste ou album…',
   count_one: '{{count}} titre',
   count_other: '{{count}} titres',
+  copyDiagnostics: 'Copier le rapport de temps',
 };

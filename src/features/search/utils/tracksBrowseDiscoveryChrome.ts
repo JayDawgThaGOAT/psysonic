@@ -3,8 +3,10 @@ export function tracksBrowseDiscoveryChromeHidden(args: {
   offlineBrowseActive: boolean;
   tracksSearchActive: boolean;
   leaveRestorePendingWithQuery: boolean;
+  activeServerOwnsBrowseScope?: boolean;
 }): boolean {
   return args.offlineBrowseActive
     || args.tracksSearchActive
-    || args.leaveRestorePendingWithQuery;
+    || args.leaveRestorePendingWithQuery
+    || args.activeServerOwnsBrowseScope === false;
 }

@@ -1,11 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Cast, ChevronLeft, ChevronRight, Heart, X } from 'lucide-react';
 import type { InternetRadioStation } from '@/lib/api/subsonicTypes';
 import { CoverArtImage } from '@/cover/CoverArtImage';
-import { albumCoverRef } from '@/cover/ref';
-import { coverArtIdFromRadio } from '@/cover/ids';
+import { radioCoverRef } from '@/cover/ref';
 import { COVER_DENSE_GRID_MIN_CELL_CSS_PX } from '@/cover/layoutSizes';
+import { radioStationKey, sameRadioStation } from '@/features/radio';
+import { useAuthStore } from '@/store/authStore';
+import { serverListDisplayLabel } from '@/lib/server/serverDisplayName';
 
 interface RadioStationRowProps {
   title: string;
@@ -13,13 +15,18 @@ interface RadioStationRowProps {
   currentRadio: InternetRadioStation | null;
   isPlaying: boolean;
   onPlay: (s: InternetRadioStation) => void;
-  onUnfavorite: (id: string) => void;
+  onUnfavorite: (station: InternetRadioStation) => void;
 }
 
 export function RadioStationRow({ title, stations, currentRadio, isPlaying, onPlay, onUnfavorite }: RadioStationRowProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showLeft, setShowLeft] = useState(false);
   const [showRight, setShowRight] = useState(true);
+  const servers = useAuthStore(s => s.servers);
+  const serverLabelById = useMemo(() => new Map(
+    servers.map(server => [server.id, serverListDisplayLabel(server, servers)]),
+  ), [servers]);
+  const showServerLabels = new Set(stations.map(station => station.serverId).filter(Boolean)).size > 1;
 
   const handleScroll = () => {
     if (!scrollRef.current) return;
@@ -50,12 +57,13 @@ export function RadioStationRow({ title, stations, currentRadio, isPlaying, onPl
         <div className="album-grid" ref={scrollRef} onScroll={handleScroll}>
           {stations.map(s => (
             <RadioFavCard
-              key={s.id}
+              key={radioStationKey(s)}
               station={s}
-              isActive={currentRadio?.id === s.id}
+              isActive={sameRadioStation(currentRadio, s)}
               isPlaying={isPlaying}
+              serverLabel={showServerLabels && s.serverId ? serverLabelById.get(s.serverId) : undefined}
               onPlay={() => onPlay(s)}
-              onUnfavorite={() => onUnfavorite(s.id)}
+              onUnfavorite={() => onUnfavorite(s)}
             />
           ))}
         </div>
@@ -68,18 +76,19 @@ interface RadioFavCardProps {
   station: InternetRadioStation;
   isActive: boolean;
   isPlaying: boolean;
+  serverLabel?: string;
   onPlay: () => void;
   onUnfavorite: () => void;
 }
 
-function RadioFavCard({ station: s, isActive, isPlaying, onPlay, onUnfavorite }: RadioFavCardProps) {
+function RadioFavCard({ station: s, isActive, isPlaying, serverLabel, onPlay, onUnfavorite }: RadioFavCardProps) {
   const { t } = useTranslation();
   return (
     <div className={`album-card${isActive ? ' radio-card-active' : ''}`}>
       <div className="album-card-cover">
         {s.coverArt ? (
           <CoverArtImage
-            coverRef={albumCoverRef(coverArtIdFromRadio(s.id), coverArtIdFromRadio(s.id))}
+            coverRef={radioCoverRef(s)}
             displayCssPx={COVER_DENSE_GRID_MIN_CELL_CSS_PX}
             surface="dense"
             alt={s.name}
@@ -96,7 +105,11 @@ function RadioFavCard({ station: s, isActive, isPlaying, onPlay, onUnfavorite }:
           </div>
         )}
         <div className="album-card-play-overlay">
-          <button className="album-card-details-btn" onClick={onPlay}>
+          <button
+            className="album-card-details-btn"
+            onClick={onPlay}
+            aria-label={isActive && isPlaying ? t('radio.stopStation') : t('radio.playStation')}
+          >
             {isActive && isPlaying ? <X size={15} /> : <Cast size={14} />}
           </button>
         </div>
@@ -104,10 +117,12 @@ function RadioFavCard({ station: s, isActive, isPlaying, onPlay, onUnfavorite }:
       <div className="album-card-info">
         <div className="album-card-title">{s.name}</div>
         <div className="album-card-artist" style={{ display: 'flex', alignItems: 'center' }}>
+          {serverLabel && <span style={{ marginRight: 6 }}>{serverLabel}</span>}
           <button
             className="radio-favorite-btn active"
             style={{ background: 'none', border: 'none', padding: '2px', cursor: 'pointer', display: 'flex' }}
             onClick={onUnfavorite}
+            aria-label={t('radio.unfavorite')}
             data-tooltip={t('radio.unfavorite')}
           >
             <Heart size={12} fill="currentColor" />

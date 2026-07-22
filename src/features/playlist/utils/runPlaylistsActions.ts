@@ -6,21 +6,23 @@ import { usePlaylistStore } from '@/features/playlist/store/playlistStore';
 import { usePlaylistMembershipStore } from '@/store/playlistMembershipStore';
 import { collectMergeSongIds } from '@/features/playlist/utils/addTracksToPlaylistWithDedup';
 import { showToast } from '@/lib/dom/toast';
+import { ownedEntityKey } from '@/lib/util/ownedEntityKey';
 
 export interface RunPlaylistDeleteDeps {
   e: React.MouseEvent;
   pl: SubsonicPlaylist;
   deleteConfirmId: string | null;
   setDeleteConfirmId: React.Dispatch<React.SetStateAction<string | null>>;
-  removeId: (id: string) => void;
+  removeId: (id: string, serverId?: string) => void;
   t: TFunction;
 }
 
 export async function runPlaylistDelete(deps: RunPlaylistDeleteDeps): Promise<void> {
   const { e, pl, deleteConfirmId, setDeleteConfirmId, removeId, t } = deps;
   e.stopPropagation();
-  if (deleteConfirmId !== pl.id) {
-    setDeleteConfirmId(pl.id);
+  const key = ownedEntityKey(pl);
+  if (deleteConfirmId !== key) {
+    setDeleteConfirmId(key);
     const btn = e.currentTarget as HTMLElement;
     requestAnimationFrame(() => {
       btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -28,10 +30,11 @@ export async function runPlaylistDelete(deps: RunPlaylistDeleteDeps): Promise<vo
     return;
   }
   try {
-    await deletePlaylist(pl.id);
-    removeId(pl.id);
+    if (!pl.serverId) throw new Error('Playlist owner unavailable');
+    await deletePlaylist(pl.id, pl.serverId);
+    removeId(pl.id, pl.serverId);
     usePlaylistStore.setState((s) => ({
-      playlists: s.playlists.filter((p) => p.id !== pl.id),
+      playlists: s.playlists.filter((p) => ownedEntityKey(p) !== key),
     }));
     showToast(t('playlists.deleteSuccess', { count: 1 }), 3000, 'info');
   } catch {
@@ -43,7 +46,7 @@ export async function runPlaylistDelete(deps: RunPlaylistDeleteDeps): Promise<vo
 export interface RunPlaylistDeleteSelectedDeps {
   selectedPlaylists: SubsonicPlaylist[];
   isPlaylistDeletable: (pl: SubsonicPlaylist) => boolean;
-  removeId: (id: string) => void;
+  removeId: (id: string, serverId?: string) => void;
   clearSelection: () => void;
   t: TFunction;
 }
@@ -52,21 +55,22 @@ export async function runPlaylistDeleteSelected(deps: RunPlaylistDeleteSelectedD
   const { selectedPlaylists, isPlaylistDeletable, removeId, clearSelection, t } = deps;
   const deletable = selectedPlaylists.filter(isPlaylistDeletable);
   if (deletable.length === 0) return;
-  const removedIds = new Set<string>();
+  const removedKeys = new Set<string>();
   for (const pl of deletable) {
     try {
-      await deletePlaylist(pl.id);
-      removeId(pl.id);
-      removedIds.add(pl.id);
+      if (!pl.serverId) throw new Error('Playlist owner unavailable');
+      await deletePlaylist(pl.id, pl.serverId);
+      removeId(pl.id, pl.serverId);
+      removedKeys.add(ownedEntityKey(pl));
     } catch {
       showToast(t('playlists.deleteFailed', { name: pl.name }), 3000, 'error');
     }
   }
-  if (removedIds.size > 0) {
+  if (removedKeys.size > 0) {
     usePlaylistStore.setState((s) => ({
-      playlists: s.playlists.filter((p) => !removedIds.has(p.id)),
+      playlists: s.playlists.filter((p) => !removedKeys.has(ownedEntityKey(p))),
     }));
-    showToast(t('playlists.deleteSuccess', { count: removedIds.size }), 3000, 'info');
+    showToast(t('playlists.deleteSuccess', { count: removedKeys.size }), 3000, 'info');
   }
   clearSelection();
 }
@@ -74,7 +78,7 @@ export async function runPlaylistDeleteSelected(deps: RunPlaylistDeleteSelectedD
 export interface RunPlaylistMergeSelectedDeps {
   targetPlaylist: SubsonicPlaylist;
   selectedPlaylists: SubsonicPlaylist[];
-  touchPlaylist: (id: string) => void;
+  touchPlaylist: (id: string, serverId?: string) => void;
   clearSelection: () => void;
   t: TFunction;
 }
@@ -83,22 +87,24 @@ export async function runPlaylistMergeSelected(deps: RunPlaylistMergeSelectedDep
   const { targetPlaylist, selectedPlaylists, touchPlaylist, clearSelection, t } = deps;
   if (selectedPlaylists.length === 0) return;
   try {
+    const serverId = targetPlaylist.serverId;
+    if (!serverId) throw new Error('Playlist owner unavailable');
     const sourceIds = selectedPlaylists
-      .filter(pl => pl.id !== targetPlaylist.id)
+      .filter(pl => pl.serverId === serverId && ownedEntityKey(pl) !== ownedEntityKey(targetPlaylist))
       .map(pl => pl.id);
-    const idsToAdd = await collectMergeSongIds(targetPlaylist.id, sourceIds);
+    const idsToAdd = await collectMergeSongIds(targetPlaylist.id, sourceIds, serverId);
 
     if (idsToAdd.length > 0) {
-      await addSongsToPlaylist(targetPlaylist.id, idsToAdd);
-      usePlaylistMembershipStore.getState().appendPlaylistSongIds(targetPlaylist.id, idsToAdd);
-      touchPlaylist(targetPlaylist.id);
+      await addSongsToPlaylist(targetPlaylist.id, idsToAdd, serverId);
+      usePlaylistMembershipStore.getState().appendPlaylistSongIds(targetPlaylist.id, idsToAdd, serverId);
+      touchPlaylist(targetPlaylist.id, serverId);
       showToast(t('playlists.mergeSuccess', { count: idsToAdd.length, playlist: targetPlaylist.name }), 3000, 'info');
     } else {
       showToast(t('playlists.mergeNoNewSongs'), 3000, 'info');
     }
     clearSelection();
   } catch {
-    usePlaylistMembershipStore.getState().invalidatePlaylistSongIds(targetPlaylist.id);
+    usePlaylistMembershipStore.getState().invalidatePlaylistSongIds(targetPlaylist.id, targetPlaylist.serverId);
     showToast(t('playlists.mergeError'), 4000, 'error');
   }
 }

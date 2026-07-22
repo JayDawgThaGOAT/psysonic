@@ -12,11 +12,10 @@ const mocks = vi.hoisted(() => ({
   },
   enqueue: vi.fn(),
   getAlbum: vi.fn(),
-  getAlbumWithCredentials: vi.fn(),
+  resolveAlbum: vi.fn(),
   getArtist: vi.fn(),
-  getArtistWithCredentials: vi.fn(),
-  getSong: vi.fn(),
-  getSongWithCredentials: vi.fn(),
+  resolveArtist: vi.fn(),
+  getSongForServer: vi.fn(),
   orbitBulkGuard: vi.fn(),
   showToast: vi.fn(),
   songToTrack: vi.fn(),
@@ -24,17 +23,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/api/subsonicLibrary', () => ({
   getAlbum: mocks.getAlbum,
-  getSong: mocks.getSong,
+  getSongForServer: mocks.getSongForServer,
 }));
 
 vi.mock('@/lib/api/subsonicArtists', () => ({
   getArtist: mocks.getArtist,
 }));
 
-vi.mock('@/lib/api/subsonicEntityWithCredentials', () => ({
-  getAlbumWithCredentials: mocks.getAlbumWithCredentials,
-  getArtistWithCredentials: mocks.getArtistWithCredentials,
-  getSongWithCredentials: mocks.getSongWithCredentials,
+vi.mock('@/store/mediaResolver', () => ({
+  resolveAlbum: mocks.resolveAlbum,
+  resolveArtist: mocks.resolveArtist,
 }));
 
 vi.mock('@/store/authStore', () => ({
@@ -106,60 +104,59 @@ describe('share search payload resolution', () => {
       activeServerId: 'active',
       setActiveServer: vi.fn(),
     };
-    mocks.getSongWithCredentials.mockResolvedValue(sharedSong);
-    mocks.getAlbumWithCredentials.mockResolvedValue({
+    mocks.getSongForServer.mockResolvedValue({ ...sharedSong, serverId: 'shared' });
+    mocks.resolveAlbum.mockResolvedValue({
       album: { id: 'album-1', name: 'Shared Album', artist: 'Shared Artist' },
       songs: [],
     });
-    mocks.getArtistWithCredentials.mockResolvedValue({
+    mocks.resolveArtist.mockResolvedValue({
       artist: { id: 'artist-1', name: 'Shared Artist' },
       albums: [],
     });
-    mocks.getSong.mockResolvedValue(sharedSong);
-    mocks.songToTrack.mockImplementation(song => ({ id: song.id, title: song.title }));
+    mocks.songToTrack.mockImplementation(song => ({
+      id: song.id,
+      title: song.title,
+      serverId: song.serverId,
+    }));
     mocks.orbitBulkGuard.mockResolvedValue(true);
   });
 
-  it('resolves a shared track preview with explicit credentials without switching active server', async () => {
+  it('resolves a shared track preview through its explicit server without switching active server', async () => {
     const result = await resolveShareSearchPayload({
       srv: 'https://shared.example.com',
       k: 'track',
       id: 'song-1',
     });
 
-    expect(result).toEqual({ type: 'ok', songs: [sharedSong], total: 1, skipped: 0 });
-    expect(mocks.getSongWithCredentials).toHaveBeenCalledWith(
-      sharedServer.url,
-      sharedServer.username,
-      sharedServer.password,
-      'song-1',
-      sharedServer,
-    );
-    expect(mocks.getSong).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      type: 'ok',
+      songs: [{ ...sharedSong, serverId: 'shared' }],
+      total: 1,
+      skipped: 0,
+    });
+    expect(mocks.getSongForServer).toHaveBeenCalledWith('shared', 'song-1');
     expect(mocks.authState.current.setActiveServer).not.toHaveBeenCalled();
   });
 
   it('resolves album and artist previews without switching active server', async () => {
-    await resolveShareSearchAlbum({ srv: 'https://shared.example.com', k: 'album', id: 'album-1' });
-    await resolveShareSearchArtist({ srv: 'https://shared.example.com', k: 'artist', id: 'artist-1' });
+    const albumResult = await resolveShareSearchAlbum({
+      srv: 'https://shared.example.com',
+      k: 'album',
+      id: 'album-1',
+    });
+    const artistResult = await resolveShareSearchArtist({
+      srv: 'https://shared.example.com',
+      k: 'artist',
+      id: 'artist-1',
+    });
 
-    expect(mocks.getAlbumWithCredentials).toHaveBeenCalledWith(
-      sharedServer.url,
-      sharedServer.username,
-      sharedServer.password,
-      'album-1',
-      sharedServer,
-    );
-    expect(mocks.getArtistWithCredentials).toHaveBeenCalledWith(
-      sharedServer.url,
-      sharedServer.username,
-      sharedServer.password,
-      'artist-1',
-      sharedServer,
-    );
+    expect(mocks.resolveAlbum).toHaveBeenCalledWith('shared', 'album-1');
+    expect(mocks.resolveArtist).toHaveBeenCalledWith('shared', 'artist-1');
     expect(mocks.getAlbum).not.toHaveBeenCalled();
     expect(mocks.getArtist).not.toHaveBeenCalled();
     expect(mocks.authState.current.setActiveServer).not.toHaveBeenCalled();
+    expect(albumResult).toMatchObject({ type: 'ok', album: { serverId: 'shared' } });
+    expect(artistResult).toMatchObject({ type: 'ok', artist: { serverId: 'shared' } });
   });
 
   it('resolves composer previews via artist credentials without switching active server', async () => {
@@ -170,13 +167,7 @@ describe('share search payload resolution', () => {
     });
 
     expect(result.type).toBe('ok');
-    expect(mocks.getArtistWithCredentials).toHaveBeenCalledWith(
-      sharedServer.url,
-      sharedServer.username,
-      sharedServer.password,
-      'composer-1',
-      sharedServer,
-    );
+    expect(mocks.resolveArtist).toHaveBeenCalledWith('shared', 'composer-1');
     expect(mocks.authState.current.setActiveServer).not.toHaveBeenCalled();
   });
 
@@ -190,7 +181,7 @@ describe('share search payload resolution', () => {
     });
 
     expect(result).toEqual({ type: 'not-logged-in' });
-    expect(mocks.getSongWithCredentials).not.toHaveBeenCalled();
+    expect(mocks.getSongForServer).not.toHaveBeenCalled();
   });
 
   it('activates the share server for confirmed enqueue actions', async () => {
@@ -203,9 +194,11 @@ describe('share search payload resolution', () => {
 
     expect(ok).toBe(true);
     expect(mocks.authState.current.setActiveServer).toHaveBeenCalledWith('shared');
-    expect(mocks.getSong).toHaveBeenCalledWith('song-1');
-    expect(mocks.getSongWithCredentials).not.toHaveBeenCalled();
-    expect(mocks.enqueue).toHaveBeenCalledWith([{ id: 'song-1', title: 'Shared Song' }], true);
+    expect(mocks.getSongForServer).toHaveBeenCalledWith('shared', 'song-1');
+    expect(mocks.songToTrack.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ serverId: 'shared' }));
+    expect(mocks.enqueue).toHaveBeenCalledWith([
+      { id: 'song-1', title: 'Shared Song', serverId: 'shared' },
+    ], true);
   });
 
   it('aborts enqueue when orbitBulkGuard rejects the bulk add', async () => {
@@ -220,11 +213,14 @@ describe('share search payload resolution', () => {
 
     expect(ok).toBe(false);
     expect(mocks.enqueue).not.toHaveBeenCalled();
+    expect(mocks.authState.current.setActiveServer).not.toHaveBeenCalled();
   });
 
   it('reports partial queue enqueue with a partial toast', async () => {
-    mocks.getSong.mockImplementation((id: string) =>
-      id === 'song-1' ? Promise.resolve(sharedSong) : Promise.resolve(null),
+    mocks.getSongForServer.mockImplementation((_serverId: string, id: string) =>
+      id === 'song-1'
+        ? Promise.resolve({ ...sharedSong, serverId: 'shared' })
+        : Promise.resolve(null),
     );
     const t = ((key: string, opts?: Record<string, unknown>) =>
       opts ? `${key}:${JSON.stringify(opts)}` : key) as TFunction;
@@ -236,7 +232,9 @@ describe('share search payload resolution', () => {
     }, t);
 
     expect(ok).toBe(true);
-    expect(mocks.enqueue).toHaveBeenCalledWith([{ id: 'song-1', title: 'Shared Song' }], true);
+    expect(mocks.enqueue).toHaveBeenCalledWith([
+      { id: 'song-1', title: 'Shared Song', serverId: 'shared' },
+    ], true);
     expect(mocks.showToast).toHaveBeenCalledWith(
       expect.stringContaining('search.shareQueuedPartial'),
       5000,

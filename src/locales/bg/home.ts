@@ -17,5 +17,19 @@ export const home = {
   becauseYouLikeTracks_other: '{{count}} песни',
   mainstageEmptyTitle: 'Вашата главна сцена е празна',
   mainstageEmptyBody: 'Всички секции са изключени. Включете секции обратно или скрийте главната сцена от страничната лента.',
-  mainstageEmptyCta: 'Отвори настройките за персонализация'
+  mainstageEmptyCta: 'Отвори настройките за персонализация',
+  diagnostics: {
+    copyAll: 'Copy Mainstage diagnostics',
+    enableSection: 'Включване на {{section}}',
+    generationInfo: 'Информация за генерирането',
+    duration: 'Продължителност',
+    itemCount: 'Елементи',
+    status: 'Състояние',
+    detail: 'Подробности',
+    unavailable: 'Няма',
+    statuses: {
+      idle: 'Неактивно', loading: 'Зареждане', ready: 'Готово', empty: 'Празно',
+      error: 'Грешка', timeout: 'Изтекло време', disabled: 'Изключено'
+    }
+  }
 };

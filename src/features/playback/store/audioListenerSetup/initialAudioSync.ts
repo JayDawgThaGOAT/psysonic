@@ -6,6 +6,7 @@ import { invokeAudioSetNormalizationDeduped } from '@/features/playback/store/no
 import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { refreshLoudnessForTrack } from '@/features/playback/store/loudnessRefresh';
 import { refreshWaveformForTrack } from '@/features/playback/store/waveformRefresh';
+import { analysisTrackRefForTrack } from '@/features/playback/store/analysisTrackRef';
 
 /**
  * One-shot startup sync: pushes the persisted audio settings to the Rust engine
@@ -41,14 +42,17 @@ export function runInitialAudioSync(): void {
       normCfg.loudnessTargetLufs,
     ),
   });
-  const bootTrackId = usePlayerStore.getState().currentTrack?.id;
-  if (bootTrackId) {
-    void refreshWaveformForTrack(bootTrackId);
+  const player = usePlayerStore.getState();
+  const currentTrack = player.currentTrack;
+  const currentRef = currentTrack
+    ? analysisTrackRefForTrack(currentTrack, player.queueItems[player.queueIndex])
+    : null;
+  if (currentRef) {
+    void refreshWaveformForTrack(currentRef);
   }
   if (normCfg.normalizationEngine === 'loudness') {
-    const currentId = usePlayerStore.getState().currentTrack?.id;
-    if (currentId) {
-      void refreshLoudnessForTrack(currentId).finally(() => {
+    if (currentRef) {
+      void refreshLoudnessForTrack(currentRef).finally(() => {
         usePlayerStore.getState().updateReplayGainForCurrentTrack();
       });
     }

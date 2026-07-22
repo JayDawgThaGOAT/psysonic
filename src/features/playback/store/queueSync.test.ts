@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QueueItemRef, Track } from '@/lib/media/trackTypes';
 
 const { savePlayQueueMock, playerState, progressSnapshot, isSubsonicServerReachableMock } = vi.hoisted(() => ({
-  savePlayQueueMock: vi.fn(async () => undefined),
+  savePlayQueueMock: vi.fn(async (
+    _ids?: string[],
+    _current?: string,
+    _position?: number,
+    _serverId?: string,
+  ) => undefined),
   isSubsonicServerReachableMock: vi.fn((_serverId: string) => true),
   playerState: {
     queueItems: [] as QueueItemRef[],
@@ -24,7 +29,13 @@ vi.mock('@/features/playback/utils/playback/playbackServer', () => ({
 }));
 vi.mock('@/features/playback/utils/playback/trackServerScope', () => ({
   filterQueueRefsForServerProfile: (refs: QueueItemRef[], profileId: string) =>
-    refs.filter(r => r.serverId === profileId || (profileId === 'srv-a' && r.serverId === 'srv-a')),
+    refs.filter(r => r.serverId === profileId
+      || (profileId === 'srv-a' && r.serverId === 'a.test')
+      || (profileId === 'srv-b' && r.serverId === 'b.test')),
+}));
+vi.mock('@/lib/media/trackServerScope', () => ({
+  profileIdFromQueueRef: (queueRef: QueueItemRef) =>
+    queueRef.serverId === 'a.test' ? 'srv-a' : queueRef.serverId === 'b.test' ? 'srv-b' : queueRef.serverId,
 }));
 vi.mock('@/features/playback/store/playerStore', () => ({
   usePlayerStore: { getState: () => playerState },
@@ -43,6 +54,8 @@ import {
   hasPendingQueueSync,
   pushQueueOnPlaybackStart,
   syncQueueToServer,
+  syncAutomaticQueueMutationToServers,
+  syncUserQueueClearToServers,
   syncUserQueueMutationToServer,
 } from '@/features/playback/store/queueSync';
 import {
@@ -111,7 +124,7 @@ describe('syncUserQueueMutationToServer (debounced)', () => {
   const queue = [ref('a'), ref('b')];
 
   it('suspends idle pull on user mutation and stays suspended after successful debounced push', async () => {
-    syncUserQueueMutationToServer(queue, track('a'), 30);
+    syncUserQueueMutationToServer([], queue, track('a'), 30);
     expect(isIdleQueuePullSuspended()).toBe(true);
     expect(hasPendingQueueSync()).toBe(true);
     vi.advanceTimersByTime(5000);
@@ -122,11 +135,91 @@ describe('syncUserQueueMutationToServer (debounced)', () => {
 
   it('keeps idle pull suspended and flags the failed push when debounced push fails', async () => {
     savePlayQueueMock.mockRejectedValueOnce(new Error('offline'));
-    syncUserQueueMutationToServer(queue, track('a'), 30);
+    syncUserQueueMutationToServer([], queue, track('a'), 30);
     vi.advanceTimersByTime(5000);
     await Promise.resolve();
     expect(isIdleQueuePullSuspended()).toBe(true);
     expect(isQueuePushFailed()).toBe(true);
+  });
+
+  it('schedules independent server projections for a mixed queue', async () => {
+    const mixed = [ref('a1', 'a.test'), ref('b1', 'b.test'), ref('a2', 'a.test')];
+    syncUserQueueMutationToServer([], mixed, track('a1', 'srv-a'), 12);
+
+    expect(hasPendingQueueSync()).toBe(true);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(savePlayQueueMock).toHaveBeenCalledTimes(2);
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['a1', 'a2'], 'a1', 12000, 'srv-a');
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['b1'], 'b1', 0, 'srv-b');
+    expect(hasPendingQueueSync()).toBe(false);
+  });
+
+  it('cancels a disappeared owner projection and schedules a remote clear', async () => {
+    const mixed = [ref('a1', 'a.test'), ref('b1', 'b.test')];
+    syncUserQueueMutationToServer(
+      [],
+      mixed,
+      track('a1', 'srv-a'),
+      4,
+    );
+    vi.advanceTimersByTime(1000);
+    syncUserQueueMutationToServer(mixed, [ref('a2', 'a.test')], track('a2', 'srv-a'), 8);
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(savePlayQueueMock).not.toHaveBeenCalledWith(['b1'], 'b1', 0, 'srv-b');
+    expect(savePlayQueueMock).not.toHaveBeenCalledWith(['a1'], 'a1', 4000, 'srv-a');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(savePlayQueueMock).toHaveBeenCalledWith([], undefined, undefined, 'srv-b');
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['a2'], 'a2', 8000, 'srv-a');
+  });
+
+  it('a failed server projection does not mark another server as failed', async () => {
+    savePlayQueueMock.mockImplementation(async (_ids, _current, _position, serverId) => {
+      if (serverId === 'srv-b') throw new Error('offline');
+    });
+    syncUserQueueMutationToServer(
+      [],
+      [ref('a1', 'a.test'), ref('b1', 'b.test')],
+      track('a1', 'srv-a'),
+      4,
+    );
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(isQueuePushFailed('srv-a')).toBe(false);
+    expect(isQueuePushFailed('srv-b')).toBe(true);
+  });
+});
+
+describe('syncAutomaticQueueMutationToServers', () => {
+  it('syncs every affected owner without suspending idle pull', async () => {
+    syncAutomaticQueueMutationToServers(
+      [ref('a1', 'a.test')],
+      [ref('b1', 'b.test')],
+      track('b1', 'srv-b'),
+      7,
+    );
+
+    expect(isIdleQueuePullSuspended()).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(savePlayQueueMock).toHaveBeenCalledWith([], undefined, undefined, 'srv-a');
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['b1'], 'b1', 7000, 'srv-b');
+  });
+});
+
+describe('syncUserQueueClearToServers', () => {
+  it('clears every remote server queue represented by the previous mixed queue', async () => {
+    syncUserQueueClearToServers([
+      ref('a1', 'a.test'),
+      ref('b1', 'b.test'),
+      ref('a2', 'a.test'),
+    ]);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(savePlayQueueMock).toHaveBeenCalledTimes(2);
+    expect(savePlayQueueMock).toHaveBeenCalledWith([], undefined, undefined, 'srv-a');
+    expect(savePlayQueueMock).toHaveBeenCalledWith([], undefined, undefined, 'srv-b');
   });
 });
 
@@ -134,7 +227,7 @@ describe('pushQueueOnPlaybackStart', () => {
   const queue = [ref('a'), ref('b')];
 
   it('flushes immediately and clears idle pull suspension when locally edited', async () => {
-    syncUserQueueMutationToServer(queue, track('a'), 30);
+    syncUserQueueMutationToServer([], queue, track('a'), 30);
     expect(hasPendingQueueSync()).toBe(true);
     pushQueueOnPlaybackStart(queue, track('a'), 42);
     expect(hasPendingQueueSync()).toBe(false);
@@ -144,7 +237,7 @@ describe('pushQueueOnPlaybackStart', () => {
   });
 
   it('keeps idle pull suspended when the immediate flush fails', async () => {
-    syncUserQueueMutationToServer(queue, track('a'), 30);
+    syncUserQueueMutationToServer([], queue, track('a'), 30);
     savePlayQueueMock.mockRejectedValueOnce(new Error('414'));
     pushQueueOnPlaybackStart(queue, track('a'), 42);
     await vi.runAllTimersAsync();
@@ -161,6 +254,14 @@ describe('pushQueueOnPlaybackStart', () => {
 });
 
 describe('flushQueueSyncToServer failure', () => {
+  it('reports unreachable as failure and blocks stale idle pull', async () => {
+    isSubsonicServerReachableMock.mockReturnValue(false);
+    const ok = await flushQueueSyncToServer([ref('a')], track('a'), 12);
+    expect(ok).toBe(false);
+    expect(savePlayQueueMock).not.toHaveBeenCalled();
+    expect(isQueuePushFailed()).toBe(true);
+  });
+
   it('flags the failed push (blocking idle pull) without lighting the handoff LED', async () => {
     savePlayQueueMock.mockRejectedValueOnce(new Error('offline'));
     const ok = await flushQueueSyncToServer([ref('a')], track('a'), 12);
@@ -203,6 +304,14 @@ describe('flushPlayQueueForServer', () => {
     progressSnapshot.currentTime = 9;
     await flushPlayQueueForServer('srv-a');
     expect(savePlayQueueMock).toHaveBeenCalledWith(['a'], 'a', 9000, 'srv-a');
+  });
+
+  it('saves an inactive server slice with its first item at position zero', async () => {
+    playerState.queueItems = [ref('a', 'a.test'), ref('b', 'b.test')];
+    playerState.currentTrack = track('a', 'srv-a');
+    progressSnapshot.currentTime = 9;
+    await flushPlayQueueForServer('srv-b');
+    expect(savePlayQueueMock).toHaveBeenCalledWith(['b'], 'b', 0, 'srv-b');
   });
 });
 

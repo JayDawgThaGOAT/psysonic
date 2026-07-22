@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { commands } from '@/generated/bindings';
 
 /** Per-page debug trace toggles (PsyLab → Toggles). Extend as more pages get traces. */
-export type PsyLabDebugTraceId = 'albumsBrowse' | 'artistsBrowse';
+export type PsyLabDebugTraceId = 'albumsBrowse' | 'artistsBrowse' | 'favoritesBrowse' | 'tracksBrowse' | 'mainstage';
 
 export type PsyLabDebugTraces = Record<PsyLabDebugTraceId, boolean>;
 
@@ -11,6 +11,9 @@ const STORAGE_KEY = 'psysonic_psylab_debug_traces_v1';
 const DEFAULT_TRACES: PsyLabDebugTraces = {
   albumsBrowse: false,
   artistsBrowse: false,
+  favoritesBrowse: false,
+  tracksBrowse: false,
+  mainstage: false,
 };
 
 let traces: PsyLabDebugTraces = { ...DEFAULT_TRACES };
@@ -53,7 +56,8 @@ function safeParseTraces(raw: string | null): Partial<PsyLabDebugTraces> {
   }
 }
 
-function initTraces(): void {
+/** Restore persisted traces and synchronize native trace flags before React mounts. */
+export function initializePsyLabDebugTraces(): void {
   if (typeof window === 'undefined') return;
   const fromStorage = safeParseTraces(window.localStorage.getItem(STORAGE_KEY));
   traces = { ...DEFAULT_TRACES, ...fromStorage };
@@ -61,8 +65,6 @@ function initTraces(): void {
     syncTraceToBackend(id, traces[id]);
   }
 }
-
-initTraces();
 
 export function getPsyLabDebugTraces(): PsyLabDebugTraces {
   return traces;

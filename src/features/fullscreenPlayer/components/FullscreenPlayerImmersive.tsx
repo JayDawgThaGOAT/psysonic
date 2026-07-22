@@ -16,6 +16,7 @@ import { FsLyricsRail } from './FsLyricsRail';
 import { FsArt } from './FsArt';
 import { FsPortrait } from './FsPortrait';
 import { FsSeekbar } from './FsSeekbar';
+import { ownedOverrideValue } from '@/lib/util/ownedEntityKey';
 import { FsLyricsMenu } from './FsLyricsMenu';
 import { FsPlayBtn } from './FsPlayBtn';
 import { useFsDynamicAccent } from '@/features/fullscreenPlayer/hooks/useFsDynamicAccent';
@@ -39,7 +40,7 @@ export default function FullscreenPlayer({ onClose }: FullscreenPlayerProps) {
   const isStarred = usePlayerStore(s => {
     const track = s.currentTrack;
     if (!track) return false;
-    return track.id in s.starredOverrides ? s.starredOverrides[track.id] : !!track.starred;
+    return ownedOverrideValue(s.starredOverrides, track) ?? !!track.starred;
   });
 
   const toggleStar = useCallback(() => {

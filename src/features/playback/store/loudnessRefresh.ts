@@ -1,6 +1,5 @@
-import { buildStreamUrl } from '@/lib/api/subsonicStreamUrl';
+import { buildStreamUrl, buildStreamUrlForServer } from '@/lib/api/subsonicStreamUrl';
 import { commands } from '@/generated/bindings';
-import { getPlaybackIndexKey } from '@/features/playback/utils/playback/playbackServer';
 import { redactSubsonicUrlForLog } from '@/lib/server/redactSubsonicUrl';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/features/playback/store/playerStore';
@@ -22,6 +21,11 @@ import {
   isTrackInsideLoudnessBackfillWindow,
   loudnessBackfillPriorityForTrack,
 } from '@/features/playback/store/loudnessBackfillWindow';
+import {
+  analysisTrackRef,
+  analysisTrackRefKey,
+  type AnalysisTrackRef,
+} from '@/features/playback/store/analysisTrackRef';
 
 /** Subsonic-server loudness-cache row as Rust hands it back. */
 type LoudnessCachePayload = {
@@ -51,47 +55,49 @@ const loudnessRefreshInflight = new Map<string, Promise<void>>();
  * single inflight promise.
  */
 export async function refreshLoudnessForTrack(
-  trackId: string,
+  inputRef: AnalysisTrackRef,
   opts?: { syncPlayingEngine?: boolean },
 ): Promise<void> {
-  if (!trackId) return;
+  const trackId = inputRef.trackId;
+  if (!trackId || !inputRef.serverIndexKey) return;
+  const ref = analysisTrackRef(trackId, inputRef.serverIndexKey);
   const syncEngine = opts?.syncPlayingEngine !== false;
   const target = useAuthStore.getState().loudnessTargetLufs;
-  const inflightKey = `${trackId}|${syncEngine ? 'sync' : 'no-sync'}|${target}`;
+  const inflightKey = `${analysisTrackRefKey(ref)}|${syncEngine ? 'sync' : 'no-sync'}|${target}`;
   const existing = loudnessRefreshInflight.get(inflightKey);
   if (existing) return existing;
-  const job = (async () => { await runRefreshLoudnessForTrack(trackId, syncEngine); })()
+  const job = (async () => { await runRefreshLoudnessForTrack(ref, syncEngine); })()
     .finally(() => { loudnessRefreshInflight.delete(inflightKey); });
   loudnessRefreshInflight.set(inflightKey, job);
   return job;
 }
 
-async function runRefreshLoudnessForTrack(trackId: string, syncEngine: boolean): Promise<void> {
-  emitNormalizationDebug('refresh:start', { trackId });
+async function runRefreshLoudnessForTrack(ref: AnalysisTrackRef, syncEngine: boolean): Promise<void> {
+  const { trackId, serverIndexKey } = ref;
+  emitNormalizationDebug('refresh:start', { trackId, serverIndexKey });
   usePlayerStore.setState({ normalizationDbgSource: 'refresh:start', normalizationDbgTrackId: trackId });
   try {
     const requestedTarget = useAuthStore.getState().loudnessTargetLufs;
-    const serverId = getPlaybackIndexKey() || null;
-    const loudnessRes = await commands.analysisGetLoudnessForTrack(trackId, requestedTarget, serverId);
+    const loudnessRes = await commands.analysisGetLoudnessForTrack(trackId, requestedTarget, serverIndexKey);
     if (loudnessRes.status === 'error') throw new Error(loudnessRes.error);
     // Boundary cast: the generated DTO widens `recommendedGainDb` to `number | null`;
     // downstream relies on the FE type's non-null shape (guarded at runtime by Number.isFinite).
     const row = loudnessRes.data as LoudnessCachePayload | null;
     if (useAuthStore.getState().loudnessTargetLufs !== requestedTarget) {
       emitNormalizationDebug('refresh:stale-target', { trackId, requestedTarget });
-      void refreshLoudnessForTrack(trackId, { syncPlayingEngine: syncEngine });
+      void refreshLoudnessForTrack(ref, { syncPlayingEngine: syncEngine });
       return;
     }
     if (!row || !Number.isFinite(row.recommendedGainDb)) {
-      forgetLoudnessGain(trackId);
+      forgetLoudnessGain(ref);
       emitNormalizationDebug('refresh:miss', { trackId, row: row ?? null });
       const auth = useAuthStore.getState();
-      const attempts = getBackfillAttempts(trackId);
+      const attempts = getBackfillAttempts(ref);
       if (auth.normalizationEngine === 'loudness'
-        && !isBackfillInFlight(trackId)
+        && !isBackfillInFlight(ref)
         && attempts < MAX_BACKFILL_ATTEMPTS_PER_TRACK) {
         const live = usePlayerStore.getState();
-        if (!isTrackInsideLoudnessBackfillWindow(trackId, live.queueItems, live.queueIndex, live.currentTrack)) {
+        if (!isTrackInsideLoudnessBackfillWindow(ref, live.queueItems, live.queueIndex, live.currentTrack)) {
           emitNormalizationDebug('backfill:skipped-outside-window', {
             trackId,
             queueIndex: live.queueIndex,
@@ -99,10 +105,10 @@ async function runRefreshLoudnessForTrack(trackId: string, syncEngine: boolean):
           });
           return;
         }
-        markBackfillInFlight(trackId, attempts + 1);
-        const url = buildStreamUrl(trackId);
+        markBackfillInFlight(ref, attempts + 1);
+        const url = serverIndexKey ? buildStreamUrlForServer(serverIndexKey, trackId) : buildStreamUrl(trackId);
         const priority = loudnessBackfillPriorityForTrack(
-          trackId,
+          ref,
           live.queueItems,
           live.queueIndex,
           live.currentTrack,
@@ -113,14 +119,14 @@ async function runRefreshLoudnessForTrack(trackId: string, syncEngine: boolean):
           attempt: attempts + 1,
           priority,
         });
-        void commands.analysisEnqueueSeedFromUrl(trackId, url, null, serverId, priority)
+        void commands.analysisEnqueueSeedFromUrl(trackId, url, null, serverIndexKey, priority)
           .then((res) => {
             if (res.status === 'error') throw new Error(res.error);
             emitNormalizationDebug('backfill:queued', { trackId, attempt: attempts + 1 });
           })
           .catch((e) => emitNormalizationDebug('backfill:error', { trackId, error: String(e) }))
           .finally(() => {
-            clearBackfillInFlight(trackId);
+            clearBackfillInFlight(ref);
           });
       } else if (auth.normalizationEngine === 'loudness' && attempts >= MAX_BACKFILL_ATTEMPTS_PER_TRACK) {
         emitNormalizationDebug('backfill:throttled', { trackId, attempts });
@@ -134,8 +140,8 @@ async function runRefreshLoudnessForTrack(trackId: string, syncEngine: boolean):
       });
       return;
     }
-    markLoudnessStable(trackId, row.recommendedGainDb);
-    resetBackfillAttempts(trackId);
+    markLoudnessStable(ref, row.recommendedGainDb);
+    resetBackfillAttempts(ref);
     emitNormalizationDebug('refresh:hit', { trackId, row });
     usePlayerStore.setState({
       normalizationDbgSource: 'refresh:hit',
@@ -148,7 +154,7 @@ async function runRefreshLoudnessForTrack(trackId: string, syncEngine: boolean):
       usePlayerStore.getState().updateReplayGainForCurrentTrack();
     }
   } catch {
-    forgetLoudnessGain(trackId);
+    forgetLoudnessGain(ref);
     emitNormalizationDebug('refresh:error', { trackId });
     usePlayerStore.setState({ normalizationDbgSource: 'refresh:error', normalizationDbgTrackId: trackId });
   }
