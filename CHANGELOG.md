@@ -101,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * The artist detail header no longer adopts a per-track "featuring" credit when a single track in the discography is tagged with a guest artist. It shows the artist's own name, matching the artist browse list.
 
+### Artist details — group releases by type again
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1329](https://github.com/Psychotoxical/psysonic/pull/1329)**
+
+* The artist page groups a discography into Albums, Singles, EPs, Live and Compilations again instead of one flat list. The release type is read from each album's tags; releases without a type tag stay in the default group.
+
 ### Multi-server library scope — recover empty persisted selections
 
 **By [@cucadmuh](https://github.com/cucadmuh), PR [#1331](https://github.com/Psychotoxical/psysonic/pull/1331)**
