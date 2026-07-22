@@ -114,6 +114,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Existing profiles that retained an empty Library server selection recover the configured active server when another server is added. Music-folder discovery and New Releases no longer collapse to an empty result in that legacy state.
 * Artist browse no longer waits for a full identity rebuild on the first launch after upgrading an existing large library.
 
+### Album details — play multi-disc albums in disc order
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1332](https://github.com/Psychotoxical/psysonic/pull/1332)**
+
+* Playing a multi-disc album from the header no longer interleaves the discs (disc 1 track 1, disc 2 track 1, disc 1 track 2, …). Tracks queue in disc-then-track order, so disc 1 plays in full before disc 2. Tracks without a disc number are treated as disc 1, matching the track list.
+
 
 ## [1.50.0]
 

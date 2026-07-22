@@ -2074,7 +2074,7 @@ fn fetch_scope_deduped_tracks_for_album_key(
             {scoped} AND t.album_id IS NOT NULL {key_filter} \
          ) \
          SELECT {plain_cols} FROM ranked WHERE rn = 1 \
-         ORDER BY track_number ASC NULLS LAST, disc_number ASC NULLS LAST, title COLLATE NOCASE ASC",
+         ORDER BY COALESCE(disc_number, 1) ASC, track_number ASC NULLS LAST, id ASC, server_id ASC",
         scoped = scoped,
     );
     let mut binds = scope_binds;
@@ -3651,6 +3651,110 @@ mod tests {
         assert_eq!(detail.album.genre, None);
         assert_eq!(detail.album.cover_art_id, None);
         assert_eq!(detail.tracks.len(), 2);
+    }
+
+    #[test]
+    fn album_detail_orders_tracks_disc_then_track() {
+        // A multi-disc album must play disc 1 in full before disc 2 — ordered by
+        // (disc_number, track_number). Ordering by track_number first interleaves
+        // the discs (D1T1, D2T1, D1T2, D2T2), which is what the Play-All queue did.
+        // A missing disc number is treated as disc 1 (matching the UI's
+        // `discNumber ?? 1`), so an untagged track stays in the disc-1 group and
+        // precedes disc 2 rather than sorting after every explicit disc. `id` is the
+        // final tie-break, so duplicate disc/track metadata is still deterministic.
+        let store = LibraryStore::open_in_memory();
+        // Unique title per id, so nothing dedups by title.
+        let mk = |id: &str, disc: Option<i64>, trk: i64| {
+            let mut t = track(
+                "s1", id, id, Some("Artist"), "Double Album", "alb-2disc",
+                Some("art1"), 200, "lib-a", Some(2000), None, None,
+            );
+            t.disc_number = disc;
+            t.track_number = Some(trk);
+            t
+        };
+        // Seeded scrambled; ids deliberately don't match the target order.
+        // `u-null-t3` has no disc number and must land in the disc-1 group; `b`/`z`
+        // share disc 2 / track 2 and must fall back to id order.
+        seed_and_rebuild(&store, &[
+            mk("z-d2t2", Some(2), 2),
+            mk("q-d1t1", Some(1), 1),
+            mk("b-d2t2", Some(2), 2),
+            mk("u-null-t3", None, 3),
+            mk("a-d2t1", Some(2), 1),
+            mk("m-d1t2", Some(1), 2),
+        ]);
+
+        let detail = album_detail(
+            &store,
+            &LibraryScopeAlbumDetailRequest {
+                scopes: vec![scope_pair("s1", "lib-a")],
+                album_id: "alb-2disc".into(),
+                server_id: "s1".into(),
+            },
+        )
+        .unwrap();
+
+        let ids: Vec<&str> = detail.tracks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["q-d1t1", "m-d1t2", "u-null-t3", "a-d2t1", "b-d2t2", "z-d2t2"]
+        );
+    }
+
+    #[test]
+    fn album_detail_disc_order_tie_break_is_total_across_servers() {
+        // The scoped loader merges a cross-server album, so a server-local `id` is
+        // not a total tie-break: two surviving tracks from different servers can
+        // share disc, track number, and id. `server_id` is the final key, so the
+        // Play-All order stays deterministic (priority server first).
+        let store = LibraryStore::open_in_memory();
+        let disc1 = |mut t: TrackRow, trk: i64| {
+            t.disc_number = Some(1);
+            t.track_number = Some(trk);
+            t
+        };
+        // Matching anchor tracks (same title + duration) de-duplicate and merge the
+        // album across the two servers.
+        let s1_anchor = disc1(track(
+            "s1", "s1-anchor", "Anchor", Some("Band"), "Tie Album", "s1-tie",
+            Some("band"), 100, "lib-a", Some(2020), None, None,
+        ), 1);
+        let s2_anchor = disc1(track(
+            "s2", "s2-anchor", "Anchor", Some("Band"), "Tie Album", "s2-tie",
+            Some("band"), 100, "lib-b", Some(2020), None, None,
+        ), 1);
+        // Same id / disc / track on both servers, but distinct title + duration so
+        // the two rows do not de-duplicate and both survive the merge — tying on
+        // every key except server_id.
+        let s1_dup = disc1(track(
+            "s1", "dup", "Alpha", Some("Band"), "Tie Album", "s1-tie",
+            Some("band"), 200, "lib-a", Some(2020), None, None,
+        ), 2);
+        let s2_dup = disc1(track(
+            "s2", "dup", "Beta", Some("Band"), "Tie Album", "s2-tie",
+            Some("band"), 300, "lib-b", Some(2020), None, None,
+        ), 2);
+        seed_and_rebuild(&store, &[s1_anchor, s1_dup, s2_anchor, s2_dup]);
+
+        let detail = album_detail(
+            &store,
+            &LibraryScopeAlbumDetailRequest {
+                scopes: vec![scope_pair("s1", "lib-a"), scope_pair("s2", "lib-b")],
+                album_id: "s1-tie".into(),
+                server_id: "s1".into(),
+            },
+        )
+        .unwrap();
+
+        let seq: Vec<(&str, &str)> = detail
+            .tracks
+            .iter()
+            .map(|t| (t.server_id.as_str(), t.id.as_str()))
+            .collect();
+        // Anchor merges to the priority server; the tied `dup` tracks keep a
+        // deterministic order by server_id (s1 before s2).
+        assert_eq!(seq, [("s1", "s1-anchor"), ("s1", "dup"), ("s2", "dup")]);
     }
 
     #[test]
