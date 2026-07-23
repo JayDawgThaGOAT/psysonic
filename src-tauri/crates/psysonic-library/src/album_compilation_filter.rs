@@ -18,7 +18,7 @@ pub fn compilation_raw_json_sql(table_alias: &str) -> String {
     )
 }
 
-fn various_artists_like_sql(column: &str) -> String {
+pub(crate) fn various_artists_like_sql(column: &str) -> String {
     format!(
         "lower(trim(coalesce({column}, ''))) LIKE '%various artists%'",
         column = column
@@ -45,8 +45,30 @@ pub fn compilation_predicate_sql(
     format!("({})", parts.join(" OR "))
 }
 
+/// True when a credit is the "Various Artists" compilation label. Word-boundary
+/// matched to stay identical to the frontend `isVariousArtistsLabel`
+/// (`/\bvarious artists\b/i`): both gate the same album-artist unlink on the same
+/// album, so a substring match here against a word-boundary match there would let one
+/// side unlink while the other relinks to a guest performer. (The album-inclusion
+/// `LIKE '%various artists%'` in `various_artists_like_sql` stays a substring match —
+/// that is a different decision.)
 pub fn various_artists_label(s: &str) -> bool {
-    s.trim().to_ascii_lowercase().contains("various artists")
+    const NEEDLE: &str = "various artists";
+    let hay = s.trim().to_ascii_lowercase();
+    let bytes = hay.as_bytes();
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(NEEDLE) {
+        let start = from + rel;
+        let end = start + NEEDLE.len();
+        let before_boundary = start == 0 || !is_word(bytes[start - 1]);
+        let after_boundary = end >= bytes.len() || !is_word(bytes[end]);
+        if before_boundary && after_boundary {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
 }
 
 /// SQL mirror of [`pick_album_group_artist`] over arbitrary column *expressions*
@@ -88,9 +110,55 @@ pub fn pick_album_group_artist(
     track_artist.filter(|s| !s.trim().is_empty())
 }
 
+/// Id-side mirror of [`pick_album_group_artist`]: pick the *artist id* the album
+/// header should link to. When the album carries a named album-artist — so the
+/// displayed credit comes from `album_artist` — the link must point at that
+/// album-artist entity (`raw_json.albumArtistId`), not a representative track's
+/// `artist_id`. On a "Various Artists" compilation the album-artist id differs
+/// from every track performer's id; without this the hero reads "Various Artists"
+/// but opens one of the guest performers. Falls back to the track artist id when
+/// the album has no named album-artist, or when the server supplied no
+/// album-artist id (keeps the credit and link consistent rather than mislabelling).
+/// Keep the branch condition in sync with [`pick_album_group_artist`].
+pub fn pick_album_group_artist_id(
+    track_artist_id: Option<String>,
+    album_artist: Option<&str>,
+    album_artist_id: Option<String>,
+) -> Option<String> {
+    let named = album_artist.map(str::trim).filter(|s| !s.is_empty());
+    if named.is_some() {
+        if let Some(id) = album_artist_id.filter(|s| !s.trim().is_empty()) {
+            return Some(id);
+        }
+    }
+    // A "Various Artists" credit with no album-artist id must stay unlinked: the
+    // track performer is definitely *not* the album artist here, so linking to it
+    // would open a single guest under a Various Artists label. Everywhere else the
+    // performer id keeps credit and link on the same entity.
+    if named.is_some_and(various_artists_label) {
+        return None;
+    }
+    track_artist_id.filter(|s| !s.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn various_artists_label_is_word_boundary_matched() {
+        assert!(various_artists_label("Various Artists"));
+        assert!(various_artists_label("  various artists  "));
+        assert!(various_artists_label("VA / Various Artists"));
+        assert!(various_artists_label("Various Artists!"));
+        // Word-boundary, mirroring the frontend regex: an alnum-adjacent occurrence
+        // is not the label. These are exactly the strings a substring match would
+        // have disagreed with the frontend on.
+        assert!(!various_artists_label("various artistsX"));
+        assert!(!various_artists_label("Xvarious artists"));
+        assert!(!various_artists_label("Metallica"));
+        assert!(!various_artists_label(""));
+    }
 
     #[test]
     fn sql_mentions_json_paths() {
@@ -134,6 +202,46 @@ mod tests {
             Some("Alice".to_string())
         );
         assert_eq!(pick_album_group_artist(None, None), None);
+    }
+
+    #[test]
+    fn pick_album_group_artist_id_mirrors_name_side() {
+        // Named album-artist with an id → link to that album-artist entity, even
+        // though the representative track performer differs (the VA / collaboration
+        // case: display credit and link stay on the same entity).
+        assert_eq!(
+            pick_album_group_artist_id(
+                Some("track-performer".into()),
+                Some("Various Artists"),
+                Some("va-id".into()),
+            ),
+            Some("va-id".to_string())
+        );
+        // Named "Various Artists" but the server gave no album-artist id → leave the
+        // link empty. The track performer is provably not the album artist here, so
+        // linking to it would open one guest under a Various Artists credit.
+        assert_eq!(
+            pick_album_group_artist_id(Some("track-performer".into()), Some("Various Artists"), None),
+            None
+        );
+        // Any other named album-artist without an id keeps the track id, so credit
+        // and link stay on the same entity rather than going blank.
+        assert_eq!(
+            pick_album_group_artist_id(Some("track-performer".into()), Some("Alice"), None),
+            Some("track-performer".to_string())
+        );
+        // Blank album-artist must not count as named → fall back to the track id,
+        // ignoring any stray album-artist id.
+        assert_eq!(
+            pick_album_group_artist_id(Some("solo".into()), Some("   "), Some("ignored".into())),
+            Some("solo".to_string())
+        );
+        assert_eq!(
+            pick_album_group_artist_id(Some("solo".into()), None, None),
+            Some("solo".to_string())
+        );
+        // Nothing usable anywhere.
+        assert_eq!(pick_album_group_artist_id(None, Some("Various Artists"), Some("  ".into())), None);
     }
 
     #[test]
