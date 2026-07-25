@@ -165,6 +165,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Clicking "Various Artists" on a New Releases card, a browse grid or a search result opened one of the compilation's guest performers instead of the Various Artists overview. Every album card now links to the album-artist, matching the artist page and album header. The link is recovered from any track on the compilation, so it resolves even when the representative track carries no album-artist tag.
 
+### Artist details — separate guest appearances from the discography
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1341](https://github.com/Psychotoxical/psysonic/pull/1341)**
+
+* An artist page derived every album from that artist's own tracks, so Various Artists compilations, split releases and other artists' albums they only guest on sat in the main discography. Those now appear under **Also featured on**, while the artist's own releases — including their own best-of compilations — stay in the discography.
+* Albums with no album-artist tag are kept with the artist that owns their tracks, so a catalogue whose files spell the artist name differently from the server's artist entry no longer empties into the featured section.
+
 
 ## [1.50.0]
 
