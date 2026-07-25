@@ -172,6 +172,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * An artist page derived every album from that artist's own tracks, so Various Artists compilations, split releases and other artists' albums they only guest on sat in the main discography. Those now appear under **Also featured on**, while the artist's own releases — including their own best-of compilations — stay in the discography.
 * Albums with no album-artist tag are kept with the artist that owns their tracks, so a catalogue whose files spell the artist name differently from the server's artist entry no longer empties into the featured section.
 
+### Music network — a clearer message when a service blocks the connection
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1346](https://github.com/Psychotoxical/psysonic/pull/1346)**
+
+* Connecting a scrobbling service over a route it refuses — a VPN exit node, a proxy, a captive portal — failed with a generic network error and a raw decoder message attached. Psysonic now recognises a webpage arriving where data was expected and says so, pointing at the connection instead of leaving you to guess whether the app or the service is broken. Reported by zunoz on Discord.
+
 
 ## [1.50.0]
 
