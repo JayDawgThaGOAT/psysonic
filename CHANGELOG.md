@@ -172,6 +172,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * An artist page derived every album from that artist's own tracks, so Various Artists compilations, split releases and other artists' albums they only guest on sat in the main discography. Those now appear under **Also featured on**, while the artist's own releases — including their own best-of compilations — stay in the discography.
 * Albums with no album-artist tag are kept with the artist that owns their tracks, so a catalogue whose files spell the artist name differently from the server's artist entry no longer empties into the featured section.
 
+### Artist credits — separate and link each artist of a joined credit
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1342](https://github.com/Psychotoxical/psysonic/pull/1342)**
+
+* A release credited to several artists showed one joined label ("A feat. B") in the album header and track lists, while the home rails already showed them separated. Every surface now separates them, and each artist links to their own page instead of only the first one. Albums whose server provides a structured artist list are unaffected.
+* Splitting follows the server's own tagging rules, so an artist name containing a slash stays intact and a comma-joined credit is left as one entry. For reliably separated credits, tag multi-valued **ARTISTS** / **ALBUMARTISTS** rather than relying on separators.
+
 ### Artist details — biography and Last.fm link are back under a multi-server scope
 
 **By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1343](https://github.com/Psychotoxical/psysonic/pull/1343)**
