@@ -172,6 +172,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * An artist page derived every album from that artist's own tracks, so Various Artists compilations, split releases and other artists' albums they only guest on sat in the main discography. Those now appear under **Also featured on**, while the artist's own releases — including their own best-of compilations — stay in the discography.
 * Albums with no album-artist tag are kept with the artist that owns their tracks, so a catalogue whose files spell the artist name differently from the server's artist entry no longer empties into the featured section.
 
+### Artist details — biography and Last.fm link are back under a multi-server scope
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1343](https://github.com/Psychotoxical/psysonic/pull/1343)**
+
+* The "About the artist" section and the Last.fm link vanished from artist pages as soon as more than one server was selected in the library scope. Both are shown again, with the artist information read from the server that owns the artist.
+* Everything the page derives from that information now follows the same owner: the similar artists it lists open the right artist instead of an unrelated one on the active server, and the setting that decides whether the server's own suggestions are used is read for the owning server too. This also applies when browsing a single server while a different one is active.
+
 ### Music network — a clearer message when a service blocks the connection
 
 **By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1346](https://github.com/Psychotoxical/psysonic/pull/1346)**
