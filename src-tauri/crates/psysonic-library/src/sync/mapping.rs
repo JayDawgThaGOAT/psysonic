@@ -69,6 +69,69 @@ fn is_usable_participant_value(value: &Value) -> bool {
     }
 }
 
+/// The track rows of a `getAlbum` payload, with the album-level OpenSubsonic
+/// fields merged into each song via `merge_album_open_subsonic_track_raw`.
+///
+/// Shared so the two callers cannot drift apart — they already had: the S2
+/// crawl passed its library scope and the census did not, which left every
+/// gap-filled track with a NULL `library_id` and invisible to scoped browse.
+pub fn album_track_rows(
+    server_id: &str,
+    album: &psysonic_integration::subsonic::Album,
+    raw_album: &Value,
+    synced_at: i64,
+    library_scope: Option<&str>,
+) -> Vec<TrackRow> {
+    let raw_songs = raw_album
+        .get("song")
+        .and_then(|songs| songs.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut rows = Vec::with_capacity(album.song.len());
+    for (index, song) in album.song.iter().enumerate() {
+        let mut raw = raw_songs
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| serde_json::to_value(song).unwrap_or(Value::Null));
+        merge_album_open_subsonic_track_raw(raw_album, &mut raw);
+        rows.push(subsonic_song_to_track_row(
+            server_id,
+            song,
+            &raw,
+            synced_at,
+            library_scope,
+        ));
+    }
+    rows
+}
+
+/// A typed `Song` is only a fallback when a sparse endpoint did not expose its
+/// raw song subtree. Serde serializes absent optional fields as JSON nulls;
+/// leaving those in would turn "not observed" into an explicit clear in the
+/// sparse upsert contract.
+pub(crate) fn sparse_song_raw_fallback(song: &Song) -> Value {
+    let mut raw = serde_json::to_value(song).unwrap_or(Value::Null);
+    remove_null_fields(&mut raw);
+    raw
+}
+
+fn remove_null_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.retain(|_, child| !child.is_null());
+            for child in object.values_mut() {
+                remove_null_fields(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                remove_null_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn subsonic_song_to_track_row(
     server_id: &str,
     song: &Song,
@@ -80,12 +143,18 @@ pub fn subsonic_song_to_track_row(
         server_id: server_id.to_string(),
         id: song.id.clone(),
         title: song.title.clone(),
-        title_sort: None,
+        title_sort: string_field(raw_value, "sortTitle")
+            .or_else(|| string_field(raw_value, "orderTitle"))
+            .or_else(|| string_field(raw_value, "sortName")),
         artist: song.artist.clone(),
         artist_id: song.artist_id.clone(),
         album: song.album.clone().unwrap_or_default(),
         album_id: song.album_id.clone(),
-        album_artist: song.album_artist.clone(),
+        album_artist: song
+            .album_artist
+            .clone()
+            .or_else(|| string_field(raw_value, "displayAlbumArtist"))
+            .or_else(|| string_field(raw_value, "albumArtist")),
         duration_sec: song.duration.unwrap_or(0),
         track_number: song.track_number,
         disc_number: song.disc_number,
@@ -117,7 +186,10 @@ pub fn subsonic_song_to_track_row(
             .and_then(|rg| rg.get("trackPeak"))
             .and_then(|v| v.as_f64()),
         content_hash: None,
-        server_updated_at: None,
+        server_updated_at: raw_value
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .and_then(parse_iso_ms_str),
         server_created_at: raw_value
             .get("created")
             .or_else(|| raw_value.get("createdAt"))
@@ -158,7 +230,9 @@ pub fn navidrome_song_to_track_row(
         server_id: server_id.to_string(),
         id,
         title,
-        title_sort: string_field(raw, "sortTitle").or_else(|| string_field(raw, "orderTitle")),
+        title_sort: string_field(raw, "sortTitle")
+            .or_else(|| string_field(raw, "orderTitle"))
+            .or_else(|| string_field(raw, "sortName")),
         artist: string_field(raw, "artist"),
         artist_id: string_field(raw, "artistId"),
         album: string_field(raw, "album").unwrap_or_default(),
@@ -426,11 +500,14 @@ mod tests {
             "id": "tr_1",
             "title": "Hello",
             "artist": "World",
+            "displayAlbumArtist": "World & Guests",
             "albumId": "al_1",
+            "sortName": "Hello, The",
             "duration": 240,
             "track": 3,
             "year": 2024,
             "created": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-06-01T00:00:00Z",
             "musicBrainzId": "mb-1",
             "replayGain": { "trackGain": -1.2, "albumGain": -0.8, "trackPeak": 0.91 }
         });
@@ -438,15 +515,33 @@ mod tests {
         let row = subsonic_song_to_track_row("s1", &song, &raw, 1_000, Some("lib-fb"));
         assert_eq!(row.id, "tr_1");
         assert_eq!(row.album_id.as_deref(), Some("al_1"));
+        assert_eq!(row.album_artist.as_deref(), Some("World & Guests"));
+        assert_eq!(row.title_sort.as_deref(), Some("Hello, The"));
         assert_eq!(row.duration_sec, 240);
         assert_eq!(row.mbid_recording.as_deref(), Some("mb-1"));
         assert_eq!(row.replay_gain_track_db, Some(-1.2));
         assert_eq!(row.replay_gain_album_db, Some(-0.8));
         assert_eq!(row.replay_gain_peak, Some(0.91));
         assert!(row.server_created_at.unwrap_or(0) > 0);
+        assert!(row.server_updated_at.unwrap_or(0) > 0);
         // Fallback library_id kicks in when the song didn't ship one.
         assert_eq!(row.library_id.as_deref(), Some("lib-fb"));
         assert!(row.raw_json.contains("replayGain"));
+    }
+
+    #[test]
+    fn sparse_typed_fallback_does_not_invent_explicit_nulls() {
+        let song: Song = serde_json::from_value(json!({
+            "id": "tr_1",
+            "title": "Hello"
+        }))
+        .unwrap();
+
+        let raw = sparse_song_raw_fallback(&song);
+
+        assert_eq!(raw.get("id"), Some(&json!("tr_1")));
+        assert!(raw.get("albumArtist").is_none());
+        assert!(raw.get("updatedAt").is_none());
     }
 
     #[test]
@@ -454,6 +549,7 @@ mod tests {
         let raw = json!({
             "id": "tr_1",
             "title": "Hello",
+            "sortTitle": "Hello, The",
             "artist": "World",
             "artistId": "ar_1",
             "album": "An Album",
@@ -479,6 +575,7 @@ mod tests {
         });
         let row = navidrome_song_to_track_row("s1", &raw, 9_999, None).unwrap();
         assert_eq!(row.id, "tr_1");
+        assert_eq!(row.title_sort.as_deref(), Some("Hello, The"));
         assert_eq!(row.track_number, Some(3));
         assert_eq!(row.isrc.as_deref(), Some("USRC17607839"));
         assert_eq!(row.mbid_recording.as_deref(), Some("mb-1"));

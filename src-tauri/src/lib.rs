@@ -74,10 +74,15 @@ fn scheduler_idle_payload(
     server_id: &str,
     library_scope: &str,
 ) -> Option<psysonic_library::LibrarySyncIdlePayload> {
-    report
+    // The census is the half that runs when the delta has nothing to report —
+    // a server-side deletion never appears in a changed-list — so its work has
+    // to raise the same refresh signal, or the surfaces keep showing an album
+    // whose tracks were just retired.
+    (report
         .delta
         .as_ref()
         .is_some_and(|delta| !delta.deferred_scanning && !delta.up_to_date)
+        || report.census_changed_index)
         .then(|| {
             psysonic_library::LibrarySyncIdlePayload::ok(
                 server_id,
@@ -824,7 +829,8 @@ pub fn run() {
                                         flags,
                                     )
                                     .with_playback_hint(hint)
-                                    .with_http_registry(Some(Arc::clone(&registry)));
+                                    .with_http_registry(Some(Arc::clone(&registry)))
+                                    .with_cancellation(Arc::clone(&runtime.scheduler_cancel));
                                 if let Some(tok) = session.navidrome_token.clone() {
                                     sched = sched.with_navidrome_credentials(
                                         psysonic_library::sync::capability::NavidromeProbeCredentials {
@@ -1755,6 +1761,7 @@ mod scheduler_driver_tests {
             skipped_bulk_paused: false,
             skipped_sync_pass_active: false,
             delta: None,
+            census_changed_index: false,
             next_poll_at_ms: 1,
         };
         assert!(scheduler_idle_payload(&skipped, "s1", "").is_none());
@@ -1767,6 +1774,7 @@ mod scheduler_driver_tests {
                 up_to_date: true,
                 ..Default::default()
             }),
+            census_changed_index: false,
             next_poll_at_ms: 1,
         };
         assert!(scheduler_idle_payload(&up_to_date, "s1", "").is_none());
@@ -1779,6 +1787,7 @@ mod scheduler_driver_tests {
                 changed_count: 1,
                 ..Default::default()
             }),
+            census_changed_index: false,
             next_poll_at_ms: 1,
         };
         let payload = scheduler_idle_payload(&completed, "s1", "scope").unwrap();
@@ -1795,6 +1804,16 @@ mod scheduler_driver_tests {
             ..completed
         };
         assert!(scheduler_idle_payload(&deferred, "s1", "").is_none());
+
+        let census_only = psysonic_library::sync::scheduler::SchedulerTickReport {
+            census_changed_index: true,
+            delta: Some(psysonic_library::sync::delta::DeltaSyncReport {
+                up_to_date: true,
+                ..Default::default()
+            }),
+            ..skipped
+        };
+        assert!(scheduler_idle_payload(&census_only, "s1", "").is_some());
     }
 }
 
