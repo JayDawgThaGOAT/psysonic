@@ -1,4 +1,4 @@
-import { queueSongStar, playbackCoverArtForAlbum, usePlayerStore } from '@/features/playback';
+import { queueSongStar, playbackCoverArtForAlbum, usePlayerStore, usePlaybackLibraryNavigate, TrackArtistLinks } from '@/features/playback';
 import { usePlaybackCoverArt } from '@/cover/usePlaybackCoverArt';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
 import React, { useCallback, useEffect, useState, useRef, useMemo } from 'react';
@@ -31,6 +31,7 @@ interface FullscreenPlayerProps {
 
 export default function FullscreenPlayer({ onClose }: FullscreenPlayerProps) {
   const { t } = useTranslation();
+  const navigatePlaybackLibrary = usePlaybackLibraryNavigate();
   const currentTrack       = usePlayerStore(s => s.currentTrack);
   const resolvedStreamFormat = usePlayerStore(s => s.resolvedStreamFormat);
   const repeatMode         = usePlayerStore(s => s.repeatMode);
@@ -186,7 +187,20 @@ export default function FullscreenPlayer({ onClose }: FullscreenPlayerProps) {
         <p className="fs-track-title">{currentTrack?.title ?? '—'}</p>
 
         {/* Artist — secondary, below track */}
-        <p className="fs-artist-name">{currentTrack?.artist ?? '—'}</p>
+        {currentTrack ? (
+          <TrackArtistLinks
+            track={currentTrack}
+            onNavigate={to => {
+              onClose();
+              void navigatePlaybackLibrary(to);
+            }}
+            outerClassName="fs-artist-name"
+            linkClassName="fs-artist-link"
+            plainClassName="fs-artist-name-plain"
+          />
+        ) : (
+          <p className="fs-artist-name">—</p>
+        )}
 
         {/* Metadata row */}
         {metaParts.length > 0 && (
