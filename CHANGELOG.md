@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **Settings → System → Logging** and **PsyLab → Logs** offer basic and verbose debug-depth levels while Debug logging is enabled. Verbose mode adds structured multi-server scope, reachability, music-folder and New Releases diagnostics, with credentials and sensitive URL data redacted.
 
+### Streaming quality — per-address Navidrome bitrate and format controls
+
+**By [@Manwe-777](https://github.com/Manwe-777), PR [#1334](https://github.com/Psychotoxical/psysonic/pull/1334)**
+
+* Saved Navidrome servers can request no bitrate cap or a 320…64 kbps ceiling, with Auto / MP3 / Opus / AAC as the target format. Settings are stored per address, so LAN and public endpoints can use different quality profiles and playback follows the connected endpoint.
+* Offline pins, favourites sync and hot-cache prefetch use the original-stream path; confirmed Navidrome profiles request `format=raw`, while other servers keep the existing uncapped request. Transcoded live bytes are not promoted as original files, and completed-stream reuse stays isolated by endpoint, account, format and bitrate cap.
+* Waveform, loudness and enrichment may analyse the played stream, but canonical results stay anchored to the original file's validated raw fingerprint. Different bitrate representations share one track revision, and a failed original probe cannot overwrite library identity.
+* Because analysis stays anchored to the original, the first play of a track that arrives transcoded also fetches that original once in the background. Later plays skip it, but on a slow link the first play of each new track costs the capped stream plus the original — the cap saves bandwidth from the second play onwards.
+* After updating, Psysonic checks every offline pin, synced favourite and hot-cache file once against the original's fingerprint, using a 16 KB request per file rather than a fresh download. Pinned albums can briefly show as incomplete while that runs; files that turn out to be a server transcode are replaced with the original.
+
 ### Album details — disc covers in the multi-disc separator
 
 **By [@Psychotoxical](https://github.com/Psychotoxical) and [@cucadmuh](https://github.com/cucadmuh), PR [#1336](https://github.com/Psychotoxical/psysonic/pull/1336)**

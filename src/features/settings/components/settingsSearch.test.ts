@@ -12,6 +12,7 @@ const t = vi.fn((key: string) => {
     'settings.shortcutVolumeUp': 'Volume up',
     'settings.shortcutVolumeDown': 'Volume down',
     'settings.playbackTitle': 'Playback',
+    'settings.streamQualityTitle': 'Streaming Quality',
     'visualizer.settings.section': 'Visualizer',
   };
   return labels[key] ?? key;
@@ -41,6 +42,14 @@ describe('searchSettings', () => {
     const hits = searchSettings('Volume', 'library', t as unknown as TFunction);
     expect(hits.some(h => h.title === 'Volume up')).toBe(true);
     expect(hits.some(h => h.title === 'Volume down')).toBe(true);
+  });
+
+  it('finds per-address streaming quality by bitrate keywords', () => {
+    const hits = searchSettings('bitrate', 'library', t as unknown as TFunction);
+    expect(hits).toContainEqual(expect.objectContaining({
+      tab: 'servers',
+      title: 'Streaming Quality',
+    }));
   });
 
   it.each(['visualizer', 'spectrum', 'oscilloscope'])('finds the visualizer section by %s', query => {

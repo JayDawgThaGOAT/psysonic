@@ -224,6 +224,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             audio::autoeq_commands::autoeq_entries,
             audio::autoeq_commands::autoeq_fetch_profile,
             audio::preload_commands::audio_preload,
+            audio::preload_commands::audio_invalidate_preloads,
             audio::radio_commands::audio_play_radio,
             audio::preview::audio_preview_play,
             audio::preview::audio_preview_stop,
@@ -931,7 +932,7 @@ pub fn run() {
                     move |track_id| {
                         app_defer
                             .try_state::<crate::audio::AudioEngine>()
-                            .is_some_and(|e| crate::audio::ranged_loudness_backfill_should_defer(&e, track_id))
+                            .is_some_and(|e| crate::audio::playback_analysis_backfill_should_defer(&e, track_id))
                     },
                 );
                 app.manage(handle);
@@ -1351,6 +1352,7 @@ pub fn run() {
             audio::autoeq_commands::autoeq_entries,
             audio::autoeq_commands::autoeq_fetch_profile,
             audio::preload_commands::audio_preload,
+            audio::preload_commands::audio_invalidate_preloads,
             audio::radio_commands::audio_play_radio,
             audio::preview::audio_preview_play,
             audio::preview::audio_preview_stop,

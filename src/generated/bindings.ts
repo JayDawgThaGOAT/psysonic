@@ -145,6 +145,11 @@ export const commands = {
 	autoeqFetchProfile: (name: string, source: string, rig: string | null, form: string) => typedError<string, string>(__TAURI_INVOKE("autoeq_fetch_profile", { name, source, rig, form })),
 	audioPreload: (url: string, durationHint: number | null, analysisTrackId: string | null, serverId: string | null, eager: boolean | null) => typedError<null, string>(__TAURI_INVOKE("audio_preload", { url, durationHint, analysisTrackId, serverId, eager })),
 	/**
+	 *  Drop byte and gapless successor preloads after their URL-affecting inputs
+	 *  change. The main playback generation and currently audible source stay live.
+	 */
+	audioInvalidatePreloads: () => __TAURI_INVOKE<void>("audio_invalidate_preloads"),
+	/**
 	 *  Play a live internet radio stream.
 	 *
 	 *  Sends `Icy-MetaData: 1` to request inline ICY metadata.
@@ -229,7 +234,7 @@ export const commands = {
 	analysisListFailedTracks: (serverId: string, limit: number | null) => typedError<AnalysisFailedTrackDto[], string>(__TAURI_INVOKE("analysis_list_failed_tracks", { serverId, limit })),
 	analysisClearFailedTracks: (serverId: string, trackIds: string[] | null) => typedError<number, string>(__TAURI_INVOKE("analysis_clear_failed_tracks", { serverId, trackIds })),
 	analysisMigrateServerIndexKeys: (mappings: AnalysisServerKeyMigrationDto[]) => typedError<null, string>(__TAURI_INVOKE("analysis_migrate_server_index_keys", { mappings })),
-	analysisEnqueueSeedFromUrl: (trackId: string, url: string, force: boolean | null, serverId: string | null, priority: string | null) => typedError<null, string>(__TAURI_INVOKE("analysis_enqueue_seed_from_url", { trackId, url, force, serverId, priority })),
+	analysisEnqueueSeedFromUrl: (trackId: string, url: string, force: boolean | null, serverId: string | null, priority: string | null) => typedError<EnqueueSeedFromUrlOutcome, string>(__TAURI_INVOKE("analysis_enqueue_seed_from_url", { trackId, url, force, serverId, priority })),
 	analysisSetPlaybackPriorityHints: (middleTrackRefs: AnalysisPriorityHintDto[]) => typedError<null, string>(__TAURI_INVOKE("analysis_set_playback_priority_hints", { middleTrackRefs })),
 	analysisSetPipelineParallelism: (workers: number) => typedError<null, string>(__TAURI_INVOKE("analysis_set_pipeline_parallelism", { workers })),
 	analysisGetPipelineQueueStats: () => typedError<AnalysisPipelineQueueStatsDto, string>(__TAURI_INVOKE("analysis_get_pipeline_queue_stats")),
@@ -299,6 +304,7 @@ export const commands = {
 	path: string,
 	size: number,
 	layoutFingerprint: string,
+	originalBytesVerified: boolean,
 } | null, string>(__TAURI_INVOKE("promote_stream_cache_to_local", { trackId, serverIndexKey, libraryServerId, url, suffix, mediaDir })),
 	/**
 	 *  Scan `psysonic-offline/{segment}/{trackId}.ext`, verify each id in the library
@@ -561,6 +567,7 @@ export const commands = {
 	endpoints: ServerHttpEndpointWire[],
 	customHeaders?: CustomHeaderEntryWire[],
 	customHeadersApplyTo?: CustomHeadersApplyTo | null,
+	supportsRawStream?: boolean,
 } | null) => typedError<ServerProbeResult, string>(__TAURI_INVOKE("probe_server_connection", { baseUrl, username, password, httpContext })),
 	/**
 	 *  WebView-transport bridge for gated servers (Cloudflare Access, Pangolin, …).
@@ -583,6 +590,7 @@ export const commands = {
 	endpoints: ServerHttpEndpointWire[],
 	customHeaders?: CustomHeaderEntryWire[],
 	customHeadersApplyTo?: CustomHeadersApplyTo | null,
+	supportsRawStream?: boolean,
 } | null) => typedError<string, string>(__TAURI_INVOKE("subsonic_proxy_request", { baseUrl, endpoint, params, postForm, timeoutMs, httpContext })),
 	serverHttpContextClear: (serverId: string, appServerId: string) => typedError<null, string>(__TAURI_INVOKE("server_http_context_clear", { serverId, appServerId })),
 	serverHttpContextSync: (wire: ServerHttpContextSyncWire) => typedError<null, string>(__TAURI_INVOKE("server_http_context_sync", { wire })),
@@ -978,6 +986,8 @@ export type CustomHeadersApplyTo = "local" | "public" | "both";
 
 export type EndpointKind = "local" | "public";
 
+export type EnqueueSeedFromUrlOutcome = "enqueued" | "alreadyReserved" | "skipped" | "unsupported";
+
 /**  Cached user rating together with the time it was fetched from its owner. */
 export type EntityUserRatingDto = {
 	serverId: string,
@@ -1257,6 +1267,7 @@ export type LocalTrackDownloadResult = {
 	path: string,
 	size: number,
 	layoutFingerprint: string,
+	originalBytesVerified: boolean,
 };
 
 export type LogLineDto = {
@@ -1456,6 +1467,7 @@ export type ServerHttpContextSyncWire = {
 	endpoints: ServerHttpEndpointWire[],
 	customHeaders?: CustomHeaderEntryWire[],
 	customHeadersApplyTo?: CustomHeadersApplyTo | null,
+	supportsRawStream?: boolean,
 };
 
 export type ServerHttpEndpointWire = {

@@ -93,6 +93,10 @@ export function audioSetNormalization(args: {
   return commands.audioSetNormalization(args.engine, args.targetLufs, args.preAnalysisAttenuationDb);
 }
 
+export function audioInvalidatePreloads(): Promise<void> {
+  return commands.audioInvalidatePreloads();
+}
+
 /**
  * Start/stop the visualizer spectrum feed (`audio:spectrum` events).
  *
