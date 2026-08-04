@@ -326,6 +326,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Psysonic now detects MangoWM as a tiling environment and leaves window decoration to the compositor instead of adding its custom title bar.
 
+### Composers — names outside A–Z can be found again
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1381](https://github.com/Psychotoxical/psysonic/pull/1381)**
+
+* The letter bar on **Composers** ended at Z, so a composer whose name begins with a quote, a bracket or a non-Latin character could not be filtered to at all. The bar now carries the same **Other** entry the Artists page already had. Reported by zunoz.
+* In the list view that group is labelled instead of showing the raw key, and it is placed after Z rather than between O and P.
+
 ### Genres — accurate scoped counts without the long detail-page wait
 
 **By [@cucadmuh](https://github.com/cucadmuh), PR [#1382](https://github.com/Psychotoxical/psysonic/pull/1382)**
