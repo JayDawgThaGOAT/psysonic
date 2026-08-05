@@ -250,11 +250,12 @@ pub async fn fetch_icy_metadata(url: String) -> Result<IcyMetadata, String> {
     let meta_end   = (meta_start + meta_len).min(buf.len());
     let meta_bytes = &buf[meta_start..meta_end];
 
-    // ICY metadata is Latin-1 encoded; convert to a Rust String lossily.
-    let meta_str: String = meta_bytes
-        .iter()
-        .map(|&b| if b == 0 { '\0' } else { b as char })
-        .collect::<String>();
+    // ICY metadata might be Latin-1 or UTF-8, so handle both
+    let meta_str: String = match std::str::from_utf8(meta_bytes) {
+        Ok(s) => s.to_owned(),
+        // otherwise, not valid utf-8, fallback to latin-1
+        Err(_) => meta_bytes.iter().map(|&b| if b == 0 { '\0' } else { b as char }).collect::<String>(),
+    };
 
     // Parse StreamTitle='...' — value ends at the next unescaped single-quote.
     let stream_title = meta_str
