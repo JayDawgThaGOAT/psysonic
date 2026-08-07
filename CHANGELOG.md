@@ -352,6 +352,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Sustained CPU-heavy work no longer starves Psysonic's audio threads and causes playback stutter or dropouts. The player now asks Linux's realtime service to prioritise both its output callback and PipeWire processing, while keeping the previous scheduling when that service is unavailable.
 
+### Internet radio — keep non-Latin track titles readable
+
+**By [@RdrSeraphim](https://github.com/RdrSeraphim), PR [#1389](https://github.com/Psychotoxical/psysonic/pull/1389)**
+
+* ICY track metadata sent as UTF-8 now displays Japanese, Korean and wide-width Latin text correctly instead of mojibake. Legacy Latin-1 titles remain readable in both the player and system now-playing metadata.
+
 ### Linux — internet radio no longer blanks the window
 
 **By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1390](https://github.com/Psychotoxical/psysonic/pull/1390)**
