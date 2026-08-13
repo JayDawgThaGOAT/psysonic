@@ -113,6 +113,8 @@ pub(crate) async fn try_resume_after_device_change(
                     download_control: None,
                     random_access: true,
                     mp4_probe_gate: None,
+                    // A file on disk cannot be superseded mid-read.
+                    superseded: None,
                 }
             }
             Err(e) => {

@@ -352,6 +352,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Sustained CPU-heavy work no longer starves Psysonic's audio threads and causes playback stutter or dropouts. The player now asks Linux's realtime service to prioritise both its output callback and PipeWire processing, while keeping the previous scheduling when that service is unavailable.
 
+### Gapless playback — the audible gap between MP3 tracks
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1388](https://github.com/Psychotoxical/psysonic/pull/1388)**
+
+* Playing a continuous album in MP3 no longer inserts a short silence at every track change. Two adjacent tracks now join exactly where they were split, for files whose encoder recorded the gap in the file header — which is what the common MP3 encoders write.
+* Root cause: MP3 encoders add a few milliseconds of silence to the beginning and end of every file. Psysonic played that silence instead of skipping it, which put roughly 50 ms of it into each track boundary. Unchanged: internet radio, playback from servers that cannot serve range requests, and files that carry only an iTunes-style tag instead of that header when they are played from disk or streamed.
+
 ### Internet radio — keep non-Latin track titles readable
 
 **By [@RdrSeraphim](https://github.com/RdrSeraphim), PR [#1389](https://github.com/Psychotoxical/psysonic/pull/1389)**
