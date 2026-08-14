@@ -779,6 +779,63 @@ pub fn create_engine() -> (AudioEngine, std::thread::JoinHandle<()>) {
     (engine, thread)
 }
 
+/// Channels the output device takes, or 0 if that cannot be determined.
+///
+/// Two sources, in order of authority:
+///
+/// 1. the open sink's own config — read from the sink rather than kept in a
+///    second atomic, so it cannot drift from the device that is playing. The
+///    lock is taken and released immediately: the stream-open transaction holds
+///    `stream_open_lock` around this same handle, and holding it across source
+///    construction would put a second waiter in that path;
+/// 2. the device's default config, when no stream is open.
+///
+/// The fallback is not optional. Sources are built *before* the stream is opened
+/// (`audio_play` builds, then calls `connect_new_player`), and the stream is
+/// released on stop and when idle — so the first track after launch, after a
+/// stop, and after an idle release would all see "no device" and skip the
+/// multichannel downmix entirely, which is exactly the case issue #1408 reports.
+///
+/// The fallback is a prediction: rodio may open the device with a different
+/// count than its default config advertises. Once a stream exists, its value
+/// wins.
+pub(crate) fn output_device_channels(engine: &AudioEngine) -> u16 {
+    if let Ok(guard) = engine.stream_handle.lock() {
+        if let Some(sink) = guard.as_ref() {
+            return sink.config().channel_count().get();
+        }
+    } else {
+        // A poisoned lock would otherwise silently mean "no downmix".
+        crate::app_eprintln!(
+            "[psysonic] stream handle lock poisoned; falling back to the device default for channels"
+        );
+    }
+    probe_output_device_channels(engine)
+}
+
+/// Channel count from the selected device's default config, or 0 when no device
+/// answers. Mirrors `probe_device_default_rate` for channels.
+///
+/// Runs on the per-track build path while no stream is open, and querying a
+/// device opens the PCM — on ALSA that prints plugin chatter to stderr, which
+/// lands in the app log. Suppressed the same way every other device query in
+/// this crate is.
+fn probe_output_device_channels(engine: &AudioEngine) -> u16 {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+
+    let selected = engine.selected_device.lock().ok().and_then(|name| name.clone());
+    crate::dev_io::with_suppressed_alsa_stderr(|| {
+        let device = selected
+            .and_then(|name| crate::dev_io::resolve_output_device(&name))
+            .or_else(|| rodio::cpal::default_host().default_output_device());
+
+        device
+            .and_then(|device| device.default_output_config().ok())
+            .map(|config| config.channels())
+            .unwrap_or(0)
+    })
+}
+
 pub(crate) fn stream_rate_needs_switch(target_rate: u32, current_requested_rate: u32) -> bool {
     target_rate > 0 && target_rate != current_requested_rate
 }
