@@ -5,9 +5,6 @@ on:
     branches: [main]
   push:
     branches: [main]
-  workflow_run:
-    workflows: [frontend-tests, rust-tests, eslint]
-    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -19,9 +16,14 @@ jobs:
   ci-ok:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      # Load only the trusted gate implementation. The PR head is inspected via
+      # read-only API calls below and must never execute in this job.
+      - name: checkout trusted gate code
+        uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - name: aggregate required checks
         uses: actions/github-script@v9
         with:
