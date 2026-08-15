@@ -3,6 +3,7 @@
 //! Stream completion, hot/offline files, gapless chain, preload, and in-memory
 //! replay all funnel through here before [`psysonic_analysis::analysis_runtime::enqueue_track_analysis`].
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,7 +17,9 @@ use psysonic_analysis::analysis_runtime::AnalysisBackfillPriority;
 use crate::engine::{analysis_track_id_is_current_playback, AudioEngine};
 use crate::helpers::{analysis_cache_track_id, current_playback_server_id_str};
 use crate::state::ChainedInfo;
-use crate::stream::{LOCAL_FILE_PLAYBACK_SEED_MAX_BYTES, TRACK_STREAM_PROMOTE_MAX_BYTES};
+use crate::stream::{
+    AnalysisSeedHoldGuard, LOCAL_FILE_PLAYBACK_SEED_MAX_BYTES, TRACK_STREAM_PROMOTE_MAX_BYTES,
+};
 
 /// Where playback obtained the bytes — used for logging and size caps only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +54,11 @@ struct StreamProvenanceEvent {
 
 pub(crate) type GenerationGuard = (u64, Arc<AtomicU64>);
 
+pub(crate) struct PreparedTrackAnalysisFile {
+    file: std::fs::File,
+    file_len: u64,
+}
+
 pub(crate) struct TrackAnalysisDispatchOptions<'a> {
     pub(crate) priority: AnalysisBackfillPriority,
     pub(crate) generation_guard: Option<&'a GenerationGuard>,
@@ -72,6 +80,14 @@ fn live_capture_origin(origin: TrackAnalysisOrigin) -> bool {
 
 fn generation_guard_is_current(guard: &GenerationGuard) -> bool {
     guard.1.load(Ordering::SeqCst) == guard.0
+}
+
+fn generation_guard_allows_analysis(
+    origin: TrackAnalysisOrigin,
+    generation_guard: Option<&GenerationGuard>,
+) -> bool {
+    matches!(origin, TrackAnalysisOrigin::StreamSpillFile)
+        || generation_guard.is_none_or(generation_guard_is_current)
 }
 
 fn provenance_event_generation(
@@ -109,11 +125,17 @@ pub(crate) fn emit_stream_provenance_if_current(
     );
 }
 
-fn max_bytes_for_origin(origin: TrackAnalysisOrigin) -> usize {
+fn max_bytes_for_dispatch(origin: TrackAnalysisOrigin) -> usize {
     match origin {
-        TrackAnalysisOrigin::LocalFilePlayback => LOCAL_FILE_PLAYBACK_SEED_MAX_BYTES,
+        TrackAnalysisOrigin::LocalFilePlayback | TrackAnalysisOrigin::StreamSpillFile => {
+            LOCAL_FILE_PLAYBACK_SEED_MAX_BYTES
+        }
         _ => TRACK_STREAM_PROMOTE_MAX_BYTES,
     }
+}
+
+fn max_http_fetch_bytes_for_dispatch() -> usize {
+    TRACK_STREAM_PROMOTE_MAX_BYTES
 }
 
 /// Playback server scope: explicit IPC value, else pinned engine scope.
@@ -154,7 +176,6 @@ fn resolve_analysis_scope(
         .to_string()
 }
 
-
 fn server_id_from_playback_url(url_raw: &str) -> Option<String> {
     if url_raw.starts_with("psysonic-local://") {
         return None;
@@ -194,10 +215,7 @@ fn resolve_analysis_priority(
         return AnalysisBackfillPriority::High;
     }
     psysonic_analysis::analysis_runtime::analysis_backfill_resolve_priority(
-        app,
-        server_id,
-        track_id,
-        None,
+        app, server_id, track_id, None,
     )
 }
 
@@ -214,10 +232,7 @@ pub(crate) fn prepare_playback_analysis(
     (sid, resolved)
 }
 
-pub(crate) fn resolve_server_id_for_app(
-    app: &AppHandle,
-    explicit: Option<&str>,
-) -> String {
+pub(crate) fn resolve_server_id_for_app(app: &AppHandle, explicit: Option<&str>) -> String {
     let engine = app.try_state::<AudioEngine>();
     resolve_analysis_server_id(explicit, engine.as_deref())
 }
@@ -256,6 +271,7 @@ pub(crate) fn spawn_gapless_transition_analysis(app: &AppHandle, info: &ChainedI
         Some(info.url.clone()),
         priority,
         Some((info.generation, engine.generation.clone())),
+        None,
     );
 }
 
@@ -287,7 +303,11 @@ fn trusted_original_fetch_needed(
     trusted_md5_16kb: &str,
 ) -> bool {
     should_fetch_trusted_original(
-        psysonic_analysis::analysis_runtime::analysis_track_in_cpu_pipeline(server_id, track_id),
+        psysonic_analysis::analysis_runtime::analysis_revision_in_cpu_pipeline(
+            server_id,
+            track_id,
+            trusted_md5_16kb,
+        ),
         psysonic_analysis::track_analysis_plan::plan_track_analysis(
             app,
             server_id,
@@ -327,7 +347,7 @@ pub(crate) async fn dispatch_track_analysis_bytes(
             StreamProvenance::Original
         });
     }
-    let max = max_bytes_for_origin(origin);
+    let max = max_bytes_for_dispatch(origin);
     crate::app_deprintln!(
         "[analysis][dispatch] origin={origin:?} track_id={track_id} server_id={} size_mib={:.2} priority={priority:?}",
         if server_id.is_empty() { "''" } else { server_id },
@@ -352,6 +372,13 @@ pub(crate) async fn dispatch_track_analysis_bytes(
         match verdict {
             TrustedProbeVerdict::Trusted(trusted) => {
                 let provenance = provenance_from_trusted_bytes(&bytes, &trusted);
+                if !generation_guard_allows_analysis(origin, generation_guard) {
+                    return Ok(provenance);
+                }
+                let trusted_generation =
+                    psysonic_analysis::analysis_runtime::begin_trusted_revision(
+                        server_id, track_id, &trusted,
+                    );
                 emit_stream_provenance_if_current(
                     app,
                     origin,
@@ -361,7 +388,33 @@ pub(crate) async fn dispatch_track_analysis_bytes(
                     provenance,
                     generation_guard,
                 );
-                let analysis_bytes = if provenance == StreamProvenance::Original {
+                if provenance == StreamProvenance::Transcoded
+                    && !psysonic_analysis::track_analysis_plan::plan_track_analysis(
+                        app, server_id, track_id, &trusted,
+                    )
+                    .any()
+                {
+                    return psysonic_analysis::analysis_runtime::enqueue_track_analysis_trusted_owned(
+                        app,
+                        server_id,
+                        track_id,
+                        bytes,
+                        None,
+                        psysonic_analysis::analysis_runtime::TrustedAnalysisRevision {
+                            md5_16kb: trusted,
+                            generation: trusted_generation,
+                            analysis_bytes_transcoded: true,
+                            content_hash_server_id: None,
+                        },
+                        priority,
+                    )
+                    .await
+                    .map(|_| provenance);
+                }
+                let mut trusted_fetch_permit = None;
+                let (analysis_bytes, analysis_bytes_transcoded) = if provenance
+                    == StreamProvenance::Original
+                {
                     if bytes.len() > max {
                         crate::app_deprintln!(
                             "[analysis][dispatch] skip origin={origin:?} track_id={track_id} bytes={} max={max}",
@@ -369,7 +422,7 @@ pub(crate) async fn dispatch_track_analysis_bytes(
                         );
                         return Ok(provenance);
                     }
-                    bytes
+                    (bytes, false)
                 } else {
                     if !trusted_original_fetch_needed(app, server_id, track_id, &trusted) {
                         crate::app_deprintln!(
@@ -380,44 +433,63 @@ pub(crate) async fn dispatch_track_analysis_bytes(
                     crate::app_deprintln!(
                         "[analysis][dispatch] captured bytes differ from trusted original track_id={track_id}; fetching bounded raw original"
                     );
-                    let Some(original) = psysonic_analysis::raw_probe::fetch_trusted_original_bytes(
-                        &client,
-                        registry.as_deref(),
-                        Some(server_id).filter(|s| !s.is_empty()),
-                        stream_url.unwrap_or_default(),
-                        &trusted,
-                        max,
+                    let permit = psysonic_analysis::analysis_runtime::reserve_trusted_analysis_fetch(
+                        server_id, track_id, &trusted,
                     )
-                    .await
-                    else {
+                    .await;
+                    if permit.waited()
+                        && !trusted_original_fetch_needed(app, server_id, track_id, &trusted)
+                    {
                         crate::app_deprintln!(
-                            "[analysis][dispatch] skip origin={origin:?} track_id={track_id}: raw original unavailable or exceeds cap"
+                            "[analysis][dispatch] skip completed duplicate raw original fetch track_id={track_id}"
                         );
                         return Ok(provenance);
-                    };
-                    original
+                    }
+                    trusted_fetch_permit = Some(permit);
+                    match psysonic_analysis::raw_probe::fetch_trusted_original_bytes(
+                            &client,
+                            registry.as_deref(),
+                            Some(server_id).filter(|s| !s.is_empty()),
+                            stream_url.unwrap_or_default(),
+                            &trusted,
+                            max_http_fetch_bytes_for_dispatch(),
+                        )
+                        .await
+                    {
+                        Some(original) => (original, false),
+                        None => {
+                            if bytes.len() > max {
+                                crate::app_deprintln!(
+                                    "[analysis][dispatch] skip captured transcode origin={origin:?} track_id={track_id} bytes={} max={max}",
+                                    bytes.len(),
+                                );
+                                return Ok(provenance);
+                            }
+                            crate::app_deprintln!(
+                                "[analysis][dispatch] raw original unavailable or exceeds HTTP cap; analyzing captured transcode track_id={track_id}"
+                            );
+                            (bytes, true)
+                        }
+                    }
                 };
-                let trusted_generation =
-                    psysonic_analysis::analysis_runtime::begin_trusted_revision(
-                        server_id,
-                        track_id,
-                        &trusted,
-                    );
-                psysonic_analysis::analysis_runtime::enqueue_track_analysis_trusted(
+                let result = psysonic_analysis::analysis_runtime::enqueue_track_analysis_trusted_owned(
                     app,
                     server_id,
                     track_id,
-                    &analysis_bytes,
+                    analysis_bytes,
                     None,
                     psysonic_analysis::analysis_runtime::TrustedAnalysisRevision {
                         md5_16kb: trusted,
                         generation: trusted_generation,
+                        analysis_bytes_transcoded,
                         content_hash_server_id: None,
                     },
                     priority,
                 )
                 .await
-                .map(|_| provenance)
+                .map(|_| provenance);
+                drop(trusted_fetch_permit);
+                result
             }
             TrustedProbeVerdict::SkipCanonicalWrites => {
                 // No positive provenance for these HTTP-stream bytes (the
@@ -447,12 +519,7 @@ pub(crate) async fn dispatch_track_analysis_bytes(
             return Ok(StreamProvenance::Original);
         }
         psysonic_analysis::analysis_runtime::enqueue_track_analysis(
-            app,
-            server_id,
-            track_id,
-            &bytes,
-            None,
-            priority,
+            app, server_id, track_id, &bytes, None, priority,
         )
         .await
         .map(|_| StreamProvenance::Original)
@@ -470,15 +537,14 @@ pub(crate) fn spawn_track_analysis_bytes(
     stream_url: Option<String>,
     priority: AnalysisBackfillPriority,
     generation_guard: Option<GenerationGuard>,
+    analysis_seed_hold: Option<AnalysisSeedHoldGuard>,
 ) {
     if track_id.trim().is_empty() || bytes.is_empty() {
         return;
     }
     tokio::spawn(async move {
-        if generation_guard
-            .as_ref()
-            .is_some_and(|guard| !generation_guard_is_current(guard))
-        {
+        let _analysis_seed_hold = analysis_seed_hold;
+        if !generation_guard_allows_analysis(origin, generation_guard.as_ref()) {
             return;
         }
         match dispatch_track_analysis_bytes(
@@ -518,25 +584,106 @@ pub(crate) fn spawn_track_analysis_file(
     stream_url: Option<String>,
     priority: AnalysisBackfillPriority,
     generation_guard: Option<GenerationGuard>,
+    analysis_seed_hold: Option<AnalysisSeedHoldGuard>,
 ) {
     if track_id.trim().is_empty() {
         return;
     }
+    if !generation_guard_allows_analysis(origin, generation_guard.as_ref()) {
+        return;
+    }
+    let Some(prepared_file) = prepare_track_analysis_file(origin, &track_id, &file_path) else {
+        return;
+    };
+    spawn_track_analysis_prepared_file(
+        app,
+        origin,
+        server_id,
+        track_id,
+        prepared_file,
+        stream_url,
+        priority,
+        generation_guard,
+        analysis_seed_hold,
+    );
+}
+
+pub(crate) fn prepare_track_analysis_file(
+    origin: TrackAnalysisOrigin,
+    track_id: &str,
+    file_path: &std::path::Path,
+) -> Option<PreparedTrackAnalysisFile> {
+    let max = max_bytes_for_dispatch(origin);
+    let file = match std::fs::File::open(file_path) {
+        Ok(file) => file,
+        Err(error) => {
+            crate::app_eprintln!(
+                "[analysis][dispatch] open file failed origin={origin:?} track_id={track_id}: {error}"
+            );
+            return None;
+        }
+    };
+    let file_len = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            crate::app_eprintln!(
+                "[analysis][dispatch] file metadata failed origin={origin:?} track_id={track_id}: {error}"
+            );
+            return None;
+        }
+    };
+    if file_len > max as u64 {
+        crate::app_deprintln!(
+            "[analysis][dispatch] skip file origin={origin:?} track_id={track_id} bytes={file_len} max={max}"
+        );
+        return None;
+    }
+    Some(PreparedTrackAnalysisFile { file, file_len })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_track_analysis_prepared_file(
+    app: AppHandle,
+    origin: TrackAnalysisOrigin,
+    server_id: String,
+    track_id: String,
+    prepared_file: PreparedTrackAnalysisFile,
+    stream_url: Option<String>,
+    priority: AnalysisBackfillPriority,
+    generation_guard: Option<GenerationGuard>,
+    analysis_seed_hold: Option<AnalysisSeedHoldGuard>,
+) {
+    let PreparedTrackAnalysisFile { file, file_len } = prepared_file;
     tokio::spawn(async move {
-        if generation_guard
-            .as_ref()
-            .is_some_and(|guard| !generation_guard_is_current(guard))
-        {
+        let _analysis_seed_hold = analysis_seed_hold;
+        if !generation_guard_allows_analysis(origin, generation_guard.as_ref()) {
             return;
         }
-        let bytes = match tokio::fs::read(&file_path).await {
-            Ok(b) if !b.is_empty() => b,
-            _ => return,
-        };
-        if generation_guard
-            .as_ref()
-            .is_some_and(|guard| !generation_guard_is_current(guard))
+        let bytes = match tokio::task::spawn_blocking(move || {
+            let mut file = file;
+            let mut bytes = Vec::with_capacity(file_len as usize);
+            file.read_to_end(&mut bytes)
+                .map(|_| bytes)
+                .map_err(|error| error.to_string())
+        })
+        .await
         {
+            Ok(Ok(bytes)) if !bytes.is_empty() => bytes,
+            Ok(Ok(_)) => return,
+            Ok(Err(error)) => {
+                crate::app_eprintln!(
+                    "[analysis][dispatch] file read failed origin={origin:?} track_id={track_id}: {error}"
+                );
+                return;
+            }
+            Err(error) => {
+                crate::app_eprintln!(
+                    "[analysis][dispatch] file read task failed origin={origin:?} track_id={track_id}: {error}"
+                );
+                return;
+            }
+        };
+        if !generation_guard_allows_analysis(origin, generation_guard.as_ref()) {
             return;
         }
         match dispatch_track_analysis_bytes(
@@ -572,7 +719,11 @@ mod scope_tests {
         // Primary vs alternate address must share one analysis scope: the
         // explicit canonical key wins over the URL-derived transport host.
         assert_eq!(
-            resolve_analysis_scope(Some("canonical.example"), Some("canonical.example"), Some("lan.local:4533")),
+            resolve_analysis_scope(
+                Some("canonical.example"),
+                Some("canonical.example"),
+                Some("lan.local:4533")
+            ),
             "canonical.example"
         );
         assert_eq!(
@@ -587,7 +738,10 @@ mod scope_tests {
             resolve_analysis_scope(None, Some("pinned.example"), Some("lan.local")),
             "pinned.example"
         );
-        assert_eq!(resolve_analysis_scope(None, None, Some("lan.local")), "lan.local");
+        assert_eq!(
+            resolve_analysis_scope(None, None, Some("lan.local")),
+            "lan.local"
+        );
         assert_eq!(resolve_analysis_scope(Some("  "), None, None), "");
     }
 }
@@ -595,6 +749,8 @@ mod scope_tests {
 #[cfg(test)]
 mod provenance_tests {
     use super::*;
+
+    static TEST_FILE_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn trusted_prefix_distinguishes_original_from_transcoded_capture() {
@@ -611,10 +767,82 @@ mod provenance_tests {
     }
 
     #[test]
-    fn raw_original_fetch_requires_work_outside_the_cpu_pipeline() {
+    fn raw_original_fetch_requires_work_outside_the_same_revision_cpu_pipeline() {
         assert!(should_fetch_trusted_original(false, true));
         assert!(!should_fetch_trusted_original(true, true));
         assert!(!should_fetch_trusted_original(false, false));
+    }
+
+    #[test]
+    fn disk_backed_stream_spills_use_the_local_file_analysis_cap() {
+        assert_eq!(
+            max_bytes_for_dispatch(TrackAnalysisOrigin::StreamSpillFile),
+            LOCAL_FILE_PLAYBACK_SEED_MAX_BYTES,
+        );
+        assert_eq!(
+            max_bytes_for_dispatch(TrackAnalysisOrigin::PrefetchOrCacheFile),
+            TRACK_STREAM_PROMOTE_MAX_BYTES,
+        );
+    }
+
+    #[test]
+    fn stream_spill_above_the_ram_capture_cap_remains_eligible_for_analysis() {
+        let spill_cap = max_bytes_for_dispatch(TrackAnalysisOrigin::StreamSpillFile);
+        assert!(TRACK_STREAM_PROMOTE_MAX_BYTES < spill_cap);
+        assert_eq!(spill_cap, LOCAL_FILE_PLAYBACK_SEED_MAX_BYTES);
+    }
+
+    #[test]
+    fn spill_analysis_keeps_raw_http_refetch_at_the_ram_cap() {
+        assert_eq!(
+            max_http_fetch_bytes_for_dispatch(),
+            TRACK_STREAM_PROMOTE_MAX_BYTES
+        );
+        assert!(
+            max_http_fetch_bytes_for_dispatch()
+                < max_bytes_for_dispatch(TrackAnalysisOrigin::StreamSpillFile)
+        );
+    }
+
+    #[test]
+    fn completed_spill_analysis_survives_a_stale_playback_generation() {
+        let generation = Arc::new(AtomicU64::new(8));
+        let stale_guard = (7, generation);
+        assert!(generation_guard_allows_analysis(
+            TrackAnalysisOrigin::StreamSpillFile,
+            Some(&stale_guard),
+        ));
+        assert!(!generation_guard_allows_analysis(
+            TrackAnalysisOrigin::StreamDownloadComplete,
+            Some(&stale_guard),
+        ));
+    }
+
+    #[test]
+    fn prepared_spill_handle_survives_path_removal_when_supported() {
+        let path = std::env::temp_dir().join(format!(
+            "psysonic-analysis-spill-{}-{}",
+            std::process::id(),
+            TEST_FILE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let expected = b"stable spill bytes";
+        std::fs::write(&path, expected).unwrap();
+        let prepared = prepare_track_analysis_file(
+            TrackAnalysisOrigin::StreamSpillFile,
+            "track-1",
+            &path,
+        )
+        .unwrap();
+        let removed = std::fs::remove_file(&path).is_ok();
+
+        let PreparedTrackAnalysisFile { mut file, .. } = prepared;
+        let mut actual = Vec::new();
+        file.read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        drop(file);
+        if !removed {
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

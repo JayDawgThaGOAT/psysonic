@@ -2,8 +2,8 @@
 
 use oximedia_mir::{mood, tempo, MirConfig};
 use psysonic_core::track_enrichment::{
-    TrackEnrichmentFacts, TrackEnrichmentIntFact, TrackEnrichmentOutcome, TrackEnrichmentPort,
-    TrackEnrichmentPlan, TrackEnrichmentRealFact,
+    TrackEnrichmentFacts, TrackEnrichmentIntFact, TrackEnrichmentOutcome, TrackEnrichmentPlan,
+    TrackEnrichmentPort, TrackEnrichmentRealFact,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -36,6 +36,7 @@ pub fn run_track_enrichment_if_needed<R: Runtime>(
     track_id: &str,
     bytes: &[u8],
     trusted_md5_16kb: Option<&str>,
+    trusted_guard: Option<(&str, u64)>,
     notify_ui: bool,
 ) -> TrackEnrichmentOutcome {
     if server_id.is_empty() {
@@ -44,8 +45,8 @@ pub fn run_track_enrichment_if_needed<R: Runtime>(
     let Some(port) = app.try_state::<TrackEnrichmentPort>() else {
         return TrackEnrichmentOutcome::SkippedNoPort;
     };
-    // Trusted original bytes carry their verified fingerprint so facts stay
-    // keyed/current against the same canonical file revision.
+    // A trusted identity comes from the original bytes or the separate raw
+    // prefix probe used by bounded background transcodes.
     let content_hash = trusted_md5_16kb
         .map(str::to_string)
         .unwrap_or_else(|| md5_first_16kb(bytes));
@@ -54,8 +55,16 @@ pub fn run_track_enrichment_if_needed<R: Runtime>(
         return TrackEnrichmentOutcome::SkippedComplete;
     }
 
-    match analyze_and_store(&port, server_id, track_id, &content_hash, bytes, plan) {
-        Ok(()) => {
+    match analyze_and_store(
+        &port,
+        server_id,
+        track_id,
+        &content_hash,
+        bytes,
+        plan,
+        trusted_guard,
+    ) {
+        Ok(true) => {
             crate::app_deprintln!(
                 "[analysis][enrichment] applied track_id={} server_id={} hash={}",
                 track_id,
@@ -66,6 +75,15 @@ pub fn run_track_enrichment_if_needed<R: Runtime>(
                 emit_enrichment_updated(app, server_id, track_id);
             }
             TrackEnrichmentOutcome::Applied
+        }
+        Ok(false) => {
+            crate::app_deprintln!(
+                "[analysis][enrichment] skipped stale track_id={} server_id={} hash={}",
+                track_id,
+                server_id,
+                content_hash
+            );
+            TrackEnrichmentOutcome::SkippedSuperseded
         }
         Err(e) => {
             crate::app_eprintln!(
@@ -86,11 +104,11 @@ fn analyze_and_store(
     content_hash: &str,
     bytes: &[u8],
     plan: TrackEnrichmentPlan,
-) -> Result<(), String> {
+    trusted_guard: Option<(&str, u64)>,
+) -> Result<bool, String> {
     let total_duration = audio_duration_from_bytes(bytes).unwrap_or(0.0);
     let window = analysis_pcm_window(total_duration, ENRICHMENT_WINDOW_SEC);
-    let (mono, sample_rate) =
-        decode_mono_pcm_window(bytes, window.start_sec, window.duration_sec)?;
+    let (mono, sample_rate) = decode_mono_pcm_window(bytes, window.start_sec, window.duration_sec)?;
     if mono.is_empty() || sample_rate <= 0.0 {
         return Err("empty PCM window".to_string());
     }
@@ -125,11 +143,24 @@ fn analyze_and_store(
             });
         }
         if plan.need_moods && !mood.moods.is_empty() {
-            facts.moods = Some(
-                serde_json::to_string(&mood.moods).map_err(|e| format!("moods json: {e}"))?,
-            );
+            facts.moods =
+                Some(serde_json::to_string(&mood.moods).map_err(|e| format!("moods json: {e}"))?);
         }
     }
 
-    port.store(server_id, track_id, content_hash, &facts)
+    if let Some((guard_server_id, generation)) = trusted_guard {
+        let Some(result) = crate::analysis_runtime::commit_trusted_enrichment_if_current(
+            guard_server_id,
+            track_id,
+            content_hash,
+            generation,
+            || port.store(server_id, track_id, content_hash, &facts),
+        ) else {
+            return Ok(false);
+        };
+        result?;
+        return Ok(true);
+    }
+    port.store(server_id, track_id, content_hash, &facts)?;
+    Ok(true)
 }
