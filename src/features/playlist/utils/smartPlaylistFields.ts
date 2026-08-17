@@ -128,6 +128,7 @@ type FieldSeed = Omit<SmartRuleFieldDefinition, 'label' | 'source' | 'minimumVer
 };
 
 const V048 = [0, 48, 0] as const;
+const V052 = [0, 52, 0] as const;
 const V055 = [0, 55, 0] as const;
 const V061 = [0, 61, 0] as const;
 const V063 = [0, 63, 0] as const;
@@ -289,6 +290,14 @@ const RELEASED_FIELD_SEEDS: FieldSeed[] = [
     type: 'string',
     filterable: false,
     sortable: true,
+  },
+  {
+    name: 'playlist',
+    label: 'Playlist',
+    type: 'playlist',
+    filterable: true,
+    sortable: false,
+    minimumVersion: V052,
   },
 ];
 

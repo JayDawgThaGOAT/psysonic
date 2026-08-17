@@ -320,6 +320,75 @@ describe('PlaylistsSmartEditor', () => {
     expect(view.getByRole('spinbutton', { name: 'Percentage' })).toHaveValue(100);
   });
 
+  it('offers Playlist as a Title Case field on 0.52+ servers', async () => {
+    const user = userEvent.setup();
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId={null}
+        serverIdentity={{ type: 'navidrome', serverVersion: '0.52.0' }}
+        playlistOptions={[{ id: 'pl-favorites', name: 'Favorites' }]}
+      />,
+    );
+
+    await user.click(view.getByRole('tab', { name: 'Advanced' }));
+    const field = view.getAllByRole('combobox', { name: 'Field' })[0];
+    await user.click(field);
+    await user.type(field, 'play');
+    await user.click(view.getByRole('option', { name: 'Playlist' }));
+    expect(field).toHaveValue('Playlist');
+    expect(view.getByText('in playlist')).toBeInTheDocument();
+
+    const value = view.getByRole('combobox', { name: 'Value' });
+    await user.click(value);
+    await user.click(view.getByRole('option', { name: 'Favorites' }));
+    expect(value).toHaveValue('Favorites');
+  });
+
+  it('shows an existing playlist membership rule with the selected playlist name', () => {
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        serverIdentity={{ type: 'navidrome', serverVersion: '0.52.0' }}
+        playlistOptions={[
+          { id: 'pl-favorites', name: 'Favorites' },
+          { id: 'pl-deep', name: 'Deep Cuts' },
+        ]}
+        initialSession={createSmartEditorSession({
+          name: 'From Favorites',
+          rules: { all: [{ inPlaylist: { id: 'pl-favorites' } }] },
+        })}
+      />,
+    );
+
+    expect(view.getByDisplayValue('Playlist')).toBeInTheDocument();
+    expect(view.getByRole('combobox', { name: 'Value' })).toHaveValue('Favorites');
+    expect(view.getByText('in playlist')).toBeInTheDocument();
+  });
+
+  it('applies a selected playlist into an in-playlist rule', async () => {
+    const user = userEvent.setup();
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        serverIdentity={{ type: 'navidrome', serverVersion: '0.52.0' }}
+        playlistOptions={[
+          { id: 'pl-favorites', name: 'Favorites' },
+          { id: 'pl-deep', name: 'Deep Cuts' },
+        ]}
+        initialSession={createSmartEditorSession({
+          name: 'From Favorites',
+          rules: { all: [{ inPlaylist: { id: '' } }] },
+        })}
+      />,
+    );
+
+    const value = view.getByRole('combobox', { name: 'Value' });
+    await user.click(value);
+    await user.type(value, 'deep');
+    await user.click(view.getByRole('option', { name: 'Deep Cuts' }));
+    expect(value).toHaveValue('Deep Cuts');
+  });
+
   it('suggests existing genres in Advanced rule values', async () => {
     const user = userEvent.setup();
     const view = renderWithProviders(

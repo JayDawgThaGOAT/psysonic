@@ -52,6 +52,25 @@ describe('released smart-rule registry', () => {
       filterable: false,
       sortable: true,
     });
+    expect(findSmartRuleField('playlist')).toMatchObject({
+      name: 'playlist',
+      label: 'Playlist',
+      type: 'playlist',
+      filterable: true,
+      sortable: false,
+    });
+  });
+
+  it('exposes playlist membership from 0.52 and keeps it out of sort fields', () => {
+    const v51 = resolveSmartPlaylistCapabilities('0.51.9');
+    const v52 = resolveSmartPlaylistCapabilities('0.52.0');
+    expect(getAvailableSmartRuleFields(v51).map(field => field.name)).not.toContain('playlist');
+    expect(getAvailableSmartRuleFields(v52).map(field => field.name)).toContain('playlist');
+    const playlist = findSmartRuleField('playlist')!;
+    expect(getSmartRuleOperatorsForField(playlist, v52).map(item => item.name))
+      .toEqual(['inPlaylist', 'notInPlaylist']);
+    expect(searchSmartRuleFields('playlist', v52).find(field => field.name === 'playlist')?.sortable)
+      .toBe(false);
   });
 
   it('includes default mappings.yaml tags and roles such as mood', () => {

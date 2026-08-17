@@ -38,7 +38,7 @@ export default function PlaylistsSmartFieldPicker({
 
   const matches = useMemo(
     () => searchSmartRuleFields(open ? query : '', capabilities, customFields)
-      .filter(field => !sortableOnly || field.sortable !== false),
+      .filter(field => (sortableOnly ? field.sortable !== false : field.filterable !== false)),
     [capabilities, customFields, open, query, sortableOnly],
   );
   const selected = findSmartRuleField(value, customFields)

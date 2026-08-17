@@ -6,7 +6,6 @@ import PlaylistsSmartFieldPicker from '@/features/playlist/components/PlaylistsS
 import PlaylistsSmartValuePicker from '@/features/playlist/components/PlaylistsSmartValuePicker';
 import {
   findSmartRuleField,
-  findSmartRuleOperator,
   getSmartRuleOperatorsForField,
   type SmartPlaylistCapabilities,
   type SmartRuleFieldDefinition,
@@ -45,6 +44,18 @@ function isYearField(field: SmartRuleFieldDefinition | undefined): boolean {
   return field?.type === 'number' && /year$/i.test(field.name);
 }
 
+function isPlaylistOperator(operator: string): boolean {
+  return operator === 'inPlaylist' || operator === 'notInPlaylist';
+}
+
+function playlistIdValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && value && 'id' in value) {
+    return String((value as { id?: unknown }).id ?? '');
+  }
+  return '';
+}
+
 function currentYear(): number {
   return new Date().getFullYear();
 }
@@ -60,7 +71,7 @@ function defaultValueFor(
   field: SmartRuleFieldDefinition,
   operator: string,
 ): unknown {
-  if (operator === 'inPlaylist' || operator === 'notInPlaylist') return '';
+  if (isPlaylistOperator(operator) || field.type === 'playlist') return '';
   if (operator === 'isMissing' || operator === 'isPresent') return true;
   if (operator === 'inTheRange') {
     if (field.type === 'date') return [todayIsoDate(), todayIsoDate()];
@@ -88,8 +99,8 @@ export default function PlaylistsSmartRuleRow({
   genreSuggestions = [], issues = [],
 }: Props) {
   const { t } = useTranslation();
-  const isPlaylistOp = node.operator === 'inPlaylist' || node.operator === 'notInPlaylist';
-  const field = findSmartRuleField(node.field, customFields);
+  const isPlaylistOp = isPlaylistOperator(node.operator);
+  const field = findSmartRuleField(isPlaylistOp ? 'playlist' : node.field, customFields);
   const fieldIssues = issues.filter(issue => (
     issue.code === 'unknown_field' || issue.code === 'unsupported_field'
   ));
@@ -102,74 +113,55 @@ export default function PlaylistsSmartRuleRow({
   const fieldIssueClass = controlIssueClass(fieldIssues);
   const operatorIssueClass = controlIssueClass(operatorIssues);
   const valueIssueClass = controlIssueClass(valueIssues);
-  const operators = useMemo(() => {
-    if (isPlaylistOp) {
-      return ['inPlaylist', 'notInPlaylist']
-        .map(name => findSmartRuleOperator(name))
-        .filter((item): item is NonNullable<typeof item> => !!item && capabilities.playlistReferences);
-    }
-    return field ? getSmartRuleOperatorsForField(field, capabilities) : [];
-  }, [capabilities, field, isPlaylistOp]);
+  const operators = useMemo(() => (
+    field ? getSmartRuleOperatorsForField(field, capabilities) : []
+  ), [capabilities, field]);
 
   const replaceLeaf = (operator: string, fieldName: string, value: unknown) => {
-    const playlist = operator === 'inPlaylist' || operator === 'notInPlaylist';
+    const playlist = isPlaylistOperator(operator);
     const nextValue = playlist
-      ? { id: typeof value === 'string' ? value : '' }
+      ? { id: typeof value === 'string' ? value : playlistIdValue(value) }
       : { [fieldName]: value };
     onDocumentChange(setSmartRuleValue(document, node.path, { [operator]: nextValue }));
   };
 
-  const currentValue = isPlaylistOp
-    ? (typeof node.value === 'object' && node.value && 'id' in node.value
-      ? String((node.value as { id?: unknown }).id ?? '')
-      : '')
-    : node.value;
+  const currentValue = isPlaylistOp ? playlistIdValue(node.value) : node.value;
 
   return (
     <div className="smart-query-rule">
-      {isPlaylistOp ? (
-        <CustomSelect
-          value={node.operator}
-          className={operatorIssueClass}
-          ariaInvalid={operatorIssues.some(issue => issue.severity === 'error')}
-          options={operators.map(operator => ({
-            value: operator.name,
-            label: t(`smartPlaylists.operator_${operator.name}`),
-          }))}
-          onChange={operator => replaceLeaf(operator, 'id', currentValue)}
-        />
-      ) : (
-        <>
-          <PlaylistsSmartFieldPicker
-            value={node.field}
-            className={fieldIssueClass}
-            ariaInvalid={fieldIssues.some(issue => issue.severity === 'error')}
-            capabilities={capabilities}
-            customFields={customFields}
-            onChange={nextField => {
-              const nextOps = getSmartRuleOperatorsForField(nextField, capabilities);
-              const operator = nextOps.some(item => item.name === node.operator)
-                ? node.operator
-                : nextOps[0]?.name ?? 'is';
-              replaceLeaf(operator, nextField.name, defaultValueFor(nextField, operator));
-            }}
-          />
-          <CustomSelect
-            value={node.operator}
-            className={operatorIssueClass}
-            ariaInvalid={operatorIssues.some(issue => issue.severity === 'error')}
-            options={operators.map(operator => ({
-              value: operator.name,
-              label: t(`smartPlaylists.operator_${operator.name}`),
-            }))}
-            onChange={operator => replaceLeaf(
-              operator,
-              node.field,
-              field ? defaultValueFor(field, operator) : '',
-            )}
-          />
-        </>
-      )}
+      <PlaylistsSmartFieldPicker
+        value={isPlaylistOp ? 'playlist' : node.field}
+        className={fieldIssueClass}
+        ariaInvalid={fieldIssues.some(issue => issue.severity === 'error')}
+        capabilities={capabilities}
+        customFields={customFields}
+        onChange={nextField => {
+          const nextOps = getSmartRuleOperatorsForField(nextField, capabilities);
+          const operator = nextOps.some(item => item.name === node.operator)
+            ? node.operator
+            : nextOps[0]?.name ?? 'is';
+          replaceLeaf(operator, nextField.name, defaultValueFor(nextField, operator));
+        }}
+      />
+      <CustomSelect
+        value={node.operator}
+        className={operatorIssueClass}
+        ariaInvalid={operatorIssues.some(issue => issue.severity === 'error')}
+        options={operators.map(operator => ({
+          value: operator.name,
+          label: t(`smartPlaylists.operator_${operator.name}`),
+        }))}
+        onChange={operator => {
+          const keepPlaylistValue = isPlaylistOp && isPlaylistOperator(operator);
+          replaceLeaf(
+            operator,
+            isPlaylistOp ? 'playlist' : node.field,
+            keepPlaylistValue
+              ? currentValue
+              : field ? defaultValueFor(field, operator) : currentValue,
+          );
+        }}
+      />
       {renderValueInput({
         t,
         operator: node.operator,
@@ -198,7 +190,7 @@ function renderValueInput({
   ariaInvalid: boolean;
   onChange: (value: unknown) => void;
 }) {
-  if (operator === 'inPlaylist' || operator === 'notInPlaylist') {
+  if (isPlaylistOperator(operator) || field?.type === 'playlist') {
     return (
       <PlaylistsSmartValuePicker
         value={typeof value === 'string' ? value : ''}
