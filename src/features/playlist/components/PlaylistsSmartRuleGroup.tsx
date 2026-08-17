@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { FolderPlus, Minus, Plus } from 'lucide-react';
+import { CopyPlus, FolderPlus, Minus, Plus } from 'lucide-react';
 import CustomSelect from '@/ui/CustomSelect';
 import PlaylistsSmartRuleRow from '@/features/playlist/components/PlaylistsSmartRuleRow';
 import {
@@ -29,8 +29,10 @@ interface Props {
   capabilities: SmartPlaylistCapabilities;
   customFields: readonly SmartRuleFieldDefinition[];
   playlistOptions: PlaylistOption[];
+  genreSuggestions?: readonly string[];
   isRoot?: boolean;
   canRemove?: boolean;
+  onDuplicate?: () => void;
 }
 
 function groupArrayPath(node: SmartRuleGroupNode, isRoot: boolean): SmartRulePath {
@@ -42,7 +44,8 @@ function groupArrayPath(node: SmartRuleGroupNode, isRoot: boolean): SmartRulePat
 
 export default function PlaylistsSmartRuleGroup({
   node, document, onDocumentChange, capabilities, customFields, playlistOptions,
-  isRoot = false, canRemove = false,
+  genreSuggestions = [],
+  isRoot = false, canRemove = false, onDuplicate,
 }: Props) {
   const { t } = useTranslation();
   const canRemoveGroup = !isRoot && canRemove;
@@ -73,6 +76,10 @@ export default function PlaylistsSmartRuleGroup({
     ));
   };
 
+  const duplicateChild = (raw: unknown) => {
+    addChild(structuredClone(raw) as Record<string, unknown>);
+  };
+
   return (
     <div className="smart-query-group">
       <div className="smart-query-group-head">
@@ -101,6 +108,16 @@ export default function PlaylistsSmartRuleGroup({
         >
           <FolderPlus size={16} />
         </button>
+        {canRemoveGroup && onDuplicate && (
+          <button
+            type="button"
+            className="btn btn-surface smart-query-icon-btn"
+            aria-label={t('smartPlaylists.duplicateGroup')}
+            onClick={onDuplicate}
+          >
+            <CopyPlus size={16} />
+          </button>
+        )}
         {canRemoveGroup && (
           <button
             type="button"
@@ -123,8 +140,10 @@ export default function PlaylistsSmartRuleGroup({
               capabilities={capabilities}
               customFields={customFields}
               playlistOptions={playlistOptions}
+              genreSuggestions={genreSuggestions}
               isRoot={false}
               canRemove
+              onDuplicate={() => duplicateChild(child.raw)}
             />
           );
         }
@@ -138,7 +157,16 @@ export default function PlaylistsSmartRuleGroup({
                 capabilities={capabilities}
                 customFields={customFields}
                 playlistOptions={playlistOptions}
+                genreSuggestions={genreSuggestions}
               />
+              <button
+                type="button"
+                className="btn btn-surface smart-query-icon-btn"
+                aria-label={t('smartPlaylists.duplicateRule')}
+                onClick={() => duplicateChild(child.raw)}
+              >
+                <CopyPlus size={16} />
+              </button>
               {canRemoveRootChild && (
                 <button
                   type="button"
