@@ -59,6 +59,14 @@ describe('released smart-rule registry', () => {
       filterable: true,
       sortable: false,
     });
+    expect(findSmartRuleField('rating')).toMatchObject({ min: 0, max: 5 });
+    expect(findSmartRuleField('albumrating')).toMatchObject({ min: 0, max: 5 });
+    expect(findSmartRuleField('artistrating')).toMatchObject({ min: 0, max: 5 });
+    expect(findSmartRuleField('averagerating')).toMatchObject({ min: 0, max: 5 });
+    expect(findSmartRuleField('playcount')?.min).toBe(0);
+    expect(findSmartRuleField('playcount')?.max).toBeUndefined();
+    expect(findSmartRuleField('year')?.min).toBeUndefined();
+    expect(findSmartRuleField('rgalbumgain')?.min).toBeUndefined();
   });
 
   it('exposes playlist membership from 0.52 and keeps it out of sort fields', () => {

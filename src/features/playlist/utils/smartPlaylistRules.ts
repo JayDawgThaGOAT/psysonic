@@ -3,6 +3,7 @@ import {
   findSmartRuleOperator,
   getSmartRuleOperatorsForField,
   isSmartRuleFieldAvailable,
+  isSmartRuleNumberInBounds,
   resolveSmartPlaylistCapabilities,
   type SmartPlaylistCapabilities,
   type SmartRuleFieldDefinition,
@@ -362,7 +363,7 @@ function validateRuleValue(
   }
   if (canonicalOperator === 'before' || canonicalOperator === 'after') return validDate(value);
   if (canonicalOperator === 'gt' || canonicalOperator === 'lt') {
-    return typeof value === 'number' && Number.isFinite(value);
+    return typeof value === 'number' && Number.isFinite(value) && isSmartRuleNumberInBounds(value, field);
   }
   if (canonicalOperator === 'contains' || canonicalOperator === 'notContains'
     || canonicalOperator === 'startsWith' || canonicalOperator === 'endsWith') {
@@ -371,7 +372,14 @@ function validateRuleValue(
   if (canonicalOperator === 'inTheRange') {
     if (!Array.isArray(value) || value.length !== 2) return false;
     if (!validScalar(value[0], field.type) || !validScalar(value[1], field.type)) return false;
+    if (field.type === 'number'
+      && (!isSmartRuleNumberInBounds(value[0], field) || !isSmartRuleNumberInBounds(value[1], field))) {
+      return false;
+    }
     return value[0] <= value[1];
+  }
+  if (field.type === 'number' && typeof value === 'number' && Number.isFinite(value)) {
+    return isSmartRuleNumberInBounds(value, field);
   }
   return validScalar(value, field.type);
 }

@@ -119,6 +119,8 @@ export interface SmartRuleFieldDefinition {
   filterable?: boolean;
   sortable?: boolean;
   aliasFor?: string;
+  min?: number;
+  max?: number;
 }
 
 type FieldSeed = Omit<SmartRuleFieldDefinition, 'label' | 'source' | 'minimumVersion'> & {
@@ -216,7 +218,7 @@ const RELEASED_FIELD_SEEDS: FieldSeed[] = [
     'releasecountry', 'releasestatus', 'script', 'albumversion', 'releasetype',
     'musicbrainz_discid', 'musicbrainz_workid',
   ], 'string', { source: 'tag', minimumVersion: V055 }),
-  ...fields(['movementtotal'], 'number', { source: 'tag', minimumVersion: V055 }),
+  ...fields(['movementtotal'], 'number', { source: 'tag', minimumVersion: V055, min: 0 }),
   ...fields(
     ['r128_album_gain', 'r128_track_gain'],
     'number',
@@ -228,9 +230,13 @@ const RELEASED_FIELD_SEEDS: FieldSeed[] = [
     'engineer', 'mixer', 'djmixer', 'remixer', 'performer',
   ], 'string', { source: 'role', minimumVersion: V055 }),
   ...fields([
-    'tracknumber', 'discnumber', 'year', 'size', 'duration', 'bitrate', 'bpm',
-    'channels', 'playcount', 'rating',
+    'year',
   ], 'number'),
+  ...fields([
+    'tracknumber', 'discnumber', 'size', 'duration', 'bitrate', 'bpm',
+    'channels', 'playcount',
+  ], 'number', { min: 0 }),
+  ...fields(['rating'], 'number', { min: 0, max: 5 }),
   ...fields(['hascoverart', 'compilation', 'loved'], 'boolean'),
   ...fields(['dateadded', 'datemodified', 'dateloved', 'lastplayed'], 'date'),
 
@@ -241,9 +247,12 @@ const RELEASED_FIELD_SEEDS: FieldSeed[] = [
     'originalyear', 'releaseyear',
   ], 'number', { minimumVersion: V055 }),
 
-  ...fields([
-    'albumrating', 'albumplaycount', 'artistrating', 'artistplaycount', 'averagerating',
-  ], 'number', { minimumVersion: V061 }),
+  ...fields(['albumplaycount', 'artistplaycount'], 'number', { minimumVersion: V061, min: 0 }),
+  ...fields(
+    ['albumrating', 'artistrating', 'averagerating'],
+    'number',
+    { minimumVersion: V061, min: 0, max: 5 },
+  ),
   ...fields(['albumloved', 'artistloved'], 'boolean', { minimumVersion: V061 }),
   ...fields([
     'albumlastplayed', 'albumdateloved', 'albumdaterated', 'artistlastplayed',
@@ -254,10 +263,13 @@ const RELEASED_FIELD_SEEDS: FieldSeed[] = [
     'explicitstatus', 'codec', 'mbz_album_id', 'mbz_album_artist_id', 'mbz_artist_id',
     'mbz_recording_id', 'mbz_release_track_id', 'mbz_release_group_id',
   ], 'string', { minimumVersion: V063 }),
-  ...fields([
-    'bitdepth', 'samplerate', 'rgalbumgain', 'rgalbumpeak', 'rgtrackgain',
-    'rgtrackpeak', 'library_id',
-  ], 'number', { minimumVersion: V063 }),
+  ...fields(['library_id'], 'number', { minimumVersion: V063, min: 0 }),
+  ...fields(['bitdepth', 'samplerate'], 'number', { minimumVersion: V063, min: 0 }),
+  ...fields(
+    ['rgalbumgain', 'rgalbumpeak', 'rgtrackgain', 'rgtrackpeak'],
+    'number',
+    { minimumVersion: V063 },
+  ),
   ...fields(['missing'], 'boolean', { minimumVersion: V063 }),
 
   {
@@ -508,4 +520,23 @@ export function isSmartRuleFieldAvailable(
   capabilities: SmartPlaylistCapabilities,
 ): boolean {
   return fieldAvailable(field, capabilities);
+}
+
+export function isSmartRuleNumberInBounds(
+  value: number,
+  bounds: Pick<SmartRuleFieldDefinition, 'min' | 'max'>,
+): boolean {
+  if (bounds.min != null && value < bounds.min) return false;
+  if (bounds.max != null && value > bounds.max) return false;
+  return true;
+}
+
+export function clampSmartRuleNumber(
+  value: number,
+  bounds: Pick<SmartRuleFieldDefinition, 'min' | 'max'>,
+): number {
+  let next = value;
+  if (bounds.min != null) next = Math.max(bounds.min, next);
+  if (bounds.max != null) next = Math.min(bounds.max, next);
+  return next;
 }

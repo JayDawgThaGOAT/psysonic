@@ -5,6 +5,7 @@ import CustomSelect from '@/ui/CustomSelect';
 import PlaylistsSmartFieldPicker from '@/features/playlist/components/PlaylistsSmartFieldPicker';
 import PlaylistsSmartValuePicker from '@/features/playlist/components/PlaylistsSmartValuePicker';
 import {
+  clampSmartRuleNumber,
   findSmartRuleField,
   getSmartRuleOperatorsForField,
   type SmartPlaylistCapabilities,
@@ -95,7 +96,8 @@ function defaultValueFor(
   if (operator === 'inTheRange') {
     if (field.type === 'date') return [todayIsoDate(), todayIsoDate()];
     if (isYearField(field)) return [YEAR_MIN, YEAR_MAX];
-    return [0, 0];
+    if (field.min != null && field.max != null) return [field.min, field.max];
+    return [field.min ?? 0, field.max ?? 0];
   }
   if (operator === 'inTheLast' || operator === 'notInTheLast') return 1;
   if (operator === 'gt' || operator === 'lt') {
@@ -261,25 +263,36 @@ function renderValueInput({
           </>
         ) : (
           <>
-            <input
-              className={`input ${leftClass}`}
-              type="number"
-              aria-invalid={(ariaInvalid && !!leftClass) || undefined}
-              aria-label={isYearField(field) ? t('smartPlaylists.year') : undefined}
-              value={String(range[0] ?? '')}
-              onChange={event => onChange([Number(event.target.value), range[1]])}
+            <NumberValueInput
+              value={range[0]}
+              field={field}
+              className={leftClass}
+              ariaInvalid={ariaInvalid && !!leftClass}
+              ariaLabel={isYearField(field) ? t('smartPlaylists.year') : undefined}
+              onChange={next => onChange([next, range[1]])}
             />
-            <input
-              className={`input ${rightClass}`}
-              type="number"
-              aria-invalid={(ariaInvalid && !!rightClass) || undefined}
-              aria-label={isYearField(field) ? t('smartPlaylists.year') : undefined}
-              value={String(range[1] ?? '')}
-              onChange={event => onChange([range[0], Number(event.target.value)])}
+            <NumberValueInput
+              value={range[1]}
+              field={field}
+              className={rightClass}
+              ariaInvalid={ariaInvalid && !!rightClass}
+              ariaLabel={isYearField(field) ? t('smartPlaylists.year') : undefined}
+              onChange={next => onChange([range[0], next])}
             />
           </>
         )}
       </div>
+    );
+  }
+  if (operator === 'inTheLast' || operator === 'notInTheLast') {
+    return (
+      <NumberValueInput
+        value={value}
+        min={1}
+        className={issueClass}
+        ariaInvalid={ariaInvalid}
+        onChange={onChange}
+      />
     );
   }
   if (field?.type === 'date' || operator === 'before' || operator === 'after') {
@@ -292,16 +305,15 @@ function renderValueInput({
       />
     );
   }
-  if (field?.type === 'number' || operator === 'gt' || operator === 'lt'
-    || operator === 'inTheLast' || operator === 'notInTheLast') {
+  if (field?.type === 'number' || operator === 'gt' || operator === 'lt') {
     return (
-      <input
-        className={`input ${issueClass}`}
-        aria-invalid={ariaInvalid || undefined}
-        aria-label={isYearField(field) ? t('smartPlaylists.year') : undefined}
-        type="number"
-        value={typeof value === 'number' ? value : ''}
-        onChange={event => onChange(Number(event.target.value))}
+      <NumberValueInput
+        value={value}
+        field={field}
+        className={issueClass}
+        ariaInvalid={ariaInvalid}
+        ariaLabel={isYearField(field) ? t('smartPlaylists.year') : undefined}
+        onChange={onChange}
       />
     );
   }
@@ -323,6 +335,44 @@ function renderValueInput({
       aria-invalid={ariaInvalid || undefined}
       value={typeof value === 'string' ? value : String(value ?? '')}
       onChange={event => onChange(event.target.value)}
+    />
+  );
+}
+
+function NumberValueInput({
+  value,
+  onChange,
+  field,
+  min,
+  max,
+  className = '',
+  ariaInvalid,
+  ariaLabel,
+}: {
+  value: unknown;
+  onChange: (value: number) => void;
+  field?: SmartRuleFieldDefinition;
+  min?: number;
+  max?: number;
+  className?: string;
+  ariaInvalid?: boolean;
+  ariaLabel?: string;
+}) {
+  const low = min ?? field?.min;
+  const high = max ?? field?.max;
+  return (
+    <input
+      className={`input ${className}`}
+      type="number"
+      min={low}
+      max={high}
+      aria-invalid={ariaInvalid || undefined}
+      aria-label={ariaLabel}
+      value={typeof value === 'number' ? value : ''}
+      onChange={event => {
+        const next = Number(event.target.value);
+        onChange(Number.isFinite(next) ? clampSmartRuleNumber(next, { min: low, max: high }) : next);
+      }}
     />
   );
 }

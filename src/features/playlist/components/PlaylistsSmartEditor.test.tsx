@@ -460,6 +460,44 @@ describe('PlaylistsSmartEditor', () => {
     expect(view.getAllByDisplayValue('A')).toHaveLength(2);
   });
 
+  it('caps rating fields at 0-5 and keeps range inputs compact', async () => {
+    const user = userEvent.setup();
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        serverIdentity={{ type: 'navidrome', serverVersion: '0.61.0' }}
+        initialSession={createSmartEditorSession({
+          name: 'Ratings',
+          rules: { all: [{ inTheRange: { albumrating: [0, 5] } }] },
+        })}
+      />,
+    );
+
+    const inputs = view.getAllByRole('spinbutton').filter(input => input.getAttribute('max') === '5');
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toHaveAttribute('min', '0');
+    expect(inputs[1]).toHaveValue(5);
+    await user.clear(inputs[1]);
+    await user.type(inputs[1], '9');
+    expect(inputs[1]).toHaveValue(5);
+  });
+
+  it('uses a day count for in-the-last date rules', () => {
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        initialSession={createSmartEditorSession({
+          name: 'Recent',
+          rules: { any: [{ inTheLast: { lastplayed: 14 } }] },
+        })}
+      />,
+    );
+
+    expect(view.getByDisplayValue('14')).toHaveAttribute('type', 'number');
+    expect(view.getByDisplayValue('14')).toHaveAttribute('min', '1');
+    expect(view.queryByRole('textbox', { name: 'Date' })).not.toBeInTheDocument();
+  });
+
   it('uses typed number inputs for numeric Advanced rules', () => {
     const view = renderWithProviders(
       <SmartEditorHarness

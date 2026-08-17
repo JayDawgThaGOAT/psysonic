@@ -158,6 +158,19 @@ describe('smart-rule semantic validation', () => {
     ]));
   });
 
+  it('rejects rating values outside 0-5', () => {
+    const document = parseSmartRulesDocument({
+      all: [
+        { is: { rating: 6 } },
+        { inTheRange: { albumrating: [0, 9] } },
+        { is: { rating: 5 } },
+      ],
+    });
+    const issues = validateSmartRulesDocument(document, { capabilities });
+    expect(issues.filter(item => item.code === 'invalid_value')).toHaveLength(2);
+    expect(issues.filter(item => item.path === '/all/2/is/rating')).toEqual([]);
+  });
+
   it('requires ID-based non-self playlist references', () => {
     const document = parseSmartRulesDocument({
       all: [
