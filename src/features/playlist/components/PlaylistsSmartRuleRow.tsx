@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import CustomSelect from '@/ui/CustomSelect';
 import PlaylistsSmartFieldPicker from '@/features/playlist/components/PlaylistsSmartFieldPicker';
+import PlaylistsSmartValuePicker from '@/features/playlist/components/PlaylistsSmartValuePicker';
 import {
   findSmartRuleField,
   findSmartRuleOperator,
@@ -29,6 +30,7 @@ interface Props {
   capabilities: SmartPlaylistCapabilities;
   customFields: readonly SmartRuleFieldDefinition[];
   playlistOptions: PlaylistOption[];
+  genreSuggestions?: readonly string[];
 }
 
 function isYearField(field: SmartRuleFieldDefinition | undefined): boolean {
@@ -75,6 +77,7 @@ function defaultValueFor(
 
 export default function PlaylistsSmartRuleRow({
   node, document, onDocumentChange, capabilities, customFields, playlistOptions,
+  genreSuggestions = [],
 }: Props) {
   const { t } = useTranslation();
   const isPlaylistOp = node.operator === 'inPlaylist' || node.operator === 'notInPlaylist';
@@ -147,6 +150,7 @@ export default function PlaylistsSmartRuleRow({
         field,
         value: currentValue,
         playlistOptions,
+        genreSuggestions,
         onChange: value => replaceLeaf(node.operator, isPlaylistOp ? 'id' : node.field, value),
       })}
     </div>
@@ -154,21 +158,23 @@ export default function PlaylistsSmartRuleRow({
 }
 
 function renderValueInput({
-  t, operator, field, value, playlistOptions, onChange,
+  t, operator, field, value, playlistOptions, genreSuggestions, onChange,
 }: {
   t: TFunction;
   operator: string;
   field: SmartRuleFieldDefinition | undefined;
   value: unknown;
   playlistOptions: PlaylistOption[];
+  genreSuggestions: readonly string[];
   onChange: (value: unknown) => void;
 }) {
   if (operator === 'inPlaylist' || operator === 'notInPlaylist') {
     return (
-      <CustomSelect
+      <PlaylistsSmartValuePicker
         value={typeof value === 'string' ? value : ''}
         options={playlistOptions.map(option => ({ value: option.id, label: option.name }))}
         onChange={onChange}
+        ariaLabel={t('smartPlaylists.value')}
       />
     );
   }
@@ -251,6 +257,16 @@ function renderValueInput({
         type="number"
         value={typeof value === 'number' ? value : ''}
         onChange={event => onChange(Number(event.target.value))}
+      />
+    );
+  }
+  if (field?.name === 'genre' && genreSuggestions.length > 0) {
+    return (
+      <PlaylistsSmartValuePicker
+        value={typeof value === 'string' ? value : String(value ?? '')}
+        options={genreSuggestions.map(genre => ({ value: genre, label: genre }))}
+        onChange={onChange}
+        ariaLabel={t('smartPlaylists.value')}
       />
     );
   }

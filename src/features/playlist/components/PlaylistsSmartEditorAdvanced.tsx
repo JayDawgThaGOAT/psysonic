@@ -26,10 +26,12 @@ interface Props {
   capabilities: SmartPlaylistCapabilities;
   customFields: SmartRuleFieldDefinition[];
   playlistOptions: PlaylistOption[];
+  genreSuggestions?: readonly string[];
 }
 
 export default function PlaylistsSmartEditorAdvanced({
   document, onDocumentChange, capabilities, customFields, playlistOptions,
+  genreSuggestions = [],
 }: Props) {
   const { t } = useTranslation();
   const hasLimit = typeof document.raw.limit === 'number';
@@ -117,6 +119,7 @@ export default function PlaylistsSmartEditorAdvanced({
           capabilities={capabilities}
           customFields={customFields}
           playlistOptions={playlistOptions}
+          genreSuggestions={genreSuggestions}
           isRoot
         />
       ) : (

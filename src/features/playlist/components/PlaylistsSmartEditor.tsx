@@ -185,6 +185,7 @@ export default function PlaylistsSmartEditor({
             capabilities={capabilities}
             customFields={customFields}
             playlistOptions={playlistOptions.filter(option => option.id !== editingSmartId)}
+            genreSuggestions={availableGenres}
           />
         )}
         {session.mode === 'json' && (

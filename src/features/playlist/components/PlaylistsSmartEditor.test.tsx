@@ -16,6 +16,8 @@ function SmartEditorHarness({
   initialSession,
   onSaveCopy,
   serverIdentity,
+  availableGenres = [],
+  playlistOptions,
   serverOptions = [
     { id: 'server-a', label: 'Server A' },
     { id: 'server-b', label: 'Server B' },
@@ -25,6 +27,8 @@ function SmartEditorHarness({
   initialSession?: SmartEditorSession;
   onSaveCopy?: () => void;
   serverIdentity?: SubsonicServerIdentity;
+  availableGenres?: string[];
+  playlistOptions?: Array<{ id: string; name: string }>;
   serverOptions?: Array<{ id: string; label: string }>;
 }) {
   const [session, setSession] = useState(initialSession ?? createSmartEditorSession());
@@ -47,7 +51,8 @@ function SmartEditorHarness({
           return next;
         });
       }}
-      availableGenres={[]}
+      availableGenres={availableGenres}
+      playlistOptions={playlistOptions}
       genreQuery=""
       setGenreQuery={vi.fn()}
       editingSmartId={editingSmartId}
@@ -261,6 +266,53 @@ describe('PlaylistsSmartEditor', () => {
     expect(view.queryByRole('spinbutton', { name: 'Percentage' })).toBeNull();
     await user.click(view.getByRole('button', { name: 'Percentage' }));
     expect(view.getByRole('spinbutton', { name: 'Percentage' })).toHaveValue(100);
+  });
+
+  it('suggests existing genres in Advanced rule values', async () => {
+    const user = userEvent.setup();
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        availableGenres={['Rock', 'Jazz']}
+        initialSession={createSmartEditorSession({
+          name: 'Genres',
+          rules: { all: [{ is: { genre: '' } }] },
+        })}
+      />,
+    );
+
+    const value = view.getByRole('combobox', { name: 'Value' });
+    await user.click(value);
+    await user.type(value, 'ja');
+    await user.click(view.getByRole('option', { name: 'Jazz' }));
+    expect(value).toHaveValue('Jazz');
+  });
+
+  it('duplicates a rule and a nested group', async () => {
+    const user = userEvent.setup();
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        initialSession={createSmartEditorSession({
+          name: 'Dup',
+          rules: {
+            all: [
+              { contains: { title: 'live' } },
+              { any: [{ contains: { artist: 'A' } }] },
+            ],
+          },
+        })}
+      />,
+    );
+
+    expect(view.getAllByRole('button', { name: 'Duplicate rule' })).toHaveLength(2);
+    await user.click(view.getAllByRole('button', { name: 'Duplicate rule' })[0]);
+    expect(view.getAllByRole('button', { name: 'Duplicate rule' })).toHaveLength(3);
+    expect(view.getAllByDisplayValue('live')).toHaveLength(2);
+
+    await user.click(view.getByRole('button', { name: 'Duplicate group' }));
+    expect(view.getAllByRole('button', { name: 'Duplicate group' })).toHaveLength(2);
+    expect(view.getAllByDisplayValue('A')).toHaveLength(2);
   });
 
   it('uses typed number inputs for numeric Advanced rules', () => {
