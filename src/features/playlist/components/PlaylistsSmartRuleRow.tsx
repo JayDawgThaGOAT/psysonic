@@ -12,6 +12,7 @@ import {
 } from '@/features/playlist/utils/smartPlaylistFields';
 import { YEAR_MAX, YEAR_MIN } from '@/features/playlist/utils/playlistsSmart';
 import {
+  isValidSmartRuleDate,
   setSmartRuleValue,
   type SmartRuleLeafNode,
   type SmartRuleValidationIssue,
@@ -46,6 +47,24 @@ function isYearField(field: SmartRuleFieldDefinition | undefined): boolean {
 
 function isPlaylistOperator(operator: string): boolean {
   return operator === 'inPlaylist' || operator === 'notInPlaylist';
+}
+
+function rangePartValid(value: unknown, field: SmartRuleFieldDefinition | undefined): boolean {
+  if (field?.type === 'date') return isValidSmartRuleDate(value);
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function rangePartIssueClass(
+  value: unknown,
+  peer: unknown,
+  field: SmartRuleFieldDefinition | undefined,
+  issueClass: string,
+): string {
+  if (!issueClass) return '';
+  const selfOk = rangePartValid(value, field);
+  const peerOk = rangePartValid(peer, field);
+  if (selfOk && peerOk) return issueClass;
+  return selfOk ? '' : issueClass;
 }
 
 function playlistIdValue(value: unknown): string {
@@ -221,41 +240,40 @@ function renderValueInput({
   if (operator === 'inTheRange') {
     const range = Array.isArray(value) ? value : [value, value];
     const isDate = field?.type === 'date';
+    const leftClass = rangePartIssueClass(range[0], range[1], field, issueClass);
+    const rightClass = rangePartIssueClass(range[1], range[0], field, issueClass);
     return (
-      <div className={`smart-query-rule-value ${issueClass}`} aria-invalid={ariaInvalid || undefined}>
+      <div className="smart-query-rule-value">
         {isDate ? (
           <>
             <DateValueInput
               value={String(range[0] ?? '')}
               onChange={next => onChange([next, range[1]])}
+              className={leftClass}
+              ariaInvalid={ariaInvalid && !!leftClass}
             />
             <DateValueInput
               value={String(range[1] ?? '')}
               onChange={next => onChange([range[0], next])}
-            />
-          </>
-        ) : isYearField(field) ? (
-          <>
-            <YearValueInput
-              value={range[0]}
-              onChange={next => onChange([next, range[1]])}
-            />
-            <YearValueInput
-              value={range[1]}
-              onChange={next => onChange([range[0], next])}
+              className={rightClass}
+              ariaInvalid={ariaInvalid && !!rightClass}
             />
           </>
         ) : (
           <>
             <input
-              className="input"
+              className={`input ${leftClass}`}
               type="number"
+              aria-invalid={(ariaInvalid && !!leftClass) || undefined}
+              aria-label={isYearField(field) ? t('smartPlaylists.year') : undefined}
               value={String(range[0] ?? '')}
               onChange={event => onChange([Number(event.target.value), range[1]])}
             />
             <input
-              className="input"
+              className={`input ${rightClass}`}
               type="number"
+              aria-invalid={(ariaInvalid && !!rightClass) || undefined}
+              aria-label={isYearField(field) ? t('smartPlaylists.year') : undefined}
               value={String(range[1] ?? '')}
               onChange={event => onChange([range[0], Number(event.target.value)])}
             />
@@ -274,15 +292,13 @@ function renderValueInput({
       />
     );
   }
-  if (isYearField(field)) {
-    return <YearValueInput value={value} onChange={onChange} className={issueClass} ariaInvalid={ariaInvalid} />;
-  }
   if (field?.type === 'number' || operator === 'gt' || operator === 'lt'
     || operator === 'inTheLast' || operator === 'notInTheLast') {
     return (
       <input
         className={`input ${issueClass}`}
         aria-invalid={ariaInvalid || undefined}
+        aria-label={isYearField(field) ? t('smartPlaylists.year') : undefined}
         type="number"
         value={typeof value === 'number' ? value : ''}
         onChange={event => onChange(Number(event.target.value))}
@@ -311,53 +327,6 @@ function renderValueInput({
   );
 }
 
-function yearOptions(): Array<{ value: string; label: string }> {
-  const years: Array<{ value: string; label: string }> = [];
-  for (let year = YEAR_MAX; year >= YEAR_MIN; year--) {
-    years.push({ value: String(year), label: String(year) });
-  }
-  return years;
-}
-
-function YearValueInput({
-  value,
-  onChange,
-  className = '',
-  ariaInvalid,
-}: {
-  value: unknown;
-  onChange: (value: number) => void;
-  className?: string;
-  ariaInvalid?: boolean;
-}) {
-  const { t } = useTranslation();
-  const year = typeof value === 'number' && value >= YEAR_MIN ? String(value) : String(currentYear());
-  return (
-    <CustomSelect
-      value={year}
-      options={yearOptions()}
-      onChange={next => onChange(Number(next))}
-      ariaLabel={t('smartPlaylists.year')}
-      className={className}
-      ariaInvalid={ariaInvalid}
-    />
-  );
-}
-
-const MONTH_KEYS = [
-  'monthJan', 'monthFeb', 'monthMar', 'monthApr', 'monthMay', 'monthJun',
-  'monthJul', 'monthAug', 'monthSep', 'monthOct', 'monthNov', 'monthDec',
-] as const;
-
-function parseIsoDate(value: string): { year: string; month: string; day: string } {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) {
-    const today = todayIsoDate();
-    return { year: today.slice(0, 4), month: today.slice(5, 7), day: today.slice(8, 10) };
-  }
-  return { year: match[1], month: match[2], day: match[3] };
-}
-
 function DateValueInput({
   value,
   onChange,
@@ -370,39 +339,16 @@ function DateValueInput({
   ariaInvalid?: boolean;
 }) {
   const { t } = useTranslation();
-  const parsed = parseIsoDate(value);
-  const emit = (year: string, month: string, day: string) => {
-    const lastDay = new Date(Number(year), Number(month), 0).getDate();
-    const safeDay = String(Math.min(Number(day) || 1, lastDay)).padStart(2, '0');
-    onChange(`${year}-${month}-${safeDay}`);
-  };
-
   return (
-    <div className={`smart-query-rule-value ${className}`} aria-invalid={ariaInvalid || undefined}>
-      <CustomSelect
-        value={parsed.year}
-        options={yearOptions()}
-        onChange={year => emit(year, parsed.month, parsed.day)}
-        ariaLabel={t('smartPlaylists.year')}
-      />
-      <CustomSelect
-        value={parsed.month}
-        options={MONTH_KEYS.map((key, index) => ({
-          value: String(index + 1).padStart(2, '0'),
-          label: t(`smartPlaylists.${key}`),
-        }))}
-        onChange={month => emit(parsed.year, month, parsed.day)}
-        ariaLabel={t('smartPlaylists.month')}
-      />
-      <CustomSelect
-        value={parsed.day}
-        options={Array.from({ length: 31 }, (_, index) => {
-          const day = String(index + 1).padStart(2, '0');
-          return { value: day, label: day };
-        })}
-        onChange={day => emit(parsed.year, parsed.month, day)}
-        ariaLabel={t('smartPlaylists.day')}
-      />
-    </div>
+    <input
+      className={`input smart-query-date-input ${className}`}
+      aria-invalid={ariaInvalid || undefined}
+      aria-label={t('smartPlaylists.typeDate')}
+      placeholder={t('smartPlaylists.datePlaceholder')}
+      autoComplete="off"
+      spellCheck={false}
+      value={value}
+      onChange={event => onChange(event.target.value)}
+    />
   );
 }

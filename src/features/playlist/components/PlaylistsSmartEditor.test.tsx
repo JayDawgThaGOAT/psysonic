@@ -231,6 +231,27 @@ describe('PlaylistsSmartEditor', () => {
     expect(view.getByRole('button', { name: 'Save Smart Playlist' })).toBeEnabled();
   });
 
+  it('highlights only the invalid date in an Advanced range', () => {
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        serverIdentity={{ type: 'navidrome', serverVersion: '0.63.2' }}
+        initialSession={createSmartEditorSession({
+          name: 'Range',
+          rules: { all: [{ inTheRange: { lastplayed: ['', '2026-08-16'] } }] },
+        })}
+      />,
+    );
+
+    const dates = view.getAllByRole('textbox', { name: 'Date' });
+    expect(dates[0]).toHaveClass('smart-query-control-error');
+    expect(dates[0]).toHaveAttribute('aria-invalid', 'true');
+    expect(dates[1]).not.toHaveClass('smart-query-control-error');
+    expect(dates[1]).not.toHaveAttribute('aria-invalid');
+    expect(view.getByText('Invalid date value for in the range.')).toBeInTheDocument();
+    expect(view.queryByText(/inTheRange/)).not.toBeInTheDocument();
+  });
+
   it('uses a typed date field instead of a trapping native calendar', () => {
     const view = renderWithProviders(
       <SmartEditorHarness
@@ -243,9 +264,10 @@ describe('PlaylistsSmartEditor', () => {
     );
 
     expect(view.getByRole('tab', { name: 'Advanced' })).toHaveAttribute('aria-selected', 'true');
-    expect(view.getByRole('combobox', { name: 'Year' })).toHaveTextContent('2024');
-    expect(view.getByRole('combobox', { name: 'Month' })).toHaveTextContent('January');
-    expect(view.getByRole('combobox', { name: 'Day' })).toHaveTextContent('15');
+    const date = view.getByRole('textbox', { name: 'Date' });
+    expect(date).toHaveValue('2024-01-15');
+    expect(date).toHaveAttribute('placeholder', 'YYYY-MM-DD');
+    expect(date).not.toHaveAttribute('type', 'date');
   });
 
   it('edits Boolean rule values with a dropdown', async () => {
@@ -268,21 +290,23 @@ describe('PlaylistsSmartEditor', () => {
     expect(valueSelect).toHaveTextContent('False');
   });
 
-  it('defaults year rules to a real year instead of 0', async () => {
+  it('keeps pre-1950 years editable in Advanced year rules', async () => {
     const user = userEvent.setup();
     const view = renderWithProviders(
       <SmartEditorHarness
         editingSmartId="smart-1"
         initialSession={createSmartEditorSession({
           name: 'Years',
-          rules: { any: [{ is: { year: 0 } }] },
+          rules: { any: [{ is: { year: 1927 } }] },
         })}
       />,
     );
 
-    expect(view.getByRole('combobox', { name: 'Year' })).toHaveTextContent(String(new Date().getFullYear()));
-    await user.click(view.getByRole('combobox', { name: 'Year' }));
-    expect(view.getByRole('option', { name: '1950' })).toBeInTheDocument();
+    const year = view.getByRole('spinbutton', { name: 'Year' });
+    expect(year).toHaveValue(1927);
+    await user.clear(year);
+    await user.type(year, '1808');
+    expect(year).toHaveValue(1808);
   });
 
   it('toggles Advanced limit between a fixed count and a percentage', async () => {

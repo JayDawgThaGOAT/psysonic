@@ -148,6 +148,12 @@ describe('smart-rule semantic validation', () => {
 
     expect(issues.filter(item => item.code === 'invalid_value')).toHaveLength(3);
     expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'invalid_value',
+        message: 'Invalid number value for in the range.',
+      }),
+    ]));
+    expect(issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'invalid_rule', path: '/all/3/contains' }),
     ]));
   });

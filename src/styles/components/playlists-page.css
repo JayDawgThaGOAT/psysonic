@@ -294,6 +294,12 @@
   flex: 0 0 7rem;
 }
 
+.smart-query-rule > .input.smart-query-date-input,
+.smart-query-rule-value > .input.smart-query-date-input {
+  width: 9.5rem;
+  flex: 0 0 9.5rem;
+}
+
 .smart-query-rule-value {
   flex: 1 1 auto;
   min-width: 0;

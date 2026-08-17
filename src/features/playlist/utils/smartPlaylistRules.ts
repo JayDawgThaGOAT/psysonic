@@ -325,6 +325,14 @@ function validDate(value: unknown): value is string {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
+export function isValidSmartRuleDate(value: unknown): boolean {
+  return validDate(value);
+}
+
+function formatOperatorLabel(name: string): string {
+  return name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
 function validScalar(value: unknown, type: SmartRuleFieldType): boolean {
   switch (type) {
     case 'boolean':
@@ -521,7 +529,7 @@ function validateExpression(
       code: 'unsupported_operator',
       severity: 'error',
       path: childPath(path, operatorName),
-      message: `${operator.name} is not supported for field "${fieldName}".`,
+      message: `${formatOperatorLabel(operator.name)} is not supported for field "${fieldName}".`,
     });
     return;
   }
@@ -530,7 +538,7 @@ function validateExpression(
       code: 'invalid_value',
       severity: 'error',
       path: fieldPath,
-      message: `Invalid ${field.type} value for ${operator.name}.`,
+      message: `Invalid ${field.type} value for ${formatOperatorLabel(operator.name)}.`,
     });
   }
 }

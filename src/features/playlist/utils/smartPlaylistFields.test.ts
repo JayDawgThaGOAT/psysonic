@@ -132,6 +132,10 @@ describe('released smart-rule registry', () => {
       .toContain('isMissing');
     expect(getSmartRuleOperatorsForField(genre, v62).map(item => item.name))
       .toContain('isPresent');
+
+    const lastplayed = findSmartRuleField('lastplayed')!;
+    expect(getSmartRuleOperatorsForField(lastplayed, v62).map(item => item.name))
+      .toEqual(['is', 'isNot', 'before', 'after', 'inTheRange', 'inTheLast', 'notInTheLast']);
   });
 });
 
