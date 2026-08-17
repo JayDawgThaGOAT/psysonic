@@ -191,6 +191,17 @@ export default function PlaylistHero({
                   <ListPlus size={16} />
                 </button>
               </div>
+              {actionPolicy.canEditPlaylist && controls.showRefreshTracks && isLayoutVisible('refreshSmart') && (
+                <button
+                  className="btn btn-ghost"
+                  onClick={handleRefreshSmart}
+                  disabled={refreshingSmart}
+                  data-tooltip={t('playlists.refreshSmart')}
+                  aria-label={t('playlists.refreshSmart')}
+                >
+                  <RefreshCw size={16} className={refreshingSmart ? 'is-spinning' : undefined} />
+                </button>
+              )}
               {actionPolicy.canEditPlaylist && controls.showEditRules && isLayoutVisible('editRules') && (
                 <button
                   className="btn btn-ghost"
@@ -203,18 +214,6 @@ export default function PlaylistHero({
                 >
                   <Sparkles size={16} />
                   <span className="compact-btn-label">{t('playlists.editRules')}</span>
-                </button>
-              )}
-              {actionPolicy.canEditPlaylist && controls.showRefreshTracks && isLayoutVisible('refreshSmart') && (
-                <button
-                  className="btn btn-ghost"
-                  onClick={handleRefreshSmart}
-                  disabled={refreshingSmart}
-                  data-tooltip={t('playlists.refreshSmart')}
-                  aria-label={t('playlists.refreshSmart')}
-                >
-                  <RefreshCw size={16} className={refreshingSmart ? 'spin-slow' : undefined} />
-                  <span className="compact-btn-label">{t('playlists.refreshSmart')}</span>
                 </button>
               )}
               {actionPolicy.canEditPlaylist && controls.canAddTracks && isLayoutVisible('addSongs') && (

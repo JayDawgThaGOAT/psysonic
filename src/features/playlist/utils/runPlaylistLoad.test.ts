@@ -117,6 +117,22 @@ describe('runPlaylistLoad membership seeding', () => {
     expect(usePlaylistMembershipStore.getState().getPlaylistSongIds('shared', 'srv-1')).toBeUndefined();
   });
 
+  it('keeps the current UI mounted during a soft reload', async () => {
+    getPlaylistForServerMock.mockResolvedValue({
+      playlist: { id: 'pl-1' },
+      songs: [{ id: 'a' }],
+    });
+    filterMock.mockResolvedValue([{ id: 'a' }]);
+    const deps = { ...makeDeps('pl-1'), soft: true, resetForOwnerChange: vi.fn() };
+
+    await runPlaylistLoad(deps);
+
+    expect(deps.setLoading).not.toHaveBeenCalled();
+    expect(deps.resetForOwnerChange).not.toHaveBeenCalled();
+    expect(deps.setPlaylist).not.toHaveBeenCalledWith(null);
+    expect(deps.setSongs).toHaveBeenCalledWith([{ id: 'a', serverId: 'srv-1' }]);
+  });
+
   it('clears the previous owner state before loading a new owner', async () => {
     getPlaylistForServerMock.mockRejectedValue(new Error('unavailable'));
     const deps = { ...makeDeps('shared'), resetForOwnerChange: vi.fn() };

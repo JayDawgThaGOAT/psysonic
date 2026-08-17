@@ -269,7 +269,23 @@ export default function PlaylistDetail() {
     if (!id || !serverId || refreshingSmart) return;
     setRefreshingSmart(true);
     try {
-      await runPlaylistRefreshSmart({ id, serverId, touchPlaylist });
+      const ownerKey = ownedEntityKey({ id, serverId });
+      await runPlaylistRefreshSmart({
+        id,
+        serverId,
+        reload: () => runPlaylistLoad({
+          id,
+          serverId,
+          setLoading,
+          setPlaylist,
+          setSongs,
+          setCustomCoverId,
+          setRatings,
+          setStarredSongs,
+          soft: true,
+          isCurrent: () => loadedOwnerKeyRef.current === ownerKey,
+        }),
+      });
       showToast(t('playlists.refreshSmartSuccess'), 2500, 'info');
     } catch {
       showToast(t('playlists.refreshSmartError'), 3500, 'error');

@@ -78,6 +78,7 @@ describe('PlaylistHero smart surfaces', () => {
     expect(view.queryByRole('button', { name: 'Import from Spotify CSV' })).not.toBeInTheDocument();
     expect(view.queryByRole('button', { name: 'Cache playlist offline' })).not.toBeInTheDocument();
 
+    expect(view.getByRole('button', { name: 'Edit Rules' })).toHaveTextContent('Edit Rules');
     await user.click(view.getByRole('button', { name: 'Edit Rules' }));
     expect(navigateMock).toHaveBeenCalledWith('/playlists', {
       state: { openSmartEditorFor: { id: 'pl-1', serverId: 'srv-a', name: 'Feishin mix' } },

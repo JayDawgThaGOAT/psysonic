@@ -15,13 +15,13 @@ describe('runPlaylistRefreshSmart', () => {
   });
 
   it('forces evaluation, invalidates membership, and reloads the detail', async () => {
-    const touchPlaylist = vi.fn();
+    const reload = vi.fn().mockResolvedValue(undefined);
     usePlaylistMembershipStore.getState().setPlaylistSongIds('smart-1', ['old'], 'server-a');
 
     await runPlaylistRefreshSmart({
       id: 'smart-1',
       serverId: 'server-a',
-      touchPlaylist,
+      reload,
     });
 
     expect(ndGetPlaylistTracksMock).toHaveBeenCalledWith(
@@ -31,6 +31,6 @@ describe('runPlaylistRefreshSmart', () => {
     );
     expect(usePlaylistMembershipStore.getState()
       .getPlaylistSongIds('smart-1', 'server-a')).toBeUndefined();
-    expect(touchPlaylist).toHaveBeenCalledWith('smart-1', 'server-a');
+    expect(reload).toHaveBeenCalledOnce();
   });
 });
