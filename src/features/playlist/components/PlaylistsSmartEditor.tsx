@@ -19,6 +19,7 @@ import {
   resolveSmartPlaylistCapabilities,
 } from '@/features/playlist/utils/smartPlaylistFields';
 import {
+  parseSmartRulesDocument,
   validateSmartRulesDocument,
 } from '@/features/playlist/utils/smartPlaylistRules';
 import {
@@ -80,12 +81,29 @@ export default function PlaylistsSmartEditor({
   const [previewTracks, setPreviewTracks] = useState<PreviewTrack[] | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const validation = validateSmartRulesDocument(session.document, {
+  const jsonDraftState = useMemo(() => {
+    if (session.mode !== 'json') return { document: session.document, error: null };
+    try {
+      return {
+        document: parseSmartRulesDocument(JSON.parse(session.jsonDraft) as unknown),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        document: null,
+        error: error instanceof Error ? error.message : 'Invalid JSON',
+      };
+    }
+  }, [session.document, session.jsonDraft, session.mode]);
+  const validation = jsonDraftState.document
+    ? validateSmartRulesDocument(jsonDraftState.document, {
     currentPlaylistId: editingSmartId ?? undefined,
     capabilities,
     customFields,
-  });
+    })
+    : [];
   const blocking = validation.filter(issue => issue.severity === 'error');
+  const hasBlockingIssues = jsonDraftState.error !== null || blocking.length > 0;
 
   const setMode = (mode: SmartEditorMode) => {
     setSession(current => {
@@ -186,6 +204,7 @@ export default function PlaylistsSmartEditor({
             customFields={customFields}
             playlistOptions={playlistOptions.filter(option => option.id !== editingSmartId)}
             genreSuggestions={availableGenres}
+            issues={validation}
           />
         )}
         {session.mode === 'json' && (
@@ -193,17 +212,9 @@ export default function PlaylistsSmartEditor({
             session={session}
             onDraftChange={jsonDraft => setSession(current => ({ ...current, jsonDraft, jsonError: null }))}
             onApply={() => setSession(current => applySmartEditorJson(current, current.jsonDraft, { allGenres: availableGenres }))}
-            validationOptions={{
-              currentPlaylistId: editingSmartId ?? undefined,
-              capabilities,
-              customFields,
-            }}
+            jsonError={jsonDraftState.error ?? session.jsonError}
+            issues={validation}
           />
-        )}
-        {blocking.length > 0 && (
-          <div style={{ fontSize: 12, color: 'var(--danger, #c0392b)' }}>
-            {t('smartPlaylists.validationErrors')}
-          </div>
         )}
         {previewTracks && (
           <div style={{ fontSize: 13, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 'var(--space-3)' }}>
@@ -251,7 +262,7 @@ export default function PlaylistsSmartEditor({
           <button
             type="button"
             className="btn btn-surface"
-            disabled={previewBusy}
+            disabled={previewBusy || hasBlockingIssues}
             onClick={() => {
               setPreviewBusy(true);
               setPreviewError(null);
@@ -264,14 +275,14 @@ export default function PlaylistsSmartEditor({
             {t('smartPlaylists.preview')}
           </button>
           {onSaveCopy && editingSmartId && (
-            <button type="button" className="btn btn-surface" onClick={onSaveCopy}>
+            <button type="button" className="btn btn-surface" onClick={onSaveCopy} disabled={hasBlockingIssues}>
               {t('smartPlaylists.saveCopy')}
             </button>
           )}
           <button type="button" className="btn btn-surface" onClick={closeEditor}>
             {t('playlists.cancel')}
           </button>
-          <button type="button" className="btn btn-primary" onClick={onSave} disabled={creatingSmartBusy || !genresReady}>
+          <button type="button" className="btn btn-primary" onClick={onSave} disabled={creatingSmartBusy || !genresReady || hasBlockingIssues}>
             <Plus size={15} /> {editingSmartId ? t('smartPlaylists.save') : t('smartPlaylists.create')}
           </button>
         </div>

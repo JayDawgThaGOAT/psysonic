@@ -15,6 +15,7 @@ import { YEAR_MAX, YEAR_MIN } from '@/features/playlist/utils/playlistsSmart';
 import {
   setSmartRuleValue,
   type SmartRuleLeafNode,
+  type SmartRuleValidationIssue,
   type SmartRulesDocument,
 } from '@/features/playlist/utils/smartPlaylistRules';
 
@@ -31,6 +32,13 @@ interface Props {
   customFields: readonly SmartRuleFieldDefinition[];
   playlistOptions: PlaylistOption[];
   genreSuggestions?: readonly string[];
+  issues?: readonly SmartRuleValidationIssue[];
+}
+
+function controlIssueClass(issues: readonly SmartRuleValidationIssue[]): string {
+  if (issues.some(issue => issue.severity === 'error')) return 'smart-query-control-error';
+  if (issues.length > 0) return 'smart-query-control-warning';
+  return '';
 }
 
 function isYearField(field: SmartRuleFieldDefinition | undefined): boolean {
@@ -77,11 +85,23 @@ function defaultValueFor(
 
 export default function PlaylistsSmartRuleRow({
   node, document, onDocumentChange, capabilities, customFields, playlistOptions,
-  genreSuggestions = [],
+  genreSuggestions = [], issues = [],
 }: Props) {
   const { t } = useTranslation();
   const isPlaylistOp = node.operator === 'inPlaylist' || node.operator === 'notInPlaylist';
   const field = findSmartRuleField(node.field, customFields);
+  const fieldIssues = issues.filter(issue => (
+    issue.code === 'unknown_field' || issue.code === 'unsupported_field'
+  ));
+  const operatorIssues = issues.filter(issue => (
+    issue.code === 'unknown_operator' || issue.code === 'unsupported_operator'
+  ));
+  const valueIssues = issues.filter(issue => (
+    issue.code === 'invalid_value' || issue.code === 'self_reference'
+  ));
+  const fieldIssueClass = controlIssueClass(fieldIssues);
+  const operatorIssueClass = controlIssueClass(operatorIssues);
+  const valueIssueClass = controlIssueClass(valueIssues);
   const operators = useMemo(() => {
     if (isPlaylistOp) {
       return ['inPlaylist', 'notInPlaylist']
@@ -110,6 +130,8 @@ export default function PlaylistsSmartRuleRow({
       {isPlaylistOp ? (
         <CustomSelect
           value={node.operator}
+          className={operatorIssueClass}
+          ariaInvalid={operatorIssues.some(issue => issue.severity === 'error')}
           options={operators.map(operator => ({
             value: operator.name,
             label: t(`smartPlaylists.operator_${operator.name}`),
@@ -120,6 +142,8 @@ export default function PlaylistsSmartRuleRow({
         <>
           <PlaylistsSmartFieldPicker
             value={node.field}
+            className={fieldIssueClass}
+            ariaInvalid={fieldIssues.some(issue => issue.severity === 'error')}
             capabilities={capabilities}
             customFields={customFields}
             onChange={nextField => {
@@ -132,6 +156,8 @@ export default function PlaylistsSmartRuleRow({
           />
           <CustomSelect
             value={node.operator}
+            className={operatorIssueClass}
+            ariaInvalid={operatorIssues.some(issue => issue.severity === 'error')}
             options={operators.map(operator => ({
               value: operator.name,
               label: t(`smartPlaylists.operator_${operator.name}`),
@@ -151,6 +177,8 @@ export default function PlaylistsSmartRuleRow({
         value: currentValue,
         playlistOptions,
         genreSuggestions,
+        issueClass: valueIssueClass,
+        ariaInvalid: valueIssues.some(issue => issue.severity === 'error'),
         onChange: value => replaceLeaf(node.operator, isPlaylistOp ? 'id' : node.field, value),
       })}
     </div>
@@ -158,7 +186,7 @@ export default function PlaylistsSmartRuleRow({
 }
 
 function renderValueInput({
-  t, operator, field, value, playlistOptions, genreSuggestions, onChange,
+  t, operator, field, value, playlistOptions, genreSuggestions, issueClass, ariaInvalid, onChange,
 }: {
   t: TFunction;
   operator: string;
@@ -166,6 +194,8 @@ function renderValueInput({
   value: unknown;
   playlistOptions: PlaylistOption[];
   genreSuggestions: readonly string[];
+  issueClass: string;
+  ariaInvalid: boolean;
   onChange: (value: unknown) => void;
 }) {
   if (operator === 'inPlaylist' || operator === 'notInPlaylist') {
@@ -175,6 +205,8 @@ function renderValueInput({
         options={playlistOptions.map(option => ({ value: option.id, label: option.name }))}
         onChange={onChange}
         ariaLabel={t('smartPlaylists.value')}
+        className={issueClass}
+        ariaInvalid={ariaInvalid}
       />
     );
   }
@@ -189,6 +221,8 @@ function renderValueInput({
         ]}
         onChange={next => onChange(next === 'true')}
         ariaLabel={t('smartPlaylists.booleanValue')}
+        className={issueClass}
+        ariaInvalid={ariaInvalid}
       />
     );
   }
@@ -196,7 +230,7 @@ function renderValueInput({
     const range = Array.isArray(value) ? value : [value, value];
     const isDate = field?.type === 'date';
     return (
-      <div className="smart-query-rule-value">
+      <div className={`smart-query-rule-value ${issueClass}`} aria-invalid={ariaInvalid || undefined}>
         {isDate ? (
           <>
             <DateValueInput
@@ -243,17 +277,20 @@ function renderValueInput({
       <DateValueInput
         value={typeof value === 'string' ? value : ''}
         onChange={onChange}
+        className={issueClass}
+        ariaInvalid={ariaInvalid}
       />
     );
   }
   if (isYearField(field)) {
-    return <YearValueInput value={value} onChange={onChange} />;
+    return <YearValueInput value={value} onChange={onChange} className={issueClass} ariaInvalid={ariaInvalid} />;
   }
   if (field?.type === 'number' || operator === 'gt' || operator === 'lt'
     || operator === 'inTheLast' || operator === 'notInTheLast') {
     return (
       <input
-        className="input"
+        className={`input ${issueClass}`}
+        aria-invalid={ariaInvalid || undefined}
         type="number"
         value={typeof value === 'number' ? value : ''}
         onChange={event => onChange(Number(event.target.value))}
@@ -267,12 +304,15 @@ function renderValueInput({
         options={genreSuggestions.map(genre => ({ value: genre, label: genre }))}
         onChange={onChange}
         ariaLabel={t('smartPlaylists.value')}
+        className={issueClass}
+        ariaInvalid={ariaInvalid}
       />
     );
   }
   return (
     <input
-      className="input"
+      className={`input ${issueClass}`}
+      aria-invalid={ariaInvalid || undefined}
       value={typeof value === 'string' ? value : String(value ?? '')}
       onChange={event => onChange(event.target.value)}
     />
@@ -290,9 +330,13 @@ function yearOptions(): Array<{ value: string; label: string }> {
 function YearValueInput({
   value,
   onChange,
+  className = '',
+  ariaInvalid,
 }: {
   value: unknown;
   onChange: (value: number) => void;
+  className?: string;
+  ariaInvalid?: boolean;
 }) {
   const { t } = useTranslation();
   const year = typeof value === 'number' && value >= YEAR_MIN ? String(value) : String(currentYear());
@@ -302,6 +346,8 @@ function YearValueInput({
       options={yearOptions()}
       onChange={next => onChange(Number(next))}
       ariaLabel={t('smartPlaylists.year')}
+      className={className}
+      ariaInvalid={ariaInvalid}
     />
   );
 }
@@ -323,9 +369,13 @@ function parseIsoDate(value: string): { year: string; month: string; day: string
 function DateValueInput({
   value,
   onChange,
+  className = '',
+  ariaInvalid,
 }: {
   value: string;
   onChange: (value: string) => void;
+  className?: string;
+  ariaInvalid?: boolean;
 }) {
   const { t } = useTranslation();
   const parsed = parseIsoDate(value);
@@ -336,7 +386,7 @@ function DateValueInput({
   };
 
   return (
-    <div className="smart-query-rule-value">
+    <div className={`smart-query-rule-value ${className}`} aria-invalid={ariaInvalid || undefined}>
       <CustomSelect
         value={parsed.year}
         options={yearOptions()}

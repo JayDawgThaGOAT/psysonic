@@ -177,6 +177,58 @@ describe('PlaylistsSmartEditor', () => {
     await user.click(view.getByRole('button', { name: 'Apply to editor' }));
     expect(view.getByText(/JSON is not valid/)).toBeInTheDocument();
     expect(view.getByRole('button', { name: 'Apply to editor' })).toBeDisabled();
+    expect(view.getByRole('button', { name: 'Preview matching tracks' })).toBeDisabled();
+    expect(view.getByRole('button', { name: 'New Smart Playlist' })).toBeDisabled();
+  });
+
+  it('highlights the Advanced rule with an error and blocks save actions', () => {
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        onSaveCopy={vi.fn()}
+        initialSession={createSmartEditorSession({
+          name: 'Invalid',
+          rules: {
+            any: [
+              { inPlaylist: { id: 'smart-1' } },
+              { all: [{ contains: { artist: 'A' } }] },
+            ],
+          },
+        })}
+      />,
+    );
+
+    const issue = view.getByText('A smart playlist cannot reference itself directly.');
+    const control = view.getByRole('combobox', { name: 'Value' });
+    expect(issue).toHaveClass('smart-query-issue-error');
+    expect(control).toHaveClass('smart-query-control-error');
+    expect(control).toHaveAttribute('aria-invalid', 'true');
+    expect(control.closest('.smart-query-row')).not.toHaveClass('smart-query-has-error');
+    expect(view.getByRole('button', { name: 'Preview matching tracks' })).toBeDisabled();
+    expect(view.getByRole('button', { name: 'Save a copy' })).toBeDisabled();
+    expect(view.getByRole('button', { name: 'Save Smart Playlist' })).toBeDisabled();
+  });
+
+  it('highlights an opaque Advanced rule warning without blocking save', () => {
+    const view = renderWithProviders(
+      <SmartEditorHarness
+        editingSmartId="smart-1"
+        initialSession={createSmartEditorSession({
+          name: 'Future',
+          rules: {
+            any: [
+              { futureOperator: { title: 'kept' } },
+              { all: [{ contains: { artist: 'A' } }] },
+            ],
+          },
+        })}
+      />,
+    );
+
+    const issue = view.getByText('Unknown operator "futureOperator" is preserved for JSON editing.');
+    expect(issue).toHaveClass('smart-query-issue-warning');
+    expect(view.container.querySelector('.smart-query-control-warning')).toBeInTheDocument();
+    expect(view.getByRole('button', { name: 'Save Smart Playlist' })).toBeEnabled();
   });
 
   it('uses a typed date field instead of a trapping native calendar', () => {

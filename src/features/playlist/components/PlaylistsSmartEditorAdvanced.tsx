@@ -12,6 +12,7 @@ import {
   parseSmartRulesDocument,
   removeSmartRuleValue,
   setSmartRuleValue,
+  type SmartRuleValidationIssue,
   type SmartRulesDocument,
 } from '@/features/playlist/utils/smartPlaylistRules';
 
@@ -27,11 +28,18 @@ interface Props {
   customFields: SmartRuleFieldDefinition[];
   playlistOptions: PlaylistOption[];
   genreSuggestions?: readonly string[];
+  issues?: readonly SmartRuleValidationIssue[];
+}
+
+function issueSeverityClass(issues: readonly SmartRuleValidationIssue[]): string {
+  if (issues.some(issue => issue.severity === 'error')) return 'smart-query-has-error';
+  if (issues.length > 0) return 'smart-query-has-warning';
+  return '';
 }
 
 export default function PlaylistsSmartEditorAdvanced({
   document, onDocumentChange, capabilities, customFields, playlistOptions,
-  genreSuggestions = [],
+  genreSuggestions = [], issues = [],
 }: Props) {
   const { t } = useTranslation();
   const hasLimit = typeof document.raw.limit === 'number';
@@ -120,6 +128,7 @@ export default function PlaylistsSmartEditorAdvanced({
           customFields={customFields}
           playlistOptions={playlistOptions}
           genreSuggestions={genreSuggestions}
+          issues={issues}
           isRoot
         />
       ) : (
@@ -142,8 +151,11 @@ export default function PlaylistsSmartEditorAdvanced({
           onDocumentChange={onDocumentChange}
           capabilities={capabilities}
           customFields={customFields}
+          issues={issues.filter(issue => issue.path === '/sort')}
         />
-        <div className="smart-query-limit">
+        <div className={`smart-query-limit ${issueSeverityClass(
+          issues.filter(issue => issue.path === '/limit' || issue.path === '/limitPercent'),
+        )}`}>
           <span className="smart-query-limit-label">{t('smartPlaylists.limit')}</span>
           <div className="smart-query-limit-controls">
             <div className="smart-query-limit-mode" role="group" aria-label={t('smartPlaylists.limit')}>
@@ -211,12 +223,22 @@ export default function PlaylistsSmartEditorAdvanced({
               />
             )}
           </div>
+          {issues
+            .filter(issue => issue.path === '/limit' || issue.path === '/limitPercent')
+            .map(issue => (
+              <div key={`${issue.path}-${issue.code}`} className={`smart-query-issue smart-query-issue-${issue.severity}`}>
+                {issue.message}
+              </div>
+            ))}
         </div>
       </div>
       <details className="smart-query-more">
         <summary>{t('smartPlaylists.moreOptions')}</summary>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+          <label
+            className={issueSeverityClass(issues.filter(issue => issue.path === '/offset')) || undefined}
+            style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}
+          >
             <span>{t('smartPlaylists.offset')}</span>
             <input
               className="input"
@@ -234,6 +256,11 @@ export default function PlaylistsSmartEditorAdvanced({
                 onDocumentChange(setSmartRuleValue(document, '/offset', offset));
               }}
             />
+            {issues.filter(issue => issue.path === '/offset').map(issue => (
+              <span key={`${issue.path}-${issue.code}`} className={`smart-query-issue smart-query-issue-${issue.severity}`}>
+                {issue.message}
+              </span>
+            ))}
           </label>
         </div>
       </details>

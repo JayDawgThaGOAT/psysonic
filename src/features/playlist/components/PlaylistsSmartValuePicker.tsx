@@ -12,6 +12,8 @@ interface Props {
   options: readonly SmartValueOption[];
   onChange: (value: string) => void;
   ariaLabel: string;
+  className?: string;
+  ariaInvalid?: boolean;
 }
 
 function filterOptions(options: readonly SmartValueOption[], query: string): SmartValueOption[] {
@@ -24,7 +26,7 @@ function filterOptions(options: readonly SmartValueOption[], query: string): Sma
 }
 
 export default function PlaylistsSmartValuePicker({
-  value, options, onChange, ariaLabel,
+  value, options, onChange, ariaLabel, className = '', ariaInvalid,
 }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -110,13 +112,14 @@ export default function PlaylistsSmartValuePicker({
     <div className="smart-field-picker">
       <input
         ref={inputRef}
-        className="input"
+        className={`input ${className}`}
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         aria-activedescendant={open && matches[activeIndex] ? `${listboxId}-opt-${activeIndex}` : undefined}
         aria-label={ariaLabel}
+        aria-invalid={ariaInvalid || undefined}
         placeholder={display || t('smartPlaylists.valueSearchPlaceholder')}
         value={open ? query : display}
         onFocus={() => {

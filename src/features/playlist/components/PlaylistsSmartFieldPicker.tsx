@@ -14,6 +14,8 @@ interface Props {
   customFields: readonly SmartRuleFieldDefinition[];
   onChange: (field: SmartRuleFieldDefinition) => void;
   sortableOnly?: boolean;
+  className?: string;
+  ariaInvalid?: boolean;
 }
 
 function fieldLabel(field: SmartRuleFieldDefinition): string {
@@ -22,6 +24,7 @@ function fieldLabel(field: SmartRuleFieldDefinition): string {
 
 export default function PlaylistsSmartFieldPicker({
   value, capabilities, customFields, onChange, sortableOnly = false,
+  className = '', ariaInvalid,
 }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -109,13 +112,14 @@ export default function PlaylistsSmartFieldPicker({
     <div className="smart-field-picker">
       <input
         ref={inputRef}
-        className="input"
+        className={`input ${className}`}
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         aria-activedescendant={open && matches[activeIndex] ? `${listboxId}-opt-${activeIndex}` : undefined}
         aria-label={t('smartPlaylists.field')}
+        aria-invalid={ariaInvalid || undefined}
         placeholder={display || t('smartPlaylists.fieldSearchPlaceholder')}
         value={open ? query : display}
         onFocus={() => {

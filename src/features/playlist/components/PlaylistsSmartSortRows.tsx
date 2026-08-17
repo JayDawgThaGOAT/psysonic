@@ -11,6 +11,7 @@ import {
   parseSmartRulesDocument,
   removeSmartRuleValue,
   setSmartRuleValue,
+  type SmartRuleValidationIssue,
   type SmartRulesDocument,
 } from '@/features/playlist/utils/smartPlaylistRules';
 import type { SmartPlaylistCapabilities, SmartRuleFieldDefinition } from '@/features/playlist/utils/smartPlaylistFields';
@@ -20,10 +21,11 @@ interface Props {
   onDocumentChange: (document: SmartRulesDocument) => void;
   capabilities: SmartPlaylistCapabilities;
   customFields: readonly SmartRuleFieldDefinition[];
+  issues?: readonly SmartRuleValidationIssue[];
 }
 
 export default function PlaylistsSmartSortRows({
-  document, onDocumentChange, capabilities, customFields,
+  document, onDocumentChange, capabilities, customFields, issues = [],
 }: Props) {
   const { t } = useTranslation();
   const rows = parseSmartSortRows(document.raw.sort);
@@ -42,7 +44,11 @@ export default function PlaylistsSmartSortRows({
   };
 
   return (
-    <div className="smart-query-sorts">
+    <div className={`smart-query-sorts ${
+      issues.some(issue => issue.severity === 'error')
+        ? 'smart-query-has-error'
+        : issues.length > 0 ? 'smart-query-has-warning' : ''
+    }`}>
       <div className="smart-query-sorts-head">
         <span>{t('smartPlaylists.sortRows')}</span>
         <span>{t('smartPlaylists.sortOrder')}</span>
@@ -111,6 +117,11 @@ export default function PlaylistsSmartSortRows({
           {t('smartPlaylists.removeRule')} order
         </button>
       )}
+      {issues.map(issue => (
+        <div key={`${issue.path}-${issue.code}`} className={`smart-query-issue smart-query-issue-${issue.severity}`}>
+          {issue.message}
+        </div>
+      ))}
     </div>
   );
 }
