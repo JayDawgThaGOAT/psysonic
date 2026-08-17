@@ -289,7 +289,8 @@
   max-width: 220px;
 }
 
-.smart-query-rule > .input {
+.smart-query-rule > .input,
+.smart-query-rule-value > .input {
   width: 7rem;
   flex: 0 0 7rem;
 }
@@ -301,7 +302,8 @@
 }
 
 .smart-query-rule-value {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
+  width: auto;
   min-width: 0;
   flex-wrap: nowrap;
 }
