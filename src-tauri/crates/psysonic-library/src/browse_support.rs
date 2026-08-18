@@ -81,7 +81,8 @@ pub(crate) fn overlay_album_artist_links(
         return;
     }
     let sql = format!(
-        "SELECT MAX(t.album_artist), MAX({album_artist_id}) \
+        "SELECT MAX(t.album_artist), MAX({album_artist_id}), \
+                COUNT(*), COALESCE(SUM(t.duration_sec), 0), MIN(t.server_created_at) \
          FROM track t \
          WHERE t.server_id = ?1 AND t.album_id = ?2 AND t.deleted = 0",
         album_artist_id = crate::scope_merge::album_artist_id_expr("t.raw_json"),
@@ -95,11 +96,15 @@ pub(crate) fn overlay_album_artist_links(
                 Ok((
                     r.get::<_, Option<String>>(0)?,
                     r.get::<_, Option<String>>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
                 ))
             })
             .optional()
             .unwrap_or(None);
-        let Some((album_artist, album_artist_id)) = owner else {
+        let Some((album_artist, album_artist_id, song_count, duration_sec, created_ms)) = owner
+        else {
             continue;
         };
         // The displayed credit decides, because that is the name on the card; the
@@ -113,6 +118,82 @@ pub(crate) fn overlay_album_artist_links(
         };
         album.artist_id =
             pick_album_group_artist_id(album.artist_id.take(), credit, album_artist_id);
+        overlay_album_size_and_added(album, song_count, duration_sec, created_ms);
+    }
+}
+
+/// Fill in the three per-album figures no single browse query can supply for
+/// every surface — track count, total runtime, and when the album arrived — from
+/// the aggregates its caller already read off the complete physical album.
+///
+/// Each browse path is short a different one, and for its own reason. A feed that
+/// selects a *window* of tracks (mainstage takes the most recently added) never
+/// sees a whole release, so counting inside that query would report the window;
+/// those callers leave both totals unset. The materialised
+/// `album_browse_projection` behind All Albums and the lossless walk carry the
+/// totals but have no column for the arrival date at all. Fields that already
+/// carry a value are left alone: where a query could compute one, its value
+/// matches that query's own semantics — a genre-filtered browse counts what it
+/// counted on purpose.
+///
+/// `created_ms` is `MIN(server_created_at)`: the column answers when the album
+/// arrived, so it must not move when one late track lands years afterwards — a
+/// re-tag that recreates a single row would otherwise date the whole release to
+/// today and mark it as new. The mainstage feed orders by the *newest* track
+/// instead, which is its own concern; it sets its `createdMs` from that key
+/// before this runs and keeps it, since a present value is never replaced.
+///
+/// This rides along with [`overlay_album_artist_links`] rather than taking a scan
+/// of its own: both read the same `(server_id, album_id)` range over the same
+/// `deleted = 0` rows, so the figures cost no additional lookup. Reading them per
+/// physical album — not per library — matches that neighbour and reports the
+/// release the user is looking at.
+fn overlay_album_size_and_added(
+    album: &mut LibraryAlbumDto,
+    song_count: i64,
+    duration_sec: i64,
+    created_ms: Option<i64>,
+) {
+    // COUNT over an album with no live tracks left is a row that should not be on
+    // this page at all — leave it untouched rather than stamping it with zeroes
+    // that read like real values.
+    if song_count <= 0 {
+        return;
+    }
+    if album.song_count.is_none() {
+        album.song_count = Some(song_count);
+    }
+    if album.duration_sec.is_none() {
+        album.duration_sec = Some(duration_sec.max(0));
+    }
+    if let Some(created_ms) = created_ms {
+        set_album_raw_created_ms(album, created_ms);
+    }
+}
+
+/// `raw_json.createdMs` when the row already carries one (mainstage sets it from
+/// its own feed key).
+fn album_raw_created_ms(album: &LibraryAlbumDto) -> Option<i64> {
+    album.raw_json.get("createdMs").and_then(Value::as_i64)
+}
+
+/// Adds `createdMs` without disturbing a `raw_json` payload the row already has,
+/// and never overwrites one that is present.
+fn set_album_raw_created_ms(album: &mut LibraryAlbumDto, created_ms: i64) {
+    if album_raw_created_ms(album).is_some() {
+        return;
+    }
+    // Only an absent payload becomes a fresh object. A row carrying something that
+    // is not an object holds a shape this function does not understand, and
+    // dropping it to make room for one field would lose more than it adds.
+    if album.raw_json.is_null() {
+        let mut map = Map::new();
+        map.insert("createdMs".to_string(), Value::from(created_ms));
+        album.raw_json = Value::Object(map);
+        return;
+    }
+    if let Some(map) = album.raw_json.as_object_mut() {
+        map.insert("createdMs".to_string(), Value::from(created_ms));
     }
 }
 
