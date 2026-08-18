@@ -4,7 +4,7 @@ import {
   Shuffle, ListMusic, ChevronDown, Star, MicVocal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { usePlayerStore } from '@/features/playback/store/playerStore';
+import { ScrobbleActionButton, usePlayerStore } from '@/features/playback';
 import { queueSongStar, queueSongRating } from '@/features/playback/store/pendingStarSync';
 import { TrackArtistLinks, usePlaybackLibraryNavigate } from '@/features/playback';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
@@ -296,6 +296,11 @@ export default function FullscreenPlayerStatic({ onClose }: Props) {
                 <Heart size={20} fill={isStarred ? 'currentColor' : 'none'} />
               </button>
             )}
+            <ScrobbleActionButton
+              t={t}
+              className="fsp-btn fsp-btn-sm"
+              iconSize={20}
+            />
             <button
               className={`fsp-btn fsp-btn-sm${repeatMode !== 'off' ? ' active' : ''}`}
               onClick={toggleRepeat}

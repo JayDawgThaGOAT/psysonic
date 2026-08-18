@@ -18,6 +18,7 @@ import {
   DEFAULT_LYRICS_SOURCES,
   DEFAULT_TRACK_PREVIEW_LOCATIONS,
   DEFAULT_LIBRARY_GRID_MAX_COLUMNS,
+  SCROBBLE_THRESHOLD_PERCENT_DEFAULT,
 } from './authStoreDefaults';
 import { computeAuthStoreRehydration } from './authStoreRehydrate';
 import {
@@ -50,6 +51,8 @@ export const useAuthStore = create<AuthState>()(
       musicNetworkAccounts: [],
       enrichmentPrimaryId: null,
       scrobblingMasterEnabled: true,
+      scrobbleThresholdPercent: SCROBBLE_THRESHOLD_PERCENT_DEFAULT,
+      forceScrobbleEnabled: false,
       maxCacheMb: 0,
       coverRevalidateCycleDays: 30,
       coverRevalidateMaxProbesPerSession: 500,

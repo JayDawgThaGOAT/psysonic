@@ -17,6 +17,11 @@ import { ScrobbleDestinationCard } from '@/features/settings/components/musicNet
 import { EnrichmentPrimarySelect } from '@/features/settings/components/musicNetwork/EnrichmentPrimarySelect';
 import { ConnectProviderForm } from '@/features/settings/components/musicNetwork/ConnectProviderForm';
 import { MalojaProxyWarning } from '@/features/settings/components/musicNetwork/MalojaProxyWarning';
+import { SettingsField, SettingsValue } from '@/features/settings/components/SettingsSubCard';
+import {
+  SCROBBLE_THRESHOLD_PERCENT_MAX,
+  SCROBBLE_THRESHOLD_PERCENT_MIN,
+} from '@/store/authStoreDefaults';
 
 /**
  * Integrations UI for the Music Network framework — replaces the old Last.fm
@@ -28,6 +33,11 @@ import { MalojaProxyWarning } from '@/features/settings/components/musicNetwork/
 export function MusicNetworkSection() {
   const { t } = useTranslation();
   const { accounts, enrichmentPrimaryId, scrobblingMasterEnabled } = useMusicNetworkState();
+  const scrobbleThresholdPercent = useAuthStore(s => s.scrobbleThresholdPercent);
+  const setScrobbleThresholdPercent = useAuthStore(s => s.setScrobbleThresholdPercent);
+  const advancedSettingsEnabled = useAuthStore(s => s.advancedSettingsEnabled);
+  const forceScrobbleEnabled = useAuthStore(s => s.forceScrobbleEnabled);
+  const setForceScrobbleEnabled = useAuthStore(s => s.setForceScrobbleEnabled);
   const [primaryProfile, setPrimaryProfile] = useState<UserProfile | null>(null);
 
   // Profile stats (scrobbles / member-since) for the enrichment primary.
@@ -89,6 +99,44 @@ export function MusicNetworkSection() {
             </label>
           </div>
         </SettingsGroup>
+
+        <SettingsGroup>
+          <SettingsField
+            label={t('musicNetwork.thresholdLabel')}
+            desc={t('musicNetwork.thresholdDesc')}
+            row
+          >
+            <input
+              type="range"
+              min={SCROBBLE_THRESHOLD_PERCENT_MIN}
+              max={SCROBBLE_THRESHOLD_PERCENT_MAX}
+              step={1}
+              value={scrobbleThresholdPercent}
+              onChange={e => setScrobbleThresholdPercent(parseInt(e.target.value, 10))}
+              aria-label={t('musicNetwork.thresholdLabel')}
+            />
+            <SettingsValue>{t('musicNetwork.thresholdValue', { n: scrobbleThresholdPercent })}</SettingsValue>
+          </SettingsField>
+        </SettingsGroup>
+
+        {advancedSettingsEnabled && (
+          <SettingsGroup>
+            <SettingsField
+              label={t('musicNetwork.forceScrobbleLabel')}
+              desc={t('musicNetwork.forceScrobbleDesc')}
+              row
+            >
+              <label className="toggle-switch" aria-label={t('musicNetwork.forceScrobbleLabel')}>
+                <input
+                  type="checkbox"
+                  checked={forceScrobbleEnabled}
+                  onChange={e => setForceScrobbleEnabled(e.target.checked)}
+                />
+                <span className="toggle-track" />
+              </label>
+            </SettingsField>
+          </SettingsGroup>
+        )}
 
         <EnrichmentPrimarySelect
           accounts={accounts}

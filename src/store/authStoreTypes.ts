@@ -133,6 +133,10 @@ export interface AuthState {
   musicNetworkAccounts: PersistedAccount[];
   enrichmentPrimaryId: string | null;
   scrobblingMasterEnabled: boolean;
+  /** Auto-scrobble when playback progress reaches this percent of the track (25–90). */
+  scrobbleThresholdPercent: number;
+  /** Advanced opt-in for the manual force-scrobble control. */
+  forceScrobbleEnabled: boolean;
 
   // Settings (global)
   maxCacheMb: number;
@@ -415,6 +419,8 @@ export interface AuthState {
   setMusicNetworkAccounts: (accounts: PersistedAccount[]) => void;
   setEnrichmentPrimaryId: (id: string | null) => void;
   setScrobblingMasterEnabled: (v: boolean) => void;
+  setScrobbleThresholdPercent: (v: number) => void;
+  setForceScrobbleEnabled: (v: boolean) => void;
   setMaxCacheMb: (v: number) => void;
   setDownloadFolder: (v: string) => void;
   setOfflineDownloadDir: (v: string) => void;

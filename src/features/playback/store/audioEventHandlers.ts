@@ -1,11 +1,13 @@
-import { scrobbleSong } from '@/lib/api/subsonicScrobble';
+import {
+  scrobbleCurrentTrackAtNaturalBoundary,
+  submitPlaybackTrackScrobble,
+} from '@/features/playback/store/scrobbleActions';
 import {
   playbackReportPlaying,
   playbackReportStopped,
 } from '@/features/playback/store/playbackReportSession';
 import { resolveQueueTrack } from '@/features/playback/store/queueTrackView';
 import { audioPreload, audioSetAutodjSuppress } from '@/lib/api/audio';
-import { getMusicNetworkRuntimeOrNull } from '@/music-network';
 import { setDeferHotCachePrefetch } from '@/lib/cache/hotCacheGate';
 import { notifyLibraryPlaybackHint } from '@/features/playback/store/libraryPlaybackHint';
 import {
@@ -282,7 +284,12 @@ export function handleAudioProgress(
   const track = store.currentTrack;
   if (!track) return;
   if (!buffering) {
-    maybeReconcileGaplessFromProgress(current_time, duration);
+    const reconciled = maybeReconcileGaplessFromProgress(
+      current_time,
+      duration,
+      scrobbleCurrentTrackAtNaturalBoundary,
+    );
+    if (reconciled) return;
   }
   if (!store.currentRadio && store.isPlaybackBuffering !== buffering) {
     usePlayerStore.setState({ isPlaybackBuffering: buffering });
@@ -348,21 +355,11 @@ export function handleAudioProgress(
     }
   }
 
-  // Scrobble at 50%: Music Network + Navidrome (updates play_date / recently played)
-  if (progress >= 0.5 && !store.scrobbled) {
+  // Scrobble at the configured percentage: Music Network + Navidrome
+  const threshold = useAuthStore.getState().scrobbleThresholdPercent / 100;
+  if (progress >= threshold && !store.scrobbled) {
     usePlayerStore.setState({ scrobbled: true });
-    scrobbleSong(
-      track.id,
-      Date.now(),
-      playbackProfileIdForTrack(track, store.queueItems[store.queueIndex]),
-    );
-    void getMusicNetworkRuntimeOrNull()?.dispatchScrobble({
-      title: track.title,
-      artist: track.artist,
-      album: track.album,
-      duration: track.duration,
-      timestamp: Date.now(),
-    });
+    submitPlaybackTrackScrobble(track, store.queueItems, store.queueIndex);
   }
   if (progressUiDisabled) return;
   // Critical architectural guard: avoid high-frequency writes to the persisted
@@ -445,6 +442,7 @@ export function handleAudioProgress(
           )
         ) {
           crossfadeTrimAdvanceGen = gen;
+          scrobbleCurrentTrackAtNaturalBoundary();
           armCrossfadeDynamicOverlap(nextTrackIdentity ?? nextTrackId, overlapSec, outgoingFadeSec);
           armAutodjMixing(overlapSec);
           store.next(false);
@@ -571,6 +569,7 @@ export function handleAudioEnded(): void {
     return;
   }
 
+  scrobbleCurrentTrackAtNaturalBoundary();
   void playListenSessionFinalize('ended');
   // Track finished — clear live now-playing. A follow-on track (next / repeat)
   // opens a fresh session via playbackReportStart.
@@ -636,6 +635,7 @@ export function handleAudioTrackSwitched(duration: number): void {
   setIsAudioPaused(false);
 
   const store = usePlayerStore.getState();
+  scrobbleCurrentTrackAtNaturalBoundary();
   if (store.currentTrack?.id) {
     useAuthStore.getState().clearSkipStarManualCountForTrack(
       store.currentTrack.id,

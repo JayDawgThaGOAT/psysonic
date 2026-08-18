@@ -4,7 +4,7 @@ import {
   SkipBack, SkipForward, Play, Pause, Repeat, Repeat1,
   ListMusic, MessageSquare, Shrink,
 } from 'lucide-react';
-import { usePlayerStore, type PlaybackProgressSnapshot, usePlaybackLibraryNavigate, TrackArtistLinks } from '@/features/playback';
+import { usePlayerStore, type PlaybackProgressSnapshot, usePlaybackLibraryNavigate, TrackArtistLinks, ScrobbleActionButton } from '@/features/playback';
 import { FsVolume } from './FsVolume';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
 import { usePlaybackCoverArt } from '@/cover/usePlaybackCoverArt';
@@ -146,6 +146,12 @@ export default function FullscreenPlayerPrism({ onClose }: { onClose: () => void
 
         {/* Utilities */}
         <div className="fsp2-bar-right" data-visualizer-transport="fullscreen">
+          <ScrobbleActionButton
+            t={t}
+            className="fsp2-btn"
+            activeClassName="fsp2-btn-active"
+            iconSize={18}
+          />
           <FsVolume
             className="fsp2-volume"
             buttonClassName="fsp2-btn"

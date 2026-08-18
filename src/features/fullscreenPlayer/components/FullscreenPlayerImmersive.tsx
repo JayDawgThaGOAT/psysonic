@@ -1,4 +1,4 @@
-import { queueSongStar, playbackCoverArtForAlbum, usePlayerStore, usePlaybackLibraryNavigate, TrackArtistLinks } from '@/features/playback';
+import { queueSongStar, playbackCoverArtForAlbum, usePlayerStore, usePlaybackLibraryNavigate, TrackArtistLinks, ScrobbleActionButton } from '@/features/playback';
 import { usePlaybackCoverArt } from '@/cover/usePlaybackCoverArt';
 import { useAlbumCoverRef } from '@/cover/useLibraryCoverRef';
 import React, { useCallback, useEffect, useState, useRef, useMemo } from 'react';
@@ -255,6 +255,11 @@ export default function FullscreenPlayer({ onClose }: FullscreenPlayerProps) {
               <Heart size={14} fill={isStarred ? 'currentColor' : 'none'} />
             </button>
           )}
+          <ScrobbleActionButton
+            t={t}
+            className="fs-btn fs-btn-sm"
+            iconSize={14}
+          />
           <div style={{ position: 'relative', zIndex: 9 }}>
             <FsLyricsMenu open={lyricsMenuOpen} onClose={closeLyricsMenu} accentColor={dynamicAccent} triggerRef={lyricsMenuTriggerRef} />
             <button

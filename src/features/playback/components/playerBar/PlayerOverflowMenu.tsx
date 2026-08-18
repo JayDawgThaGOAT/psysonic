@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import { PictureInPicture2, SlidersVertical } from 'lucide-react';
 import { openMiniPlayer } from '@/lib/api/miniPlayer';
 import type { TFunction } from 'i18next';
+import { useAuthStore } from '@/store/authStore';
 import { PlayerVolume } from '@/features/playback/components/playerBar/PlayerVolume';
 import { PlayerPlaybackRateMenuSection } from '@/features/playback/components/playerBar/PlayerPlaybackRate';
+import { ScrobbleActionButton } from '@/features/playback/components/playerBar/ScrobbleStatus';
 import {
   usePlayerBarLayoutStore,
   type PlayerBarLayoutItemId,
@@ -39,6 +41,7 @@ export function PlayerOverflowMenu({
     layoutItems.find(i => i.id === id)?.visible !== false;
   const showEqualizer = isLayoutVisible('equalizer');
   const showMiniPlayer = isLayoutVisible('miniPlayer');
+  const showScrobble = useAuthStore(s => s.forceScrobbleEnabled);
   const showPlaybackRate = isLayoutVisible('playbackRate');
   return createPortal(
     <div
@@ -47,8 +50,16 @@ export function PlayerOverflowMenu({
       style={utilityMenuStyle}
       onWheel={handleVolumeWheel}
     >
-      {utilityMenuMode === 'full' && (showEqualizer || showMiniPlayer) && (
+      {utilityMenuMode === 'full' && (showScrobble || showEqualizer || showMiniPlayer) && (
         <div className="player-overflow-menu-row">
+          {showScrobble && (
+            <ScrobbleActionButton
+              t={t}
+              className="player-overflow-menu-btn player-overflow-menu-btn--icon"
+              direct
+              onDirectAction={closeMenu}
+            />
+          )}
           {showEqualizer && (
             <button
               className={`player-overflow-menu-btn${eqOpen ? ' active' : ''}`}

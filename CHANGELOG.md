@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Added
 
+### Scrobbling — configurable threshold and force scrobble
+
+**By [@JayDawgThaGOAT](https://github.com/JayDawgThaGOAT), PR [#1425](https://github.com/Psysonic/psysonic/pull/1425)**
+
+* Settings → Integrations → Music Network now has a 25–90% scrobble threshold (default remains 50%).
+* Advanced settings can show a Force scrobble action in the player bar and fullscreen player. It shows listening progress and can immediately submit the current track to the media server and every enabled Music Network destination.
+
 ### Full names on hover, wherever a card cuts one off
 
 **By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1433](https://github.com/Psysonic/psysonic/pull/1433)**

@@ -7,6 +7,10 @@ import { isOrbitPlaybackSyncActive } from '@/store/orbitRuntime';
 import { useAuthStore } from '@/store/authStore';
 import { getPlaybackProgressSnapshot } from '@/features/playback/store/playbackProgress';
 import { usePlaybackRateStore } from '@/features/playback/store/playbackRateStore';
+import {
+  beginScrobblePlay,
+  clearScrobblePlay,
+} from '@/features/playback/store/scrobblePlaySession';
 
 /**
  * Live now-playing presence on the Subsonic server channel.
@@ -17,7 +21,7 @@ import { usePlaybackRateStore } from '@/features/playback/store/playbackRateStor
  * `playListenSession`. This gives `getNowPlaying` a real transport state and an
  * extrapolated position. `ignoreScrobble=true` keeps the server from applying
  * scrobble / play-count side effects, because psysonic still owns play counts on
- * the dedicated `scrobble.view` channel (the 50% rule in `audioEventHandlers`).
+ * the dedicated `scrobble.view` channel (the configured threshold in `audioEventHandlers`).
  *
  * On servers without the extension every entry point degrades to the legacy
  * `scrobble.view?submission=false` presence call (`reportNowPlaying`), so the
@@ -96,7 +100,13 @@ function openExtensionSession(
  * `reportNowPlaying` presence call at those sites: the extension path opens the
  * FSM (starting → playing); otherwise the legacy presence call is used.
  */
-export function playbackReportStart(trackId: string, serverId: string): void {
+export function playbackReportStart(
+  trackId: string,
+  serverId: string,
+  startScrobbleSession = true,
+): void {
+  if (startScrobbleSession) beginScrobblePlay(trackId, serverId);
+  else clearScrobblePlay();
   if (!serverId || !nowPlayingEnabled()) return;
 
   const prev = session;
