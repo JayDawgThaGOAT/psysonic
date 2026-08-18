@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Infinity as InfinityIcon } from 'lucide-react';
 import PlaylistsSmartRuleGroup from '@/features/playlist/components/PlaylistsSmartRuleGroup';
@@ -54,19 +54,19 @@ export default function PlaylistsSmartEditorAdvanced({
     hasPercent ? String(document.raw.limitPercent) : '25',
   );
 
-  useEffect(() => {
+  // Sync drafts with external document changes during render (React's
+  // recommended alternative to setState-in-effect).
+  const [prevLimit, setPrevLimit] = useState(document.raw.limit);
+  const [prevLimitPercent, setPrevLimitPercent] = useState(document.raw.limitPercent);
+  if (document.raw.limit !== prevLimit || document.raw.limitPercent !== prevLimitPercent) {
+    setPrevLimit(document.raw.limit);
+    setPrevLimitPercent(document.raw.limitPercent);
     if (hasPercent) setLimitModeState('limitPercent');
     else if (hasLimit) setLimitModeState('limit');
     else setLimitModeState('none');
-  }, [hasLimit, hasPercent]);
-
-  useEffect(() => {
     if (hasLimit) setCountDraft(String(document.raw.limit));
-  }, [document.raw.limit, hasLimit]);
-
-  useEffect(() => {
     if (hasPercent) setPercentDraft(String(document.raw.limitPercent));
-  }, [document.raw.limitPercent, hasPercent]);
+  }
 
   const withoutLimits = () => {
     let next = document;

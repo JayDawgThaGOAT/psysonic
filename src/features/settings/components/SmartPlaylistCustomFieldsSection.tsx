@@ -6,7 +6,7 @@ import type { SmartPlaylistCustomFieldSetting } from '@/store/authStoreTypes';
 import SettingsSubSection from '@/features/settings/components/SettingsSubSection';
 import { SettingsGroup } from '@/features/settings/components/SettingsGroup';
 import { SettingsSubCard, SettingsField } from '@/features/settings/components/SettingsSubCard';
-import { createCustomSmartRuleField } from '@/features/playlist/utils/smartPlaylistFields';
+import { createCustomSmartRuleField } from '@/features/playlist';
 
 const FIELD_TYPES: Array<{
   value: SmartPlaylistCustomFieldSetting['type'];
