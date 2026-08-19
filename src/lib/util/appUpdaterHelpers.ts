@@ -17,9 +17,16 @@ export function isNewer(a: string, b: string): boolean {
 // while after the GitHub release goes live (installer scan + manual review,
 // longer for freshly signed binaries building SmartScreen reputation). Holding
 // the update notice back until the release clears this window avoids pointing
-// Windows users at a version WinGet has not published yet. Conservative start
-// value — tune down once real winget-pkgs merge times are known.
-export const WINGET_MODERATION_DELAY_MS = 48 * 60 * 60 * 1000;
+// Windows users at a version WinGet has not published yet. Measured from release
+// publish to winget-pkgs merge — the same span this guard checks — 1.49.0
+// took 1h23, 1.50.0 1h02 and 1.51.0 1h58. The last of those was submitted by
+// hand after the automation failed, and still cleared within two hours because
+// the submission followed quickly. Twelve hours covers the automated path with
+// wide margin instead of holding the notice back for two days. It does not
+// cover an unattended failure — a release published late at night and only
+// submitted the next morning can exceed this window, and the notice would then
+// appear before WinGet has the version.
+export const WINGET_MODERATION_DELAY_MS = 12 * 60 * 60 * 1000;
 
 // True while `publishedAt` is younger than `windowMs` relative to `now`.
 // Missing or unparseable date → false (fail open: show the notice rather than
