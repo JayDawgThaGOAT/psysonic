@@ -3,7 +3,7 @@ import { usePlayerStore } from '@/features/playback/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
 import { useLyrics, type WordLyricsLine } from '@/features/lyrics';
 import { useWordLyricsSync } from '@/features/lyrics';
-import { getPlaybackProgressSnapshot, subscribePlaybackProgress } from '@/features/playback/store/playbackProgress';
+import { getSmoothPlaybackTime, subscribeSmoothPlaybackTime } from '@/features/playback';
 import type { LrcLine } from '@/features/lyrics';
 import type { Track } from '@/lib/media/trackTypes';
 import { EaseScroller, targetForFraction } from '@/lib/dom/easeScroll';
@@ -60,14 +60,20 @@ export const FsLyricsApple = memo(function FsLyricsApple({ currentTrack }: { cur
     const apply = (time: number) => {
       const ls = linesRef.current;
       if (!ls.length) return;
-      const idx = ls.reduce((acc, line, i) => time >= line.time ? i : acc, -1);
+      // Lines are ordered, so stop at the first one past `time`. This runs on
+      // every emit rather than once a second now, so a full scan would be waste.
+      let idx = -1;
+      for (let i = 0; i < ls.length; i++) {
+        if (time >= ls[i].time) idx = i;
+        else break;
+      }
       if (idx !== activeIdxRef.current) {
         activeIdxRef.current = idx;
         setActiveIdx(idx);
       }
     };
-    apply(getPlaybackProgressSnapshot().currentTime);
-    return subscribePlaybackProgress(s => apply(s.currentTime));
+    apply(getSmoothPlaybackTime());
+    return subscribeSmoothPlaybackTime(apply);
   }, [hasSynced, currentTrack?.id]);
 
   // Scroll the active line into view, honouring the "Lyrics scroll style" setting
