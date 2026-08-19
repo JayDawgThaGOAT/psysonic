@@ -6,7 +6,7 @@ describe('isWithinModerationWindow', () => {
   const publishedMs = Date.parse(published);
 
   it('returns true while the release is younger than the window', () => {
-    const now = publishedMs + 12 * 60 * 60 * 1000; // 12h after release
+    const now = publishedMs + WINGET_MODERATION_DELAY_MS / 2; // halfway into the window
     expect(isWithinModerationWindow(published, now)).toBe(true);
   });
 
@@ -24,6 +24,13 @@ describe('isWithinModerationWindow', () => {
     const now = publishedMs + 2 * 60 * 60 * 1000; // 2h after release
     expect(isWithinModerationWindow(published, now, 1 * 60 * 60 * 1000)).toBe(false);
     expect(isWithinModerationWindow(published, now, 3 * 60 * 60 * 1000)).toBe(true);
+  });
+
+  // Every other assertion is relative to the constant, so a slip such as
+  // `6 * 60 * 1000` (six minutes) would disable the guard with a green suite.
+  it('keeps the window within a plausible order of magnitude', () => {
+    expect(WINGET_MODERATION_DELAY_MS).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    expect(WINGET_MODERATION_DELAY_MS).toBeLessThanOrEqual(48 * 60 * 60 * 1000);
   });
 
   it('fails open on a missing date', () => {
