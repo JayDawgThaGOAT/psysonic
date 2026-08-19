@@ -116,10 +116,15 @@ fn large_scoped_feeds_stay_bounded() {
     eprintln!("mainstage 214k fixture: releases={release_elapsed:?}, recent={recent_elapsed:?}");
     assert_eq!(releases.albums.len(), 30);
     assert_eq!(recent.albums.len(), 30);
+    // The feed query still cannot count a release out of its candidate window —
+    // `mainstage_query_plans_use_bounded_feed_indexes` guards that. Both feeds get
+    // their totals from the page-sized overlay that runs after `truncate`, so they
+    // are present here while the bound below stays untouched.
     assert!(releases
         .albums
         .iter()
-        .all(|album| album.song_count.is_none()));
+        .all(|album| album.song_count.is_some()));
+    assert!(recent.albums.iter().all(|album| album.song_count.is_some()));
     assert!(
         release_elapsed < Duration::from_millis(500),
         "New Releases regressed to an unbounded query: {release_elapsed:?}"

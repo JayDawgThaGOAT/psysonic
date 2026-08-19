@@ -294,6 +294,11 @@ pub fn list_mainstage_albums(
             let has_more = albums.len() > limit as usize;
             albums.truncate(limit as usize);
             overlay_album_starred_at_rows(conn, &mut albums);
+            // Runs after `truncate`, for the returned page only. Besides the
+            // artist link it supplies the totals this feed cannot count out of
+            // its candidate window (see `map_mainstage_album`), and the arrival
+            // date — which for Recently Played is the album's own
+            // `server_created_at`, never the play time this feed orders by.
             overlay_album_artist_links(conn, &mut albums);
             let result_count = albums.len();
             return Ok((

@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Can be turned off under Settings → Appearance → Display.
 * Screen readers now announce album cards and the offline play button in the selected language; both were stuck on a German word regardless of the chosen language.
 
+### Table view for the album catalogue pages
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1435](https://github.com/Psysonic/psysonic/pull/1435)**
+
+* All Albums, New Releases and Lossless can switch between the card grid and a table. The choice is remembered per page, so one catalogue can stay a table while another stays a grid.
+* The table lists cover, title, artist, song count, year, duration and the date an album was added, and drops columns from the right as the space narrows. Title and year sort from the column headers.
+* Song count, duration and the added date now reach every album browse surface, including filtered views and the lossless catalogue, where one or the other used to be blank.
+* Albums added in the last two days show the new-release ribbon on the All Albums grid as well, not only under New Releases.
+
 ## Changed
 
 ### Rust internals — smaller focused modules with the same behaviour
@@ -37,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Large analysis, audio, library, sync, cache, integration, CLI and startup modules are split into focused child modules behind the same public APIs and Tauri command/event contracts. Hand-written Rust files above 600 lines drop from 61 to 5 without an intended user-visible change.
 * Hot-path coverage follows the extracted implementation files, including Discord presence URL safety and text helpers. Comparable runtime benchmarks plus Linux and Windows CI found no reproducible behaviour or performance regression.
+
+## Fixed
+
+### Albums no longer start dragging on their own
+
+**By [@Psychotoxical](https://github.com/Psychotoxical), PR [#1437](https://github.com/Psysonic/psysonic/pull/1437)**
+
+* Holding the mouse button on an album while the list changed underneath — switching between grid and table, or a refresh arriving — could leave a drag primed. The next mouse movement anywhere then picked up that album, long after the pointer had moved on.
 
 ## [1.51.0] - 2026-08-17
 
