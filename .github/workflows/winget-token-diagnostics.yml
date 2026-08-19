@@ -1,0 +1,257 @@
+name: WinGet Token Diagnostics
+
+# Manual diagnostics for the WINGET_TOKEN secret.
+#
+# winget-publish.yml only runs on `release: [released]`, so a credential problem
+# there can otherwise only be investigated by spending a release. The secret is
+# write-only on top of that, so nothing can read back what it currently holds.
+#
+# This job reports what the token actually is — the status of an authenticated
+# API call, the login it resolves to, and its OAuth scopes (classic tokens
+# report scopes in a header, fine-grained ones do not) — and then performs the
+# GraphQL createRef/deleteRef pair that winget-releaser needs, against the fork
+# it targets. That call is necessary but not sufficient: komac also commits to
+# the fork and opens a pull request against microsoft/winget-pkgs, and neither
+# of those is exercised here.
+#
+# It only ever reads from microsoft/winget-pkgs (to report fork drift), never
+# writes to it, opens no pull request, and never prints the token.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Identify the token
+        id: identity
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${WINGET_TOKEN}" ]; then
+            echo "::error::WINGET_TOKEN is empty or not set on this repository."
+            exit 1
+          fi
+
+          status=$(curl -sS --retry 3 --max-time 30 -o body.json -D headers.txt -w '%{http_code}' \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/user || true)
+
+          # An unreachable API leaves status empty or at curl's own 000; either way
+          # it is a transport failure and says nothing about the token.
+          # An unreachable API leaves the status empty or at curl's own 000. The
+          # listed codes are the ones curl itself calls transient (man curl,
+          # --retry): reaching one of them means the retries were exhausted, not
+          # that the credential is bad. Neither case says anything about the token.
+          case "${status}" in
+            ""|000|408|429|500|502|503|504|522|524)
+              if [ "${status}" = "000" ] || [ -z "${status}" ]; then
+                detail="could not reach the API"
+              else
+                detail="the API answered HTTP ${status} on every attempt (a code curl treats as transient)"
+              fi
+              echo "::error::${detail} — this is an availability problem, not a verdict on the token."
+              {
+                echo "### WinGet token diagnostics"
+                echo ""
+                echo "- **GET /user:** ${detail} — no conclusion about the credential"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
+          if [ "${status}" != "200" ]; then
+            echo "::error::GET /user returned HTTP ${status} — the token is rejected before any repository is involved."
+            {
+              echo "### WinGet token diagnostics"
+              echo ""
+              echo "- **GET /user:** HTTP \`${status}\` — token rejected."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if ! jq -e . body.json >/dev/null 2>&1; then
+            echo "::error::GET /user returned HTTP 200 but the body is not JSON — something between the runner and the API rewrote the response."
+            {
+              echo "### WinGet token diagnostics"
+              echo ""
+              echo "- **GET /user:** HTTP \`200\` with a non-JSON body"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          login=$(jq -r '.login // empty' body.json)
+          if [ -z "${login}" ]; then
+            echo "::error::The response parsed as JSON but carries no login field — this is not the account payload the API should return."
+            echo "- **GET /user:** JSON without a login field" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "login=${login}" >> "$GITHUB_OUTPUT"
+
+          # Classic PATs report their scopes in this header; fine-grained tokens
+          # omit it entirely. That difference is the whole point of this step.
+          # --retry can append several header blocks to the dump, so take the last.
+          scopes=$(grep -i '^x-oauth-scopes:' headers.txt | tail -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//' || true)
+          expiry=$(grep -i '^github-authentication-token-expiration:' headers.txt | tail -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//' || true)
+
+          # A classic PAT that carries no scopes still sends the header, with an
+          # empty value — and that is exactly the case that would break createRef.
+          # Presence and value therefore have to be tested separately.
+          if ! grep -qi '^x-oauth-scopes:' headers.txt; then  # presence, independent of value
+            kind="fine-grained (header absent)"
+          elif [ -z "${scopes}" ]; then
+            kind="classic with NO scopes — cannot write to any repository"
+          else
+            kind="classic (scopes: ${scopes})"
+          fi
+
+          echo "HTTP status: ${status}"
+          echo "Authenticates as: ${login}"
+          echo "Token kind: ${kind}"
+          echo "Expires: ${expiry:-not reported}"
+
+          {
+            echo "### WinGet token diagnostics"
+            echo ""
+            echo "- **GET /user:** HTTP \`${status}\`"
+            echo "- **Authenticates as:** \`${login}\`"
+            echo "- **Token kind:** ${kind}"
+            echo "- **Expires:** ${expiry:-not reported}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create a throwaway ref in the caller's own winget-pkgs fork
+        id: createref
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          # winget-releaser's fork-user input defaults to ${{ github.repository_owner }},
+          # so that — not the token's own account — is the fork the real publish
+          # targets. Testing the token user's fork would answer a different question.
+          OWNER: ${{ github.repository_owner }}
+          TOKEN_LOGIN: ${{ steps.identity.outputs.login }}
+          BRANCH: winget-token-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          if [ "${OWNER}" != "${TOKEN_LOGIN}" ]; then
+            echo "Note: the token authenticates as ${TOKEN_LOGIN}, but the fork under test is ${OWNER}/winget-pkgs (the owner winget-releaser defaults to)."
+            echo "- **Note:** token is \`${TOKEN_LOGIN}\`, fork under test is \`${OWNER}/winget-pkgs\` — winget-releaser defaults to the repository owner" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # winget-releaser drives komac, which creates its branch over GraphQL.
+          # Testing the REST equivalent would not reproduce the failing call, so
+          # this uses the same mutation komac does. The upstream head is read
+          # alongside it purely to report how far the fork has drifted.
+          repo_status=$(curl -sS --retry 3 --max-time 30 -o repo.json -w '%{http_code}' -X POST https://api.github.com/graphql \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg owner "${OWNER}" \
+              '{query: "query($owner:String!){fork: repository(owner:$owner,name:\"winget-pkgs\"){id defaultBranchRef{name target{oid}}} upstream: repository(owner:\"microsoft\",name:\"winget-pkgs\"){defaultBranchRef{target{oid}}}}", variables: {owner: $owner}}')" || true)
+
+          # A non-GraphQL body (401 "Bad credentials", a proxy error page) carries
+          # no .errors array, and feeding it to jq unguarded would abort the step
+          # under `set -e` without printing anything at all.
+          case "${repo_status}" in
+            ""|000|408|429|500|502|503|504|522|524)
+              echo "::error::The lookup did not get a usable answer (HTTP ${repo_status:-none}) — an availability problem, not a verdict on the token."
+              echo "- **Repository lookup:** no usable answer (HTTP \`${repo_status:-none}\`) — no conclusion about the credential" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
+          if ! jq -e . repo.json >/dev/null 2>&1; then
+            echo "::error::GraphQL returned HTTP ${repo_status} with a body that is not JSON."
+            echo "- **Repository lookup:** HTTP \`${repo_status}\`, body was not JSON" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          repo_id=$(jq -r '.data.fork.id // empty' repo.json)
+          head_oid=$(jq -r '.data.fork.defaultBranchRef.target.oid // empty' repo.json)
+          upstream_oid=$(jq -r '.data.upstream.defaultBranchRef.target.oid // empty' repo.json)
+
+          if [ -z "${repo_id}" ] || [ -z "${head_oid}" ]; then
+            reason=$(jq -r '[(.errors?[]?.message // empty), (.message? // empty)] | join("; ")' repo.json)
+            echo "::error::Could not read ${OWNER}/winget-pkgs over GraphQL (HTTP ${repo_status}): ${reason:-no reason given}"
+            echo "- **Repository lookup:** HTTP \`${repo_status}\` — ${reason:-no reason given}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ -z "${upstream_oid}" ]; then
+            drift="upstream head could not be read — no drift statement possible"
+          elif [ "${head_oid}" = "${upstream_oid}" ]; then
+            drift="fork is level with microsoft/winget-pkgs"
+          else
+            # microsoft/winget-pkgs takes commits continuously, so an identical head
+            # is the exception. This is reported as an observation, not a warning.
+            drift="fork head \`${head_oid:0:7}\`, upstream \`${upstream_oid:0:7}\` (this repository moves constantly; a difference here is normal and not by itself a problem)"
+          fi
+          echo "Fork state: ${drift}"
+          echo "- **Fork state:** ${drift}" >> "$GITHUB_STEP_SUMMARY"
+
+          create_status=$(curl -sS --max-time 30 -o create.json -w '%{http_code}' -X POST https://api.github.com/graphql \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg rid "${repo_id}" --arg name "refs/heads/${BRANCH}" --arg oid "${head_oid}" \
+              '{query: "mutation($rid:ID!,$name:String!,$oid:GitObjectID!){createRef(input:{repositoryId:$rid,name:$name,oid:$oid}){ref{id name}}}", variables: {rid: $rid, name: $name, oid: $oid}}')" || true)
+
+          case "${create_status}" in
+            ""|000|408|429|500|502|503|504|522|524)
+              echo "::error::createRef got no usable answer (HTTP ${create_status:-none}). A timeout can strike after the request was sent, so the ref may exist — check for refs/heads/${BRANCH} in ${OWNER}/winget-pkgs and remove it by hand."
+              echo "- **createRef:** no usable answer (HTTP \`${create_status:-none}\`) — check for a leftover \`refs/heads/${BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
+          # Same guard as the lookup above: a transport-level failure returns an
+          # HTML page, and letting jq read it would kill the step under `set -e`
+          # before any of the messages below are ever written.
+          if ! jq -e . create.json >/dev/null 2>&1; then
+            echo "::error::createRef returned HTTP ${create_status} with a body that is not JSON. The ref may have been created server-side — check for refs/heads/${BRANCH} in ${OWNER}/winget-pkgs and remove it by hand."
+            echo "- **createRef on \`${OWNER}/winget-pkgs\`:** HTTP \`${create_status}\`, body was not JSON — check for a leftover \`refs/heads/${BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          ref_id=$(jq -r '.data.createRef.ref.id // empty' create.json)
+          if [ -z "${ref_id}" ]; then
+            echo "::error::createRef failed on ${OWNER}/winget-pkgs — this is the call winget-releaser needs to open its pull request."
+            {
+              echo "- **createRef on \`${OWNER}/winget-pkgs\`:** ❌ failed"
+              jq -r '[(.errors?[]?.message // empty), (.message? // empty)] | join("; ")' create.json | sed 's/^/  - /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "ref_id=${ref_id}" >> "$GITHUB_OUTPUT"
+          echo "createRef succeeded: refs/heads/${BRANCH}"
+          echo "- **createRef on \`${OWNER}/winget-pkgs\`:** ✅ succeeded — the credential is allowed to create refs in the fork" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Not covered:** committing to the fork and opening the pull request against microsoft/winget-pkgs — a green run here does not prove those succeed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the throwaway ref
+        if: always() && steps.createref.outputs.ref_id != ''
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          REF_ID: ${{ steps.createref.outputs.ref_id }}
+          BRANCH: winget-token-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          delete_status=$(curl -sS --max-time 30 -o delete.json -w '%{http_code}' -X POST https://api.github.com/graphql \
+            -H "Authorization: Bearer ${WINGET_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg rid "${REF_ID}" \
+              '{query: "mutation($rid:ID!){deleteRef(input:{refId:$rid}){clientMutationId}}", variables: {rid: $rid}}')" || true)
+
+          # Success has to be proven, not inferred from a missing .errors key: an
+          # unparseable body would otherwise read as "deleted" and leave the ref
+          # behind without ever warning about it.
+          if jq -e 'has("data") and (.data.deleteRef != null)' delete.json >/dev/null 2>&1; then
+            echo "Throwaway ref deleted."
+          else
+            echo "::warning::The throwaway ref may still exist (HTTP ${delete_status}); remove refs/heads/${BRANCH} by hand if so."
+            jq -r '[(.errors?[]?.message // empty), (.message? // empty)] | join("; ")' delete.json 2>/dev/null || echo "response body was not JSON"
+          fi
